@@ -238,6 +238,9 @@ pub enum SchedulerError {
 /// Extended with:
 ///   - BarrierConfig for barrier timeout (GAP P0-1)
 ///   - F1 per-lane reversibility check (GAP P0-2)
+///   - TRI_WITNESS merge for fan-out consensus (GAP P1-3)
+///   - Cooling ledger for drift tracking (GAP P1-4)
+///   - Execution mode per topology kind (GAP P1-5)
 pub struct SuperStepScheduler {
     topology_kind: TopologyKind,
     channels: BTreeMap<String, Channel<String>>,
@@ -253,6 +256,10 @@ pub struct SuperStepScheduler {
     barrier_config: Option<BarrierConfig>,
     /// F1 check results from current step (GAP P0-2)
     f1_statuses: Vec<F1Status>,
+    /// TRI_WITNESS merge from last fan-out step (GAP P1-3)
+    last_witness_merge: Option<WitnessMergeResult>,
+    /// Cooling ledger — plan-vs-reality drift (GAP P1-4)
+    cooling_ledger: CoolingLedger,
 }
 
 impl SuperStepScheduler {
@@ -273,6 +280,8 @@ impl SuperStepScheduler {
             verdict_oracle: None,
             barrier_config: None,
             f1_statuses: Vec::new(),
+            last_witness_merge: None,
+            cooling_ledger: CoolingLedger::default(),
         }
     }
 
@@ -491,6 +500,158 @@ impl SuperStepScheduler {
     /// Get F1 results from the last step (GAP P0-2).
     pub fn last_f1_statuses(&self) -> &[F1Status] {
         &self.f1_statuses
+    }
+
+    /// Attach TRI_WITNESS lanes for merge verification (GAP P1-3).
+    /// Called after fan-out nodes produce per-lane attestations.
+    pub fn attach_witnesses(&mut self, lane_witnesses: Vec<(String, TriWitness)>) {
+        self.last_witness_merge = Some(WitnessMergeResult::merge(lane_witnesses));
+    }
+
+    /// Get last witness merge result (GAP P1-3).
+    pub fn last_witness_merge(&self) -> Option<&WitnessMergeResult> {
+        self.last_witness_merge.as_ref()
+    }
+
+    /// Access the cooling ledger (GAP P1-4).
+    pub fn cooling_ledger(&self) -> &CoolingLedger {
+        &self.cooling_ledger
+    }
+
+    /// Record a cooling entry after step execution (GAP P1-4).
+    pub fn record_cooling(
+        &mut self,
+        plan: impl Into<String>,
+        reality: impl Into<String>,
+        convergence: Convergence,
+        severity: DriftSeverity,
+        witness: impl Into<String>,
+    ) {
+        self.cooling_ledger.record(CoolingEntry::new(
+            self.super_step,
+            plan,
+            reality,
+            convergence,
+            severity,
+            witness,
+        ));
+    }
+
+    /// GAP P1-5: Execute nodes according to topology discipline.
+    /// FanOut → parallel (existing behavior), Pipeline → sequential, Cascade → threshold.
+    fn execute_by_topology(
+        &mut self,
+        nodes: &[Box<dyn FlowNode>],
+        held_nodes: &[String],
+    ) -> Result<BTreeMap<String, Vec<Message<String>>>, SchedulerError> {
+        match self.topology_kind.execution_mode() {
+            ExecutionMode::Parallel => {
+                // FanOut: all nodes run concurrently (sequential here, parallel via rayon later)
+                let mut all_deltas = BTreeMap::new();
+                for node in nodes {
+                    if held_nodes.contains(&node.id().to_string()) {
+                        continue;
+                    }
+                    let mut inputs = BTreeMap::new();
+                    for sub in node.subscriptions() {
+                        let ch = self
+                            .channels
+                            .get(sub.0.as_str())
+                            .ok_or_else(|| SchedulerError::ChannelNotFound(sub.0.clone()))?;
+                        if let Ok(msgs) = ch.read_all() {
+                            inputs.insert(sub.clone(), msgs.into_iter().cloned().collect());
+                        }
+                    }
+                    let outputs = node.run(inputs, self.lease_id)?;
+                    for (ch_id, data) in outputs {
+                        if let Some(ch) = self.channels.get_mut(ch_id.0.as_str()) {
+                            if ch.write(data).is_ok() {
+                                all_deltas.entry(ch_id.0.clone()).or_insert_with(Vec::new);
+                            }
+                        }
+                    }
+                }
+                Ok(all_deltas)
+            }
+            ExecutionMode::Sequential => {
+                // Pipeline: nodes execute in order, each output feeds next input
+                let mut all_deltas = BTreeMap::new();
+                for (i, node) in nodes.iter().enumerate() {
+                    if held_nodes.contains(&node.id().to_string()) {
+                        continue;
+                    }
+                    let mut inputs = BTreeMap::new();
+                    for sub in node.subscriptions() {
+                        let ch = self
+                            .channels
+                            .get(sub.0.as_str())
+                            .ok_or_else(|| SchedulerError::ChannelNotFound(sub.0.clone()))?;
+                        if let Ok(msgs) = ch.read_all() {
+                            inputs.insert(sub.clone(), msgs.into_iter().cloned().collect());
+                        }
+                    }
+                    let outputs = node.run(inputs, self.lease_id)?;
+                    // Write outputs immediately so next node in pipeline can read them
+                    for (ch_id, data) in outputs {
+                        if let Some(ch) = self.channels.get_mut(ch_id.0.as_str()) {
+                            if ch.write(data).is_ok() {
+                                all_deltas.entry(ch_id.0.clone()).or_insert_with(Vec::new);
+                            }
+                        }
+                    }
+                    // Record pipeline stage cooling
+                    let _ = i; // stage index for provenance
+                }
+                Ok(all_deltas)
+            }
+            ExecutionMode::ThresholdChain => {
+                // Cascade: nodes execute only when input channel has messages
+                // Each node's output may trigger downstream nodes
+                let mut all_deltas = BTreeMap::new();
+                let mut activated = vec![false; nodes.len()];
+                let mut any_activated = true;
+
+                while any_activated {
+                    any_activated = false;
+                    for (i, node) in nodes.iter().enumerate() {
+                        if activated[i] || held_nodes.contains(&node.id().to_string()) {
+                            continue;
+                        }
+                        // Check if any subscription channel has data (threshold trigger)
+                        let has_input = node.subscriptions().iter().any(|sub| {
+                            self.channels
+                                .get(sub.0.as_str())
+                                .map(|ch| ch.len() > 0)
+                                .unwrap_or(false)
+                        });
+                        if !has_input {
+                            continue; // no threshold trigger yet
+                        }
+                        let mut inputs = BTreeMap::new();
+                        for sub in node.subscriptions() {
+                            let ch = self
+                                .channels
+                                .get(sub.0.as_str())
+                                .ok_or_else(|| SchedulerError::ChannelNotFound(sub.0.clone()))?;
+                            if let Ok(msgs) = ch.read_all() {
+                                inputs.insert(sub.clone(), msgs.into_iter().cloned().collect());
+                            }
+                        }
+                        let outputs = node.run(inputs, self.lease_id)?;
+                        for (ch_id, data) in outputs {
+                            if let Some(ch) = self.channels.get_mut(ch_id.0.as_str()) {
+                                if ch.write(data).is_ok() {
+                                    all_deltas.entry(ch_id.0.clone()).or_insert_with(Vec::new);
+                                }
+                            }
+                        }
+                        activated[i] = true;
+                        any_activated = true;
+                    }
+                }
+                Ok(all_deltas)
+            }
+        }
     }
 }
 
