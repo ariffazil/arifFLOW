@@ -14,9 +14,10 @@
 
 use crate::channel::{Channel, ChannelId, ChannelMode, Message};
 use crate::governance::cooling::{Convergence, CoolingEntry, CoolingLedger, DriftSeverity};
+use crate::governance::kabarkan::{KabarkanEvent, KabarkanTracer};
 use crate::governance::tri_witness::{TriWitness, WitnessMergeResult};
 use crate::merkle::{chain_roots, MerkleRoot, MerkleTree};
-use crate::receipt::{FlowQuotient, FlowReceipt, ReceiptStore, StepType, EpistemicLabel};
+use crate::receipt::{FlowQuotient, FlowReceipt, FlowVerdict, ReceiptStore, StepType, EpistemicLabel};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -263,6 +264,8 @@ pub struct SuperStepScheduler {
     cooling_ledger: CoolingLedger,
     /// AFQ tracking — governance vs execution steps via ReceiptStore
     receipt_store: ReceiptStore,
+    /// Kabarkan tracer — emits observability spans for AAA cockpit
+    kabarkan: KabarkanTracer,
 }
 
 impl SuperStepScheduler {
@@ -286,6 +289,7 @@ impl SuperStepScheduler {
             last_witness_merge: None,
             cooling_ledger: CoolingLedger::default(),
             receipt_store: ReceiptStore::default(),
+            kabarkan: KabarkanTracer::new(true),
         }
     }
 
@@ -458,6 +462,43 @@ impl SuperStepScheduler {
         // Compute Flow Quotient from the store
         let step_fq = self.receipt_store.flow_quotient(100);
 
+        // ── FQ Snapshot Emission (Kabarkan) ──
+        // Wire the nervous system: every super-step emits an AfqSnapshot span.
+        self.kabarkan
+            .emit(KabarkanEvent::afq_snapshot(step_number, &step_fq));
+
+        // ── FQ → Cooling Cross-Reference ──
+        // When the agent stops executing, it starts drifting.
+        // FQ < 1.0: WATCHING — verification cost approaching execution cost.
+        // FQ < 0.5: STUCK — self-monitoring has become the task.
+        if step_fq.verdict == FlowVerdict::Watching {
+            self.cooling_ledger.record(CoolingEntry::new(
+                step_number,
+                format!("FQ_WATCHING at step {}", step_number),
+                format!(
+                    "FQ={:.2} execute={} verify={}",
+                    step_fq.quotient, step_fq.execute_count, step_fq.verify_count
+                ),
+                Convergence::Converging,
+                DriftSeverity::Medium,
+                self.topology_kind.as_str(),
+            ));
+        }
+
+        if step_fq.verdict == FlowVerdict::Stuck {
+            self.cooling_ledger.record(CoolingEntry::new(
+                step_number,
+                format!("FQ_STUCK at step {}", step_number),
+                format!(
+                    "FQ={:.2} execute={} verify={} — CRITICAL self-monitoring takeover",
+                    step_fq.quotient, step_fq.execute_count, step_fq.verify_count
+                ),
+                Convergence::Diverging,
+                DriftSeverity::Critical,
+                self.topology_kind.as_str(),
+            ));
+        }
+
         if elapsed > Duration::from_millis(barrier.timeout_ms) {
             barrier_timed_out = true;
             match barrier.policy_on_timeout {
@@ -559,6 +600,16 @@ impl SuperStepScheduler {
     /// Get the receipt store
     pub fn receipt_store(&self) -> &ReceiptStore {
         &self.receipt_store
+    }
+
+    /// Drain all pending Kabarkan events (for AAA cockpit ingestion).
+    pub fn drain_kabarkan_events(&mut self) -> Vec<KabarkanEvent> {
+        self.kabarkan.drain_events()
+    }
+
+    /// Number of pending Kabarkan events.
+    pub fn kabarkan_event_count(&self) -> usize {
+        self.kabarkan.event_count()
     }
 
     /// Record a cooling entry after step execution (GAP P1-4).
