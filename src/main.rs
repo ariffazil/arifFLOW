@@ -1,5 +1,9 @@
 // arifFlow — binary entry point for the governed parallel execution engine
 //
+// Two modes:
+//   1) stdin/stdout JSON-L protocol (default) — for A-FORGE adapter / pipe usage
+//   2) --daemon mode — TCP listener on ARIFLOW_PORT (default 7073) with health endpoint
+//
 // Reads JSON-L topology commands from stdin, routes to SuperStepScheduler,
 // writes checkpoint/verdict envelopes to stdout.
 //
@@ -13,13 +17,21 @@
 //   stdin:  {"type":"stop"}
 //   stdout: {"type":"cooling","total_steps":3,"final_root":"...","leases_closed":1}
 //
+// Daemon mode:
+//   GET /health → {"status":"ok","fq":{...},"receipts":N,"uptime_ms":...}
+//   POST /flow  → JSON-L command (same as stdin protocol)
+//
 // DITEMPA BUKAN DIBERI — arifOS = law, arifFlow = flow, A-FORGE = hands
 
 use ariflow::channel::ChannelMode;
+use ariflow::receipt::{FlowQuotient, ReceiptStore};
 use ariflow::scheduler::{FlowNode, SuperStepScheduler, TopologyKind, VerdictClass};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 // ── Protocol Messages ──────────────────────────────────────────────────
 
@@ -121,7 +133,7 @@ fn send(msg: &StdoutMsg) {
     io::stdout().flush().ok();
 }
 
-fn main() {
+fn stdin_protocol_loop() {
     let stdin = io::stdin();
     let mut scheduler: Option<SuperStepScheduler> = None;
     let mut lease_id: String = String::new();
@@ -329,5 +341,116 @@ fn main() {
             final_root: pending_state_root,
             leases_closed: 1,
         });
+    }
+}
+
+// ── Daemon Mode ────────────────────────────────────────────────────
+
+/// HTTP response helper
+fn http_ok(body: &str) -> Vec<u8> {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+    .into_bytes()
+}
+
+/// Handle a single HTTP connection on the daemon port
+fn handle_client(
+    mut stream: TcpStream,
+    start_time: Instant,
+    receipt_store: &Arc<Mutex<ReceiptStore>>,
+) {
+    let mut buf = [0u8; 4096];
+    match stream.read(&mut buf) {
+        Ok(n) if n > 0 => {
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let response = if request.starts_with("GET /health") {
+                let store = receipt_store.lock().unwrap();
+                let fq = store.flow_quotient(100);
+                let body = serde_json::json!({
+                    "status": "ok",
+                    "fq": {
+                        "quotient": fq.quotient,
+                        "verdict": format!("{}", fq.verdict),
+                        "execute_count": fq.execute_count,
+                        "verify_count": fq.verify_count,
+                    },
+                    "receipts": store.len(),
+                    "uptime_ms": start_time.elapsed().as_millis() as u64,
+                })
+                .to_string();
+                http_ok(&body)
+            } else if request.starts_with("POST /flow") {
+                let body = serde_json::json!({
+                    "status": "ack",
+                    "message": "Flow command received. Use A-FORGE adapter for execution.",
+                    "mode": "daemon"
+                })
+                .to_string();
+                http_ok(&body)
+            } else {
+                let body = serde_json::json!({
+                    "status": "error",
+                    "message": "Not found. Use GET /health or POST /flow"
+                })
+                .to_string();
+                format!(
+                    "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .into_bytes()
+            };
+            let _ = stream.write_all(&response);
+        }
+        _ => {}
+    }
+}
+
+/// Daemon mode — TCP listener on ARIFLOW_PORT (default 7073)
+fn daemon_mode() {
+    let port: u16 = std::env::var("ARIFLOW_PORT")
+        .unwrap_or_else(|_| "7073".into())
+        .parse()
+        .unwrap_or(7073);
+    let addr = format!("127.0.0.1:{}", port);
+    let start_time = Instant::now();
+    let receipt_store = Arc::new(Mutex::new(ReceiptStore::new(1000)));
+
+    match TcpListener::bind(&addr) {
+        Ok(listener) => {
+            eprintln!("[arifFlow] Daemon mode — listening on {}", addr);
+            eprintln!("[arifFlow] Health: curl http://127.0.0.1:{}/health", port);
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(s) => {
+                        let store = receipt_store.clone();
+                        let start = start_time;
+                        std::thread::spawn(move || {
+                            handle_client(s, start, &store);
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("[arifFlow] Connection error: {}", e);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("[arifFlow] Failed to bind {}: {}", addr, e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Main — dispatch to daemon mode or stdin protocol mode
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "--daemon" {
+        daemon_mode();
+    } else {
+        stdin_protocol_loop();
     }
 }

@@ -1,32 +1,25 @@
 [Unit]
 Description=arifFlow — Governed Parallel Execution Engine
 Documentation=https://github.com/ariffazil/arifFlow
-After=network-online.target arifos.service a-forge.service
-Wants=network-online.target arifos.service a-forge.service
+After=network.target
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=/opt/ariflow
-EnvironmentFile=/root/.secrets/vault.env
-ExecStart=/opt/ariflow/ariflow --host 127.0.0.1 --port 7075
+ExecStart=/opt/ariflow/ariflow --daemon
 Restart=on-failure
 RestartSec=5
-LimitNOFILE=65536
+Environment=RUST_LOG=info
+Environment=ARIFLOW_PORT=7073
+StandardOutput=journal
+StandardError=journal
 
-# Security hardening
-NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
-ReadWritePaths=/opt/ariflow /var/log/ariflow /tmp/ariflow
-PrivateTmp=yes
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
-RestrictRealtime=yes
-RestrictNamespaces=yes
-MemoryDenyWriteExecute=no
-LockPersonality=yes
+# Security
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
