@@ -1,2 +1,27 @@
+# Rust build artifacts
 target/
-Cargo.lock
+
+# Cargo.lock — committed for binary applications (this is an engine, not a library)
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Debug
+core.*
+*.profraw
+
+# Temp
+/tmp/
+*.tmp
