@@ -1,119 +1,91 @@
-# ⚡ arifFlow — Governed Parallel Execution Engine
+# arifFlow — FLOW Layer
 
-> **DITEMPA BUKAN DIBERI** — Flow is forged, not given.
+> **Governed Parallel Execution Engine for the arifOS Federation**
 >
-> Trinity: `arifOS (law) · arifFlow (flow) · A-FORGE (hands)`
+> DITEMPA BUKAN DIBERI — Forged, Not Given.
 
-arifFlow is the **constitutional BSP (Bulk Synchronous Parallel) engine** for the arifOS Federation. It replaces flat-graph orchestration with Pregel-style super-steps — every parallel transition adjudicated by arifOS 888-JUDGE.
+---
 
-**arifFlow is NOT a governor.** It does not judge, seal, or authorise. It schedules, channels, checkpoints, and records — always under the law of arifOS.
+## Trinity
+
+```
+arifOS       → LAW      → Python     → constitution, judge, 888
+arifFlow     → FLOW     → Rust       → orchestration, parallelism, Merkle
+A‑FORGE      → HANDS    → TypeScript → execution, MCP, deploy, forge
+```
+
+arifFlow sits **between** law and hands. It is the engine that drives governed parallel execution — BSP scheduler, channel-based topology orchestration, Merkle receipt anchoring, and VAULT999 envelope sealing.
 
 ---
 
 ## Architecture
 
-```
-arifOS (law/Python) ──adjudicate──▶ arifFlow (flow/Rust) ──schedule──▶ A-FORGE (hands/TypeScript)
-     ▲                                                                      │
-     └────────────────────────── SEAL ──────────────────────────────────────┘
-```
+| Layer | Language | Role | Port |
+|-------|----------|------|------|
+| **arifOS** | Python | Constitutional judge, F1–F13, cc_id issuance | 8088 |
+| **arifFlow** | Rust | BSP scheduler, topology executor, Merkle hash chain, cooling queue | (Unix socket / HTTP bridge) |
+| **A‑FORGE** | TypeScript | Execution forge, MCP tools, orchestrators | 7071 |
 
-### Plane Separation
+### Topologies
 
-```
-INTELLIGENCE PLANE          EXECUTION PLANE
-(Hermes, OpenCode,          (arifFlow scheduler
- GEOX, WEALTH, WELL)         + A-FORGE tools)
-       │                           │
-       └── signed envelopes ───────┘
-          (actor_id, lease_id, payload_hash)
-```
+- **Fan-out** — N workers in parallel, reduce at barrier
+- **Pipeline** — Sequential stage-by-stage with channel pass-through
+- **Cascade** — Tree fan-out with conditional pruning
 
-### 3 Governed Topologies
+### 5 Invariants (A1–A5)
 
-| Topology | Shape | Use Case |
-|----------|-------|----------|
-| **Fan-out** | 1→N parallel, merge-witness | Multi-agent reasoning, parallel evidence gathering |
-| **Pipeline** | Sequential stages with gates | CI/CD, deploy pipelines, staged computation |
-| **Cascade** | Multi-agent escalation chain | Incident response, governance escalation |
-
----
-
-## Core Invariants (A1–A5)
-
-| ID | Invariant | Rule |
-|----|-----------|------|
-| A1 | Constitutional-first | No parallel unit runs without valid lease + 888-JUDGE scope |
-| A2 | Plane-isolated | Intelligence plane and execution plane never share raw memory |
-| A3 | Checkpoint-with-verdict | Every super-step checkpoint records Merkle root + verdict |
-| A4 | Verifiable-reduction | Merge functions are deterministic and F3 TRI-WITNESS auditable |
-| A5 | Metabolic-closure | Every run ends with: cooling receipt, leases closed, no orphans |
+1. **A1** — Per-lane reversibility (F1-compliant)
+2. **A2** — Barrier timeout < configurable max
+3. **A3** — Crash recovery: kill-9 → state restore
+4. **A4** — Merkle anchor every receipt
+5. **A5** — No cross-lane mutation outside barriers
 
 ---
 
 ## Quick Start
 
 ```bash
-# Build
 cargo build --release
-
-# Run tests
 cargo test
-
-# Run engine (requires arifOS kernel on :8088)
-cargo run -- --lease-id <lease_id> --topology fan_out
+./target/release/arifflow --help
 ```
 
-### Dependencies
+### Prerequisites
 
-- **arifOS** (port 8088) — governance, judge, leases, verdicts
-- **A-FORGE** (port 7071) — execution of scheduled tasks
-- **Kabarkan** — observability span ingestion
+- Rust 2024 edition (1.85+)
+- Tokio runtime
 
 ---
 
-## Repository Layout
+## Federation Contract
 
-```
-/root/arifFlow/
-├── ARIFLOWKERNELCANON.md     ← mini-constitution (binding)
-├── src/
-│   ├── main.rs               ← engine entry point
-│   ├── lib.rs                ← library root
-│   ├── channel.rs            ← Channel<T> abstraction
-│   ├── scheduler.rs          ← BSP super-step scheduler
-│   ├── merkle.rs             ← Merkle state hasher
-│   ├── topology/             ← 3 governed topologies
-│   │   ├── fan_out.rs
-│   │   ├── pipeline.rs
-│   │   └── cascade.rs
-│   ├── bridge/               ← FFI to organs
-│   │   ├── arifos_governance.rs
-│   │   ├── aforge_executor.rs
-│   │   └── kabarkan.rs
-│   └── governance/           ← Flow-level governance
-│       ├── checkpoint.rs
-│       ├── cooling.rs
-│       ├── tri_witness.rs
-│       └── vault999.rs
-└── tests/                    ← Deterministic test fixtures
-```
+arifFlow is a **sovereign organ** — called by other organs via adapter:
+
+- `/root/A-FORGE/domain/orchestration/arifFlow_adapter.py`
+- `POST /bridge/execute` — submit a topology
+- `GET /bridge/status/:id` — poll execution state
+- `POST /bridge/cooling` — cooling queue enqueue
+
+Every organ (GEOX, WEALTH, WELL, AAA, Hermes) may call arifFlow directly through its bridge interface. No organ imports another to reach the flow engine.
 
 ---
 
 ## Versioning
 
-Date-stamped only — Iron Rule. No semver.
+Date-stamped: `vYYYY.MM.DD` (Iron Rule — never semver).
 
-Tags: `vYYYY.MM.DD`
+---
+
+## Release Cycle
+
+1. `cargo build --release`
+2. `cargo test`
+3. Bump Cargo.toml version → `vYYYY.MM.DD`
+4. `git tag vYYYY.MM.DD && git push --tags`
+5. `systemctl restart arifflow` (on deploy)
 
 ---
 
 ## License
 
-AGPL-3.0
-
----
-
-*Forged 2026-07-25. DITEMPA BUKAN DIBERI.*
-*Trinity: arifOS = law · arifFlow = flow · A-FORGE = hands*
+AGPL-3.0 — arifOS Federation standard. See `LICENSE`.
