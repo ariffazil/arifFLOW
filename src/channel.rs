@@ -5,6 +5,7 @@
 // No raw memory sharing between execution plane and intelligence plane.
 
 use crate::merkle::MerkleRoot;
+use crate::receipt::{FlowReceipt, StepType, EpistemicLabel};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
@@ -19,7 +20,8 @@ impl fmt::Display for ChannelId {
     }
 }
 
-/// A single message within a channel, content-hashed at creation
+/// A single message within a channel, content-hashed at creation,
+/// carrying a Flow Receipt v1 for governed provenance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message<T: Serialize + Clone> {
     /// The payload — type-erased at channel level
@@ -28,6 +30,8 @@ pub struct Message<T: Serialize + Clone> {
     pub epoch: u64,
     /// blake3 hash of (payload_bytes || epoch) — self-authenticating
     pub content_hash: [u8; 32],
+    /// Flow Receipt v1 — the minimal verifiable unit of governed flow
+    pub receipt: FlowReceipt,
 }
 
 impl<T: Serialize + Clone> Message<T> {
@@ -37,10 +41,21 @@ impl<T: Serialize + Clone> Message<T> {
         hasher.update(&payload_bytes);
         hasher.update(&epoch.to_le_bytes());
         let hash = hasher.finalize();
+
+        // Create a minimal flow receipt for this message
+        let receipt = FlowReceipt::new_first(
+            "channel::unknown",
+            "session",
+            StepType::Route,
+            EpistemicLabel::Observation,
+            0,
+        );
+
         Ok(Self {
             payload,
             epoch,
             content_hash: *hash.as_bytes(),
+            receipt,
         })
     }
 

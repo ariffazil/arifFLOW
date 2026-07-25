@@ -1,6 +1,7 @@
 // arifFlow governance/kabarkan.rs
 // Kabarkan Tracing Hooks — Per-super-step observability events
 
+use crate::receipt::FlowQuotient;
 use crate::scheduler::TopologyKind;
 use serde::{Deserialize, Serialize};
 
@@ -30,12 +31,31 @@ pub enum KabarkanEvent {
         lease_id: String,
         verdict: String,
     },
+    AfqSnapshot {
+        step: u64,
+        execution_steps: u64,
+        governance_steps: u64,
+        afq: f64,
+        diagnosis: String,
+    },
     CoolingReceipt {
         actor_id: String,
         lease_id: String,
         total_steps: u64,
         final_state_root: [u8; 32],
     },
+}
+
+impl KabarkanEvent {
+    pub fn afq_snapshot(step: u64, fq: &FlowQuotient) -> Self {
+        KabarkanEvent::AfqSnapshot {
+            step,
+            execution_steps: fq.execute_count as u64,
+            governance_steps: fq.verify_count as u64,
+            afq: fq.quotient,
+            diagnosis: fq.verdict.to_string(),
+        }
+    }
 }
 
 pub struct KabarkanTracer {

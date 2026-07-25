@@ -1,6 +1,6 @@
 [package]
 name = "ariflow"
-version = "2026.07.25"
+version = "2026.7.25"
 edition = "2024"
 description = "arifFlow — Governed Parallel Execution Engine for the arifOS Federation"
 authors = ["Arif (F13 SOVEREIGN) <arifbfazil@gmail.com>"]
@@ -15,6 +15,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["full"] }
 chrono = { version = "0.4", features = ["serde"] }
 hex = "0.4"
+sha3 = "0.10"
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 
 [dev-dependencies]

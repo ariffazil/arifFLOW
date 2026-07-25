@@ -16,6 +16,7 @@ use crate::channel::{Channel, ChannelId, ChannelMode, Message};
 use crate::governance::cooling::{Convergence, CoolingEntry, CoolingLedger, DriftSeverity};
 use crate::governance::tri_witness::{TriWitness, WitnessMergeResult};
 use crate::merkle::{chain_roots, MerkleRoot, MerkleTree};
+use crate::receipt::{FlowQuotient, FlowReceipt, ReceiptStore, StepType, EpistemicLabel};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -109,8 +110,10 @@ pub struct SuperStepResult {
     pub channel_deltas: BTreeMap<String, Vec<Message<String>>>,
     pub checkpoint: CheckpointEnvelope,
     pub verdict: VerdictClass,
-    pub held_nodes: Vec<String>, // nodes held by F1 or barrier
-    pub barrier_timed_out: bool, // true if barrier caused timeout action
+    pub held_nodes: Vec<String>,
+    pub barrier_timed_out: bool,
+    pub fq: FlowQuotient,
+    pub receipt_store: ReceiptStore,
 }
 
 // ── GAP P0-1: Barrier Config ──────────────────────────────────────────
@@ -258,6 +261,8 @@ pub struct SuperStepScheduler {
     last_witness_merge: Option<WitnessMergeResult>,
     /// Cooling ledger — plan-vs-reality drift (GAP P1-4)
     cooling_ledger: CoolingLedger,
+    /// AFQ tracking — governance vs execution steps via ReceiptStore
+    receipt_store: ReceiptStore,
 }
 
 impl SuperStepScheduler {
@@ -280,6 +285,7 @@ impl SuperStepScheduler {
             f1_statuses: Vec::new(),
             last_witness_merge: None,
             cooling_ledger: CoolingLedger::default(),
+            receipt_store: ReceiptStore::default(),
         }
     }
 
@@ -360,6 +366,16 @@ impl SuperStepScheduler {
         }
         self.f1_statuses = f1_statuses;
 
+        // Track governance steps for AFQ: create a receipt for F1 checks
+        let f1_receipt = FlowReceipt::new_first(
+            &self.actor_id,
+            &self.lease_id.to_string(),
+            StepType::Verify,
+            EpistemicLabel::Observation,
+            100, // cost_ns placeholder
+        );
+        let _ = self.receipt_store.push(f1_receipt);
+
         // ── Execute nodes that passed F1 ──
         self.super_step += 1;
 
@@ -428,6 +444,20 @@ impl SuperStepScheduler {
         let elapsed = start_time.elapsed();
         let mut barrier_timed_out = false;
 
+        // Create an execution receipt for this step
+        let execute_receipt = FlowReceipt::new_first(
+            &self.actor_id,
+            &self.lease_id.to_string(),
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            elapsed.as_nanos() as u64,
+        )
+        .with_topology(self.topology_kind.as_str(), self.super_step as u32);
+        let _ = self.receipt_store.push(execute_receipt);
+
+        // Compute Flow Quotient from the store
+        let step_fq = self.receipt_store.flow_quotient(100);
+
         if elapsed > Duration::from_millis(barrier.timeout_ms) {
             barrier_timed_out = true;
             match barrier.policy_on_timeout {
@@ -446,6 +476,8 @@ impl SuperStepScheduler {
                         verdict: VerdictClass::VOID,
                         held_nodes: nodes.iter().map(|n| n.id().to_string()).collect(),
                         barrier_timed_out: true,
+                        fq: step_fq,
+                        receipt_store: self.receipt_store.clone(),
                     });
                 }
                 TimeoutPolicy::ContinueMajority | TimeoutPolicy::ContinueCritical => {
@@ -461,6 +493,8 @@ impl SuperStepScheduler {
             verdict: VerdictClass::SEAL,
             held_nodes,
             barrier_timed_out,
+            fq: step_fq,
+            receipt_store: self.receipt_store.clone(),
         })
     }
 
@@ -515,6 +549,16 @@ impl SuperStepScheduler {
     /// Access the cooling ledger (GAP P1-4).
     pub fn cooling_ledger(&self) -> &CoolingLedger {
         &self.cooling_ledger
+    }
+
+    /// Current Flow Quotient for this run
+    pub fn flow_quotient(&self) -> FlowQuotient {
+        self.receipt_store.flow_quotient(100)
+    }
+
+    /// Get the receipt store
+    pub fn receipt_store(&self) -> &ReceiptStore {
+        &self.receipt_store
     }
 
     /// Record a cooling entry after step execution (GAP P1-4).

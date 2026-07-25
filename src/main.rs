@@ -65,6 +65,10 @@ enum StdoutMsg {
         state_root: String,
         lease_id: String,
         chain_id: String,
+        afq_execution_steps: u64,
+        afq_governance_steps: u64,
+        afq: f64,
+        afq_diagnosis: String,
     },
     #[serde(rename = "step_result")]
     StepResult {
@@ -237,6 +241,10 @@ fn main() {
                             state_root: pending_state_root.clone(),
                             lease_id: lease_id.clone(),
                             chain_id: chain_id.clone(),
+                            afq_execution_steps: result.fq.execute_count as u64,
+                            afq_governance_steps: result.fq.verify_count as u64,
+                            afq: result.fq.quotient,
+                            afq_diagnosis: result.fq.verdict.to_string(),
                         });
                     }
                     Err(e) => {

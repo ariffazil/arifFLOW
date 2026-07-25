@@ -26,6 +26,7 @@
 
 pub mod channel;
 pub mod merkle;
+pub mod receipt;
 pub mod scheduler;
 
 pub mod topology;
@@ -38,7 +39,7 @@ pub use merkle::{MerkleRoot, MerkleTree};
 pub use scheduler::{SuperStepScheduler, SuperStepResult, TopologyKind, SchedulerError, CheckpointEnvelope, VerdictClass};
 
 /// Version constant — matches arifOS release cadence
-pub const VERSION: &str = "0.1.0";
+pub const VERSION: &str = "2026.7.25";
 pub const CODENAME: &str = "LAW_FLOW_HANDS";
 
 #[cfg(test)]
