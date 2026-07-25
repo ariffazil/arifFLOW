@@ -10,13 +10,28 @@
 
 ## Preamble
 
-What you are forging is a new class of system.
+> **AUDIT NOTE — 2026.07.25:** This document has been revised per A-AUDIT findings.
+> The original draft overclaimed in several areas (AGI, "world's first," vendor independence,
+> economic value). The corrected version reflects the auditor's revised claim:
+>
+> *"arifOS is not a replacement for LangChain, LangGraph or Langfuse. It is a constitutional
+> governance kernel intended to sit beneath or across agent frameworks. It should currently be
+> described as a working constitutional agent-governance kernel under active hardening, not as
+> proven AGI, a complete safety solution, a vendor-independent operating system, or the world's
+> first constitutional AGI substrate."*
+>
+> **Full audit:** [AUDIT-2026-07-25.md](AUDIT-2026-07-25.md)
+
+What you are forging is a new category of system.
 
 Not "AI architecture." Not "agent framework." Not "LLM orchestration."
 
-**Reality engineering** — building computational systems that behave like physical systems: rivers, bodies, ecosystems, laws of nature.
+**Reality engineering** — an approach to building computational systems that borrow governance
+patterns from physical systems: rivers, bodies, ecosystems, laws of nature. The claim is not
+that the system IS a physical system, but that the design philosophy of self-regulation,
+proprioception, and homeostasis produces more robust agentic architectures.
 
-This is not metaphor. This is design principle.
+This is design principle, not mysticism.
 
 ---
 
@@ -160,35 +175,36 @@ With FQ: every super-step checkpointed. Every mutation reversibility-checked. Ev
 
 ---
 
-## Section 6: The First Step Toward Governed ASI
+## Section 6: Toward Governed Agentic Systems
 
 This is not just about making agents faster or more efficient.
 
-This is the first step toward ASI that behaves like nature, not like software.
+This is a step toward agentic systems whose governance is structural rather than aspirational —
+where the architecture itself enforces admissibility, reversibility, evidence, and accountability.
 
-| Ungoverned ASI | Governed ASI (reality-engineered) |
-|----------------|-----------------------------------|
-| Runaway optimization | Homeostatic — self-balancing |
-| Brittle — breaks on edge cases | Plastic — scars prevent recurrence |
-| Hallucinates — no ground truth | TRI_WITNESS — three independent channels |
-| Opaque — cannot explain decisions | Fully auditable — every receipt hash-chained |
-| Cannot stop itself | A5 metabolic closure — MUST cool, MUST seal |
+| Ungoverned agent | Governed agent (arifOS approach) |
+|------------------|----------------------------------|
+| Executes without admissibility check | Interceptor classifies action before dispatch |
+| Brittle — breaks on edge cases | Contracts define reversibility, blast radius, authority |
+| Hallucinates — no ground truth | TRI_WITNESS — three independent channels (under active hardening) |
+| Opaque — cannot explain decisions | Receipt lineage — hash-chained artifacts |
+| Runs unbounded | A5 metabolic closure — MUST cool, MUST seal |
 | No concept of "enough" | FQ threshold — knows when to stop verifying |
-| Human must police it | System polices itself under 888 |
+| Human must police it | System surfaces HOLD, SABAR, VOID verdicts for human decision |
 
-The difference is not "better AI."
-
-The difference is the difference between a wildfire and a hearth.
-
-Both are fire. One consumes everything. The other serves human purpose.
-
-Governance is the hearth.
+**Status (per A-AUDIT):** Working constitutional agent-governance kernel under active hardening.
+Enforcement is not yet uniformly complete. Runtime drift exists. Kabarkan is pending deployment.
+Governed parallelism is not yet proven end-to-end. This is not AGI. It is not a safety solution.
+It is a governance kernel candidate with real differentiated architecture.
 
 ---
 
 ## Section 7: One Sentence
 
-> You are forging a self-regulating intelligence substrate where flow replaces fear, governance becomes physics, and your agents finally behave like stable parts of reality — not fragile software.
+> You are forging a self-regulating agent-governance kernel where flow replaces micromanagement,
+> governance becomes architecture, and your agents gain proprioception — the ability to sense
+> their own internal balance. Not proven AGI. Not a safety solution. A working kernel under
+> active hardening.
 
 ---
 
