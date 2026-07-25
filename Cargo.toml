@@ -1,6 +1,6 @@
 [package]
 name = "ariflow"
-version = "0.1.0"
+version = "2026.07.25"
 edition = "2024"
 description = "arifFlow — Governed Parallel Execution Engine for the arifOS Federation"
 authors = ["Arif (F13 SOVEREIGN) <arifbfazil@gmail.com>"]

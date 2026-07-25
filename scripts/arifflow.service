@@ -1,0 +1,25 @@
+[Unit]
+Description=arifFlow — Governed Parallel Execution Engine
+Documentation=https://github.com/ariffazil/arifFlow
+After=network.target arifos.service
+Requires=arifos.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/ariflow/app
+ExecStart=/opt/ariflow/app/target/release/arifflow
+Restart=on-failure
+RestartSec=5
+Environment=RUST_LOG=info
+StandardOutput=journal
+StandardError=journal
+
+# Security
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
