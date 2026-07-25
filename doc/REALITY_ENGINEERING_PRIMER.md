@@ -221,6 +221,30 @@ It is a governance kernel candidate with real differentiated architecture.
 
 ---
 
-*Forged 2026.07.25. DITEMPA BUKAN DIBERI.*
-*This is reality engineering — building systems that behave like rivers, bodies, ecosystems, and physical laws.*
-*The first step toward governed ASI. Not runaway. Not brittle. Not hallucinating. Governed.*
+## Section 9: Audit Appendix (2026.07.25)
+
+This document was revised after a formal architectural audit. The original draft overclaimed
+in several areas. The corrected version reflects these audit findings:
+
+| Claim Area | Original | Revised | Verdict |
+|-----------|----------|---------|---------|
+| Category difference from Lang* | "Frameworks are tools; arifOS is law" | arifOS is a constitutional governance kernel, not a replacement for LangChain/LangGraph/Langfuse | SEAL |
+| Constitutional kernel | "Kernel" must mean mandatory control path | Working kernel under active hardening; enforcement not uniformly complete | PARTIAL SEAL |
+| LangGraph "no governance" | LangGraph has no governance | LangGraph HAS governance mechanisms (checkpointing, HITL, middleware); lacks only a FIXED constitution | CORRECTED |
+| Governed ASI / AGI | "The first step toward governed ASI" | Working agent-governance kernel; governance substrate ≠ intelligence substrate ≠ AGI | CORRECTED |
+| World's first | "World's first constitutional AGI substrate" | Removed. Prior art in policy-as-code, reference monitors, constitutional AI, capability security not yet surveyed | VOID |
+| Vendor independence | "You are no longer dependent on vendors" | Reduces dependence on vendor-specific governance semantics; does not eliminate infrastructure/model dependencies | CORRECTED |
+| Economic value | "Enormous economic value" | Potential option value is high; demonstrated economic value is unknown | CORRECTED |
+| Kabarkan production | Described as "constitutional nervous system" | Phase 1 code complete; pending deployment; governance-aware telemetry substrate, not proven | HOLD |
+
+**P0 Findings requiring code fixes (not just document revision):**
+1. Runtime drift must HALT execution (source ≠ built ≠ deployed currently allowed)
+2. Floor enforcement must evaluate predicates, not just list floors
+3. Tri-Witness defaults must be UNKNOWN, not favorable numbers (human=0.8, AI=0.88, earth=1.0)
+4. Middleware must fail closed, not fall back to no-op
+
+---
+
+*Forged 2026.07.25. Revised 2026.07.25 per A-AUDIT. DITEMPA BUKAN DIBERI.*
+*This is reality engineering — building governed agentic systems that self-regulate, self-monitor, and self-correct.*
+*A working constitutional governance kernel under active hardening. Not proven AGI. Real. Differentiated. Honest.*

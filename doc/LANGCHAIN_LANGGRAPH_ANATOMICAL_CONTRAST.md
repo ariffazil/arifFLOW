@@ -22,7 +22,9 @@ LangChain and LangGraph are not "competitors" to arifFlow. They are anatomically
 "Build context-aware reasoning applications." Chains of LLM calls with tool integration.
 
 ### What It Is
-Pure ECN (Executive Control Network) with zero interoception and zero proprioception.
+A chain execution framework with middleware support. Lacks fixed constitutional invariants — governance is opt-in, not structural. Has no built-in proprioception (self-sensing), interoception (internal monitoring), or plasticity (permanent learning from failure).
+
+**AUDIT NOTE:** LangChain supports middleware, guardrails, and human-in-the-loop approval. It has governance CAPABILITY — what it lacks is a fixed, mandatory constitution. The distinction is that arifOS imposes a specific constitutional policy model; LangChain provides mechanisms but does not impose a model.
 
 ### Anatomical Diagnosis
 
@@ -58,7 +60,9 @@ Pure ECN (Executive Control Network) with zero interoception and zero propriocep
 "Build stateful, multi-actor applications with LLMs." Graph-based state machines with cyclic execution.
 
 ### What It Is
-A central nervous system loop with no autonomic regulation. Simulates basic DMN ↔ ECN dynamics but forces ALL processing through a single cognitive bottleneck.
+A stateful graph runtime with checkpointing, human-in-the-loop approval, and durable execution. Supports governance mechanisms but does not impose a fixed constitution. The governance model is user-defined, not kernel-enforced.
+
+**AUDIT NOTE:** LangGraph supports checkpointed execution, durable pause/resume, human approval (approve/edit/reject), custom middleware, guardrails, parallel fan-out/fan-in, and persistent state. The real difference is: LangGraph supplies governance MECHANISMS without imposing a canonical constitution. arifOS defines a particular constitutional policy model and seeks to make it mandatory. Both have governance — only one has a fixed constitution.
 
 ### Anatomical Diagnosis
 
