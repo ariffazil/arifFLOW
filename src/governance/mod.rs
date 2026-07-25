@@ -7,11 +7,16 @@
 pub mod checkpoint;
 pub mod cooling;
 pub mod kabarkan;
+pub mod kabarkan_fq;
 pub mod tri_witness;
 pub mod vault999;
 
 pub use checkpoint::{CheckpointError, CheckpointManager, CheckpointState};
 pub use cooling::{Convergence, CoolingEntry, CoolingLedger, CoolingSummary, DriftSeverity};
 pub use kabarkan::KabarkanTracer;
+pub use kabarkan_fq::{
+    FqAlertEvent, FqAlertSeverity, FqCoolingCorrelationEvent, FqLaneEvent, FqSnapshotEvent,
+    FqTrend, KabarkanFqInstrument,
+};
 pub use tri_witness::{TriWitness, TriWitnessVerdict, WitnessChannel, WitnessMergeResult};
 pub use vault999::Vault999Sealer;

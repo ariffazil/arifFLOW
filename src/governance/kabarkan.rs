@@ -38,6 +38,45 @@ pub enum KabarkanEvent {
         afq: f64,
         diagnosis: String,
     },
+    /// FQ threshold breach alert — WARNING (< 1.0), CRITICAL (< 0.5), RECOVERED
+    FqAlert {
+        step: u64,
+        fq: f64,
+        verdict: String,
+        severity: String,
+        diagnosis: String,
+        /// Full FqAlertEvent as JSON payload
+        payload: serde_json::Value,
+    },
+    /// Periodic FQ snapshot with trend direction
+    FqSnapshot {
+        step: u64,
+        fq: f64,
+        verdict: String,
+        trend: String,
+        execute_count: usize,
+        verify_count: usize,
+        /// Full FqSnapshotEvent as JSON payload
+        payload: serde_json::Value,
+    },
+    /// Per-lane FQ breakdown
+    FqLaneSnapshot {
+        step: u64,
+        lane_id: u32,
+        topology_id: String,
+        fq: f64,
+        verdict: String,
+        /// Full FqLaneEvent as JSON payload
+        payload: serde_json::Value,
+    },
+    /// FQ × Cooling correlation analysis
+    FqCoolingCorrelation {
+        step: u64,
+        fq: f64,
+        correlation_signal: String,
+        /// Full FqCoolingCorrelationEvent as JSON payload
+        payload: serde_json::Value,
+    },
     CoolingReceipt {
         actor_id: String,
         lease_id: String,
