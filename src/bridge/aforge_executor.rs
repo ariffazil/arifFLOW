@@ -6,7 +6,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::ffi::c_char;
-use crate::merkle::MerkleRoot;
 
 /// Execution request sent to A-FORGE
 #[derive(Debug, Clone, Serialize, Deserialize)]

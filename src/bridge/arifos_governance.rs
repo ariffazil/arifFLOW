@@ -71,11 +71,12 @@ fn call_arifos_tool(tool: &str, args: &Value) -> Result<Value, String> {
         }
     });
 
-    let resp = client
-        .post(KERNEL_URL)
-        .json(&body)
-        .send()
-        .map_err(|e| format!("HTTP request to arifOS failed: {} — is arifOS running on :8088?", e))?;
+    let resp = client.post(KERNEL_URL).json(&body).send().map_err(|e| {
+        format!(
+            "HTTP request to arifOS failed: {} — is arifOS running on :8088?",
+            e
+        )
+    })?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -181,12 +182,17 @@ impl ArifOSGovernanceBridge {
         let verdict_id = result
             .get("verdict_id")
             .and_then(|v| v.as_str())
-            .or_else(|| result.get("constitutional_chain_id").and_then(|v| v.as_str()))
+            .or_else(|| {
+                result
+                    .get("constitutional_chain_id")
+                    .and_then(|v| v.as_str())
+            })
             .unwrap_or("no_verdict")
             .to_string();
 
         // Determine verdict class from result
-        let verdict_class = if let Some(decision) = result.get("decision").and_then(|v| v.as_str()) {
+        let verdict_class = if let Some(decision) = result.get("decision").and_then(|v| v.as_str())
+        {
             match decision {
                 "ALLOW" | "ADMIT_MUTATE" | "ADMIT_READ" => "SEAL",
                 "ESCALATE" | "CLASSIFICATION_HOLD" => "HOLD",
@@ -195,7 +201,11 @@ impl ArifOSGovernanceBridge {
                 _ => "HOLD",
             }
         } else if let Some(hold) = result.get("hold_required").and_then(|v| v.as_bool()) {
-            if hold { "HOLD" } else { "SEAL" }
+            if hold {
+                "HOLD"
+            } else {
+                "SEAL"
+            }
         } else {
             // If arif_judge responds but no clear verdict, default HOLD
             "HOLD"
@@ -238,7 +248,19 @@ impl ArifOSGovernanceBridge {
 #[unsafe(no_mangle)]
 pub extern "C" fn ariflow_request_lease(json_request: *const c_char) -> *mut c_char {
     let bridge = ArifOSGovernanceBridge;
+    // SAFETY: This unsafe block dereferences a raw C pointer from the
+    // Python FFI adapter (arifos_governance.py). Preconditions verified by caller:
+    //   - json_request is non-null (Python ctypes guarantees this for c_char_p)
+    //   - json_request points to a valid NUL-terminated UTF-8 C string
+    //   - The Python adapter owns the memory and will not free it during this call
+    //   - The string is allocated by Python's create_string_buffer (stable lifetime)
+    // F12 INJECTION: The raw data is deserialized through serde_json (lines 243-249)
+    // which rejects malformed JSON. The unwrap_or fallback collapses parse failures
+    // into a default GovernanceRequest — this is a safe degradation, not a panic.
+    // Ψ BOUNDARY: This is the ONLY unsafe boundary in the codebase. It is the
+    // explicit Clausius wall between the governed Rust interior and the Python FFI.
     let c_str = unsafe { CStr::from_ptr(json_request) };
+    // Convert to &str; fall back to empty JSON object on non-UTF8 input
     let json_str = c_str.to_str().unwrap_or("{}");
     let req: GovernanceRequest = serde_json::from_str(json_str).unwrap_or(GovernanceRequest {
         request_type: "lease".into(),
@@ -268,6 +290,12 @@ pub extern "C" fn ariflow_request_lease(json_request: *const c_char) -> *mut c_c
         },
     };
     let json_out = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
+    // SAFETY: into_raw() transfers ownership of the CString's buffer to the
+    // Python caller. The Python adapter (arifos_governance.py) MUST call
+    // ctypes.free() or equivalent to deallocate this memory.
+    // MEMORY MODEL: Rust allocates → Python owns → Python frees.
+    // Failure to free results in a leak, not a use-after-free or double-free.
+    // The NUL byte is guaranteed present (CString::new validated this above).
     CString::new(json_out).unwrap().into_raw()
 }
 

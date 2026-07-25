@@ -10,9 +10,8 @@
 
 use serde::{Deserialize, Serialize};
 use super::{NodeResult, TopologyError};
-use crate::channel::{Channel, ChannelId, ChannelMode};
+use crate::channel::Channel;
 use crate::merkle::{MerkleRoot, MerkleTree};
-use crate::scheduler::TopologyKind;
 
 /// Configuration for a fan-out run
 #[derive(Debug, Clone, Serialize, Deserialize)]

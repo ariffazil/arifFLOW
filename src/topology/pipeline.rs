@@ -6,9 +6,6 @@
 //                ↑────────── Review ────────↓
 
 use serde::{Deserialize, Serialize};
-use crate::channel::{Channel, ChannelId, ChannelMode};
-use crate::scheduler::TopologyKind;
-use super::TopologyError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineStage {

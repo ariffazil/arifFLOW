@@ -1,7 +1,6 @@
 // arifFlow governance/checkpoint.rs
 // Checkpoint Manager — Per-super-step state persistence with authority re-verification
 
-use crate::scheduler::VerdictClass;
 use crate::CheckpointEnvelope;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

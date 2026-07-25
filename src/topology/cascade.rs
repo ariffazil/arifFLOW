@@ -5,9 +5,6 @@
 //   Hermes ──▶ SubAgent A ──▶ SubAgent B ──▶ Synthesis ──▶ F3 Witness ──▶ SEAL
 
 use serde::{Deserialize, Serialize};
-use crate::channel::{Channel, ChannelId, ChannelMode};
-use crate::scheduler::TopologyKind;
-use super::TopologyError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CascadeStep {

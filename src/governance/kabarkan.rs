@@ -2,7 +2,6 @@
 // Kabarkan Tracing Hooks — Per-super-step observability events
 
 use crate::receipt::FlowQuotient;
-use crate::scheduler::TopologyKind;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

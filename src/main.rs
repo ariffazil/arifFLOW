@@ -24,7 +24,7 @@
 // DITEMPA BUKAN DIBERI — arifOS = law, arifFlow = flow, A-FORGE = hands
 
 use ariflow::channel::ChannelMode;
-use ariflow::receipt::{FlowQuotient, FlowReceipt, ReceiptStore};
+use ariflow::receipt::{FlowReceipt, ReceiptStore};
 use ariflow::scheduler::{FlowNode, SuperStepScheduler, TopologyKind, VerdictClass};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
