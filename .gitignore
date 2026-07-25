@@ -1,27 +1,67 @@
-# Rust build artifacts
+# ── Rust build artifacts ──
 target/
 
 # Cargo.lock — committed for binary applications (this is an engine, not a library)
 
-# IDE
+# ── IDE ──
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# OS
+# ── OS ──
 .DS_Store
 Thumbs.db
 
-# Environment
+# ── Environment / Secrets ──
 .env
 .env.local
+.env.*.local
+*.pem
+*.key
+.secrets/
 
-# Debug
+# ── Debug / Profiling ──
 core.*
 *.profraw
+*.profdata
+*.gcda
+*.gcno
 
-# Temp
+# ── Temp / Cache ──
 /tmp/
 *.tmp
+*.log
+*.cache
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# ── Agent tool caches ──
+.claude/
+.gemini/
+.opencode/
+.openclaw/
+.copilot/
+.kimi/
+.aider/
+.codex/
+
+# ── Sibling projects (NOT submodules — independent repos) ──
+arifOS/
+A-FORGE/
+AAA/
+GEOX/
+WEALTH/
+WELL/
+
+# ── Forge / Runtime artifacts ──
+forge_work/
+scratch/
+*.jsonl
+entropy-report.json
+
+# ── Backup (any pattern) ──
+*.bak*
+*.backup*
