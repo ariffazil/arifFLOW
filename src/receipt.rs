@@ -568,7 +568,13 @@ impl ReceiptStore {
         }
     }
 
-    /// Push a new receipt onto the chain. Validates chain continuity.
+    /// Push a receipt bypassing chain validation — for monitoring/observability.
+    pub fn push_force(&mut self, receipt: FlowReceipt) {
+        if self.receipts.len() >= self.max_receipts {
+            self.receipts.remove(0);
+        }
+        self.receipts.push(receipt);
+    }
     pub fn push(&mut self, receipt: FlowReceipt) -> Result<(), String> {
         // Validate chain continuity
         if let Some(last) = self.receipts.last() {

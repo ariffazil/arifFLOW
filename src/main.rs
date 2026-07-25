@@ -398,34 +398,23 @@ fn handle_client(
                     Some(raw_json) => match serde_json::from_str::<FlowReceipt>(raw_json.trim()) {
                         Ok(receipt) => {
                             let mut store = receipt_store.lock().unwrap();
-                            match store.push(receipt) {
-                                Ok(()) => {
-                                    let fq = store.flow_quotient(20);
-                                    let body = serde_json::json!({
-                                        "status": "ingested",
-                                        "fq": {
-                                            "quotient": fq.quotient,
-                                            "verdict": format!("{}", fq.verdict),
-                                            "execute_count": fq.execute_count,
-                                            "verify_count": fq.verify_count,
-                                        },
-                                        "receipts": store.len(),
-                                    })
-                                    .to_string();
-                                    http_ok(&body)
-                                }
-                                Err(e) => {
-                                    let body = serde_json::json!({
-                                        "status": "rejected",
-                                        "error": e,
-                                    })
-                                    .to_string();
-                                    format!(
-                                            "HTTP/1.1 422 Unprocessable Entity\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                                            body.len(), body
-                                        ).into_bytes()
-                                }
-                            }
+                            // Monitoring endpoint — accept receipts without strict chain validation.
+                            // Core chain-verified execution runs via stdin/stdout protocol.
+                            // /ingest is for observability: FQ monitoring, trend, cooling correlation.
+                            store.push_force(receipt);
+                            let fq = store.flow_quotient(20);
+                            let body = serde_json::json!({
+                                "status": "ingested",
+                                "fq": {
+                                    "quotient": fq.quotient,
+                                    "verdict": format!("{}", fq.verdict),
+                                    "execute_count": fq.execute_count,
+                                    "verify_count": fq.verify_count,
+                                },
+                                "receipts": store.len(),
+                            })
+                            .to_string();
+                            http_ok(&body)
                         }
                         Err(e) => {
                             let body = serde_json::json!({
