@@ -139,14 +139,82 @@ These are not P0 because arifFlow's **local invariants** (scheduling, F1 enforce
 
 ---
 
+## P1 Gaps Forged (July 25, 2026 — 07:26 UTC)
+
+Three P1 gaps closed in one forge session after P0 completion:
+
+### GAP P1-3: TRI_WITNESS Merge (F3)
+**Before:** Zero witness attestation. Fan-out merge was a flat BTreeMap with no consensus verification.
+
+**After:** Full Nash (1950) bargaining product:
+- `W3Score = ∛(h × ai × ext)` — geometric mean across three channels
+- `TriWitnessVerdict` — Consensus (≥0.75) · Weak (≥0.50) · Divergent (<0.50) · Incomplete (zero channel)
+- `WitnessMergeResult::merge()` — conservative MIN confidence per channel across all lanes
+- `SuperStepScheduler::attach_witnesses()` — fan-out lanes register per-lane attestations
+
+**Tests (8):** `test_w3_full_consensus` · `test_w3_zero_collapses` · `test_w3_weak_consensus` · `test_w3_divergent` · `test_w3_unknown_channel` · `test_merge_empty_fails` · `test_merge_min_confidence` · `test_divergent_requires_hold`
+
+**File:** `src/governance/tri_witness.rs` (209 lines)
+
+### GAP P1-4: Cooling Ledger (F11)
+**Before:** No plan-vs-reality drift tracking. Executions ran but governance had no signal about divergence.
+
+**After:** Append-only cooling ledger:
+- `CoolingEntry` — step number, plan description, reality delta, convergence verdict, drift severity, witness organ, governance floor
+- `CoolingLedger` — append-only store with divergence streak detection, alert threshold (default 3 consecutive diverging steps), summary statistics
+- `SuperStepScheduler` records a cooling entry after every `step()` — plan vs actual output count, auto-classified as Converging/Diverging
+
+**Tests (5):** `test_cooling_append_only` · `test_divergence_streak_alerts` · `test_streak_resets_on_convergence` · `test_cooling_summary` · `test_entry_with_floor_and_hypothesis`
+
+**File:** `src/governance/cooling.rs` (202 lines)
+
+### GAP P1-5: Topology Discipline (Pipeline/Cascade)
+**Before:** `TopologyKind` enum existed but `step()` executed all nodes identically regardless — Pipeline was just a label.
+
+**After:** `ExecutionMode` per topology:
+- **Parallel** (FanOut) — all nodes run, merge at barrier
+- **Sequential** (Pipeline) — nodes execute in order, each output feeds next input immediately
+- **ThresholdChain** (Cascade) — nodes activate only when input channel has data, cascading triggers
+
+Executed via `execute_by_topology()` method on scheduler. Cooling entries recorded per step with topology identity.
+
+**File:** `src/scheduler.rs` (lines 21-51, 374-491)
+
+---
+
+## Test Suite Evolution
+
+| Milestone | Tests | Delta |
+|-----------|-------|-------|
+| Original | 24 | — |
+| P0: Barrier + F1 | 31 | +7 |
+| **P1: TRI_WITNESS + Cooling + Topology** | **44** | **+13** |
+
+---
+
+## Remaining (Post-P1)
+
+3 gaps remain for P2/deployment phase:
+
+| Gap | Status | Blocking? |
+|-----|--------|-----------|
+| TS wrappers (A-FORGE integration) | Scaffolded — Python adapter spec exists, no TypeScript bridge | Deployment only |
+| FFI real bridges (arifOS/A-FORGE live) | Synthetic — blake3-based stubs | Deployment only |
+| Real Kabarkan writes (NATS/Postgres) | In-memory vector | Observability only |
+
+**The scheduler core is complete.** All constitutional invariants (F1, F3, F11, F13) enforced at every super-step. Bridges are deployment plumbing — they don't affect local correctness.
+
+---
+
 ## Seal
 
 ```
 888-HOLD LIFTED 2026-07-25T07:22:00Z
-Phase 3 complete: 31/31 tests pass
-Release binary: target/release/ariflow (sha256: c9ad52f47b0f)
-P0 gaps closed: Barrier Timeout + F1 Per-Lane Reversibility
-Next: Bridge integration when deployment surface is ready
+Phase 3 complete: 44/44 tests pass (24→31→44)
+Release binary: target/release/ariflow (sha256: 5d2cb29856d8)
+P0 gaps closed: Barrier Timeout + F1 Per-Lane Reversibility (31 tests)
+P1 gaps closed: TRI_WITNESS Merge + Cooling Ledger + Topology Discipline (44 tests)
+P2 remaining: TS wrappers · FFI bridges · Real Kabarkan writes
 Sovereign: Arif (F13)
 Forged by: OpenCode (333-AGI)
 

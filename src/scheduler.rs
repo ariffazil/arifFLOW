@@ -14,9 +14,7 @@
 
 use crate::channel::{Channel, ChannelId, ChannelMode, Message};
 use crate::governance::cooling::{Convergence, CoolingEntry, CoolingLedger, DriftSeverity};
-use crate::governance::tri_witness::{
-    TriWitness, TriWitnessVerdict, WitnessChannel, WitnessMergeResult,
-};
+use crate::governance::tri_witness::{TriWitness, WitnessMergeResult};
 use crate::merkle::{chain_roots, MerkleRoot, MerkleTree};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -371,35 +369,36 @@ impl SuperStepScheduler {
             channel_roots.insert(id.clone(), ch.merkle_root());
         }
 
-        // 2. Dispatch to nodes
-        let mut all_deltas = BTreeMap::new();
-        for node in nodes {
-            // Skip held nodes
-            if held_nodes.contains(&node.id().to_string()) {
-                continue;
-            }
+        // 2. GAP P1-5: Dispatch to nodes by topology discipline
+        let execution_mode = self.topology_kind.execution_mode();
+        let all_deltas = self.execute_by_topology(nodes, &held_nodes)?;
 
-            let mut inputs = BTreeMap::new();
-            for sub in node.subscriptions() {
-                let ch = self
-                    .channels
-                    .get(sub.0.as_str())
-                    .ok_or_else(|| SchedulerError::ChannelNotFound(sub.0.clone()))?;
-                if let Ok(msgs) = ch.read_all() {
-                    inputs.insert(sub.clone(), msgs.into_iter().cloned().collect());
-                }
-            }
-
-            let outputs = node.run(inputs, self.lease_id)?;
-
-            for (ch_id, data) in outputs {
-                if let Some(ch) = self.channels.get_mut(ch_id.0.as_str()) {
-                    if ch.write(data).is_ok() {
-                        all_deltas.entry(ch_id.0.clone()).or_insert_with(Vec::new);
-                    }
-                }
-            }
-        }
+        // GAP P1-4: Record cooling entry for this step
+        let step_plan = format!(
+            "{}.{} step {}: {} nodes",
+            self.topology_kind.as_str(),
+            execution_mode as i32,
+            step_number,
+            nodes.len()
+        );
+        let step_reality = format!("executed: {} deltas produced", all_deltas.len());
+        let convergence = if all_deltas.is_empty() && !nodes.is_empty() {
+            Convergence::Diverging
+        } else {
+            Convergence::Converging
+        };
+        self.cooling_ledger.record(CoolingEntry::new(
+            step_number,
+            step_plan,
+            step_reality,
+            convergence,
+            if convergence.is_diverging() {
+                DriftSeverity::Medium
+            } else {
+                DriftSeverity::Low
+            },
+            self.topology_kind.as_str(),
+        ));
 
         // 3. Compute state root
         let tree = MerkleTree::from_channels(&channel_roots)
