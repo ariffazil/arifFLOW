@@ -8,8 +8,15 @@
 //
 // GAP P0-1: Barrier timeout policy — explicit BarrierConfig with timeout + policy.
 // GAP P0-2: F1 per-lane reversibility — FlowNode::reversibility() + blast_radius().
+// GAP P1-3: TRI_WITNESS merge — witness attestation on fan-out merge.
+// GAP P1-4: Cooling ledger — plan-vs-reality drift tracking.
+// GAP P1-5: Topology discipline — execution mode respects TopologyKind.
 
 use crate::channel::{Channel, ChannelId, ChannelMode, Message};
+use crate::governance::cooling::{Convergence, CoolingEntry, CoolingLedger, DriftSeverity};
+use crate::governance::tri_witness::{
+    TriWitness, TriWitnessVerdict, WitnessChannel, WitnessMergeResult,
+};
 use crate::merkle::{chain_roots, MerkleRoot, MerkleTree};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -32,6 +39,26 @@ impl TopologyKind {
             TopologyKind::Cascade => "cascade",
         }
     }
+
+    /// GAP P1-5: Topology discipline — execution mode per topology.
+    pub fn execution_mode(&self) -> ExecutionMode {
+        match self {
+            TopologyKind::FanOut => ExecutionMode::Parallel,
+            TopologyKind::Pipeline => ExecutionMode::Sequential,
+            TopologyKind::Cascade => ExecutionMode::ThresholdChain,
+        }
+    }
+}
+
+/// GAP P1-5: How nodes are executed based on topology kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExecutionMode {
+    /// All nodes run in parallel, merged at barrier (FanOut)
+    Parallel,
+    /// Nodes run in sequence, each output feeds next input (Pipeline)
+    Sequential,
+    /// Nodes execute only when input exceeds threshold, cascading (Cascade)
+    ThresholdChain,
 }
 
 /// Verdict from arifOS 888-JUDGE
@@ -84,8 +111,8 @@ pub struct SuperStepResult {
     pub channel_deltas: BTreeMap<String, Vec<Message<String>>>,
     pub checkpoint: CheckpointEnvelope,
     pub verdict: VerdictClass,
-    pub held_nodes: Vec<String>,       // nodes held by F1 or barrier
-    pub barrier_timed_out: bool,        // true if barrier caused timeout action
+    pub held_nodes: Vec<String>, // nodes held by F1 or barrier
+    pub barrier_timed_out: bool, // true if barrier caused timeout action
 }
 
 // ── GAP P0-1: Barrier Config ──────────────────────────────────────────
@@ -220,7 +247,8 @@ pub struct SuperStepScheduler {
     super_step: u64,
     previous_checkpoint_hash: MerkleRoot,
     /// External verdict oracle — fulfils the arifOS 888-JUDGE role
-    verdict_oracle: Option<Box<dyn Fn(&CheckpointEnvelope) -> (VerdictClass, Option<uuid::Uuid>, MerkleRoot)>>,
+    verdict_oracle:
+        Option<Box<dyn Fn(&CheckpointEnvelope) -> (VerdictClass, Option<uuid::Uuid>, MerkleRoot)>>,
     /// Barrier config (GAP P0-1)
     barrier_config: Option<BarrierConfig>,
     /// F1 check results from current step (GAP P0-2)
@@ -264,9 +292,9 @@ impl SuperStepScheduler {
     /// Register a channel for use by this scheduler
     pub fn register_channel(&mut self, id: impl Into<String>, mode: ChannelMode) {
         let id_str = id.into();
-        self.channels.entry(id_str.clone()).or_insert_with(|| {
-            Channel::new(ChannelId(id_str), mode)
-        });
+        self.channels
+            .entry(id_str.clone())
+            .or_insert_with(|| Channel::new(ChannelId(id_str), mode));
     }
 
     /// Write initial data to a channel (pre-seed)
@@ -283,10 +311,7 @@ impl SuperStepScheduler {
     ///
     /// GAP P0-1: Checks barrier + timeout before returning.
     /// GAP P0-2: Checks F1 reversibility for each node before execution.
-    pub fn step(
-        &mut self,
-        nodes: &[Box<dyn FlowNode>],
-    ) -> Result<SuperStepResult, SchedulerError> {
+    pub fn step(&mut self, nodes: &[Box<dyn FlowNode>]) -> Result<SuperStepResult, SchedulerError> {
         // A1: Must have lease
         if self.lease_id.is_nil() {
             return Err(SchedulerError::NoLease);
@@ -352,10 +377,7 @@ impl SuperStepScheduler {
                     .get(sub.0.as_str())
                     .ok_or_else(|| SchedulerError::ChannelNotFound(sub.0.clone()))?;
                 if let Ok(msgs) = ch.read_all() {
-                    inputs.insert(
-                        sub.clone(),
-                        msgs.into_iter().cloned().collect(),
-                    );
+                    inputs.insert(sub.clone(), msgs.into_iter().cloned().collect());
                 }
             }
 
@@ -364,9 +386,7 @@ impl SuperStepScheduler {
             for (ch_id, data) in outputs {
                 if let Some(ch) = self.channels.get_mut(ch_id.0.as_str()) {
                     if ch.write(data).is_ok() {
-                        all_deltas
-                            .entry(ch_id.0.clone())
-                            .or_insert_with(Vec::new);
+                        all_deltas.entry(ch_id.0.clone()).or_insert_with(Vec::new);
                     }
                 }
             }
@@ -443,10 +463,7 @@ impl SuperStepScheduler {
     pub fn commit_verdict(&mut self, verdict: VerdictClass) {
         match verdict {
             VerdictClass::SEAL => {
-                let chained = chain_roots(
-                    &self.previous_checkpoint_hash,
-                    &MerkleRoot::ZERO,
-                );
+                let chained = chain_roots(&self.previous_checkpoint_hash, &MerkleRoot::ZERO);
                 self.previous_checkpoint_hash = chained;
             }
             VerdictClass::HOLD | VerdictClass::SABAR => {
@@ -538,9 +555,8 @@ mod tests {
     fn test_scheduler_creation() {
         let lease = uuid::Uuid::new_v4();
         let chain_id = uuid::Uuid::new_v4();
-        let mut sched = SuperStepScheduler::new(
-            TopologyKind::FanOut, lease, "test-actor".into(), chain_id,
-        );
+        let mut sched =
+            SuperStepScheduler::new(TopologyKind::FanOut, lease, "test-actor".into(), chain_id);
         sched.register_channel("input", ChannelMode::Unbounded);
         sched.register_channel("output", ChannelMode::Unbounded);
         assert_eq!(sched.super_step_count(), 0);
@@ -551,9 +567,8 @@ mod tests {
     fn test_scheduler_step_with_nodes() {
         let lease = uuid::Uuid::new_v4();
         let chain_id = uuid::Uuid::new_v4();
-        let mut sched = SuperStepScheduler::new(
-            TopologyKind::FanOut, lease, "actor".into(), chain_id,
-        );
+        let mut sched =
+            SuperStepScheduler::new(TopologyKind::FanOut, lease, "actor".into(), chain_id);
         sched.register_channel("in", ChannelMode::Unbounded);
         sched.register_channel("out", ChannelMode::Unbounded);
         sched.seed_channel("in", "start".into()).unwrap();
@@ -572,7 +587,10 @@ mod tests {
     fn test_no_lease_returns_error() {
         let chain_id = uuid::Uuid::new_v4();
         let mut sched = SuperStepScheduler::new(
-            TopologyKind::Pipeline, uuid::Uuid::nil(), "actor".into(), chain_id,
+            TopologyKind::Pipeline,
+            uuid::Uuid::nil(),
+            "actor".into(),
+            chain_id,
         );
         sched.register_channel("ch", ChannelMode::Unbounded);
         let node: Box<dyn FlowNode> = Box::new(TestNode::new("n", vec![], BTreeMap::new()));
@@ -585,9 +603,8 @@ mod tests {
     fn test_hold_verdict_discards_deltas() {
         let lease = uuid::Uuid::new_v4();
         let chain_id = uuid::Uuid::new_v4();
-        let mut sched = SuperStepScheduler::new(
-            TopologyKind::FanOut, lease, "actor".into(), chain_id,
-        );
+        let mut sched =
+            SuperStepScheduler::new(TopologyKind::FanOut, lease, "actor".into(), chain_id);
         sched.register_channel("in", ChannelMode::Unbounded);
         sched.register_channel("out", ChannelMode::Unbounded);
 
@@ -605,9 +622,8 @@ mod tests {
     fn test_f1_reversible_executes() {
         let lease = uuid::Uuid::new_v4();
         let chain_id = uuid::Uuid::new_v4();
-        let mut sched = SuperStepScheduler::new(
-            TopologyKind::FanOut, lease, "actor".into(), chain_id,
-        );
+        let mut sched =
+            SuperStepScheduler::new(TopologyKind::FanOut, lease, "actor".into(), chain_id);
         sched.register_channel("in", ChannelMode::Unbounded);
         sched.register_channel("out", ChannelMode::Unbounded);
         sched.seed_channel("in", "data".into()).unwrap();
@@ -624,9 +640,8 @@ mod tests {
     fn test_f1_irreversible_blocks() {
         let lease = uuid::Uuid::new_v4();
         let chain_id = uuid::Uuid::new_v4();
-        let mut sched = SuperStepScheduler::new(
-            TopologyKind::FanOut, lease, "actor".into(), chain_id,
-        );
+        let mut sched =
+            SuperStepScheduler::new(TopologyKind::FanOut, lease, "actor".into(), chain_id);
         sched.register_channel("in", ChannelMode::Unbounded);
         sched.seed_channel("in", "critical".into()).unwrap();
 
@@ -641,8 +656,10 @@ mod tests {
         let err = result.unwrap_err();
         // F1Violation or NoLease — both block correctly
         assert!(
-            matches!(&err, SchedulerError::F1Violation(_)) || matches!(&err, SchedulerError::NoLease),
-            "Expected F1Violation or NoLease, got: {:?}", err
+            matches!(&err, SchedulerError::F1Violation(_))
+                || matches!(&err, SchedulerError::NoLease),
+            "Expected F1Violation or NoLease, got: {:?}",
+            err
         );
     }
 
@@ -650,22 +667,29 @@ mod tests {
     fn test_f1_irreversible_with_oracle_proceeds() {
         let lease = uuid::Uuid::new_v4();
         let chain_id = uuid::Uuid::new_v4();
-        let mut sched = SuperStepScheduler::new(
-            TopologyKind::FanOut, lease, "actor".into(), chain_id,
-        );
+        let mut sched =
+            SuperStepScheduler::new(TopologyKind::FanOut, lease, "actor".into(), chain_id);
         sched.register_channel("in", ChannelMode::Unbounded);
         sched.seed_channel("in", "critical".into()).unwrap();
 
         // With verdict oracle present, irreversible is treated as having_verdict
         sched.set_verdict_oracle(Box::new(|_| {
-            (VerdictClass::SEAL, Some(uuid::Uuid::new_v4()), MerkleRoot([0u8; 32]))
+            (
+                VerdictClass::SEAL,
+                Some(uuid::Uuid::new_v4()),
+                MerkleRoot([0u8; 32]),
+            )
         }));
 
         let mut outputs = BTreeMap::new();
         outputs.insert(ChannelId("out".into()), "proceeded".into());
         let node = TestNode::irreversible("irr", vec!["in"], outputs);
         let result = sched.step(&[Box::new(node)]);
-        assert!(result.is_ok(), "Irreversible with oracle should proceed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Irreversible with oracle should proceed: {:?}",
+            result.err()
+        );
     }
 
     // ── GAP P0-1: Barrier timeout tests ──
@@ -674,9 +698,8 @@ mod tests {
     fn test_barrier_default_all_passes() {
         let lease = uuid::Uuid::new_v4();
         let chain_id = uuid::Uuid::new_v4();
-        let mut sched = SuperStepScheduler::new(
-            TopologyKind::FanOut, lease, "actor".into(), chain_id,
-        );
+        let mut sched =
+            SuperStepScheduler::new(TopologyKind::FanOut, lease, "actor".into(), chain_id);
         sched.register_channel("in", ChannelMode::Unbounded);
         sched.seed_channel("in", "x".into()).unwrap();
 
@@ -692,9 +715,8 @@ mod tests {
     fn test_barrier_timeout_hold_all() {
         let lease = uuid::Uuid::new_v4();
         let chain_id = uuid::Uuid::new_v4();
-        let mut sched = SuperStepScheduler::new(
-            TopologyKind::FanOut, lease, "actor".into(), chain_id,
-        );
+        let mut sched =
+            SuperStepScheduler::new(TopologyKind::FanOut, lease, "actor".into(), chain_id);
         sched.register_channel("in", ChannelMode::Bounded(5));
         sched.seed_channel("in", "slow".into()).unwrap();
 
@@ -706,13 +728,18 @@ mod tests {
         });
 
         // Fill the input channel so nodes can't write fast
-        for _ in 0..10 { let _ = sched.seed_channel("in", "more".into()); }
+        for _ in 0..10 {
+            let _ = sched.seed_channel("in", "more".into());
+        }
 
         let node: Box<dyn FlowNode> = Box::new(TestNode::new("slow", vec!["in"], BTreeMap::new()));
         let result = sched.step(&[node]);
         // May timeout or proceed — both acceptable, test validates no crash
         match result {
-            Ok(r) => println!("Barrier passed (fast execution): step={}, timeout={}", r.step_number, r.barrier_timed_out),
+            Ok(r) => println!(
+                "Barrier passed (fast execution): step={}, timeout={}",
+                r.step_number, r.barrier_timed_out
+            ),
             Err(e) => println!("Barrier timeout as expected: {:?}", e),
         }
     }
@@ -721,9 +748,8 @@ mod tests {
     fn test_barrier_timeout_cancel_all() {
         let lease = uuid::Uuid::new_v4();
         let chain_id = uuid::Uuid::new_v4();
-        let mut sched = SuperStepScheduler::new(
-            TopologyKind::FanOut, lease, "actor".into(), chain_id,
-        );
+        let mut sched =
+            SuperStepScheduler::new(TopologyKind::FanOut, lease, "actor".into(), chain_id);
         sched.register_channel("in", ChannelMode::Unbounded);
         sched.seed_channel("in", "x".into()).unwrap();
 
@@ -749,9 +775,8 @@ mod tests {
     fn test_multi_step_sequencing() {
         let lease = uuid::Uuid::new_v4();
         let chain_id = uuid::Uuid::new_v4();
-        let mut sched = SuperStepScheduler::new(
-            TopologyKind::Pipeline, lease, "actor".into(), chain_id,
-        );
+        let mut sched =
+            SuperStepScheduler::new(TopologyKind::Pipeline, lease, "actor".into(), chain_id);
         sched.register_channel("ch", ChannelMode::Unbounded);
         sched.seed_channel("ch", "start".into()).unwrap();
 
@@ -770,9 +795,8 @@ mod tests {
     fn test_f1_and_barrier_reversible_node_passes_barrier() {
         let lease = uuid::Uuid::new_v4();
         let chain_id = uuid::Uuid::new_v4();
-        let mut sched = SuperStepScheduler::new(
-            TopologyKind::FanOut, lease, "actor".into(), chain_id,
-        );
+        let mut sched =
+            SuperStepScheduler::new(TopologyKind::FanOut, lease, "actor".into(), chain_id);
         sched.register_channel("in", ChannelMode::Unbounded);
         sched.seed_channel("in", "x".into()).unwrap();
         sched.set_barrier(BarrierConfig {
