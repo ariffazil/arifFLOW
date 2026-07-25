@@ -24,7 +24,7 @@
 // DITEMPA BUKAN DIBERI — arifOS = law, arifFlow = flow, A-FORGE = hands
 
 use ariflow::channel::ChannelMode;
-use ariflow::receipt::{FlowQuotient, ReceiptStore};
+use ariflow::receipt::{FlowQuotient, FlowReceipt, ReceiptStore};
 use ariflow::scheduler::{FlowNode, SuperStepScheduler, TopologyKind, VerdictClass};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -112,7 +112,10 @@ impl FlowNode for NodeWrapper {
         &self.id
     }
     fn subscriptions(&self) -> Vec<ariflow::channel::ChannelId> {
-        self.subs.iter().map(|s| ariflow::channel::ChannelId(s.clone())).collect()
+        self.subs
+            .iter()
+            .map(|s| ariflow::channel::ChannelId(s.clone()))
+            .collect()
     }
     fn run(
         &self,
@@ -121,7 +124,10 @@ impl FlowNode for NodeWrapper {
     ) -> Result<BTreeMap<ariflow::channel::ChannelId, String>, ariflow::scheduler::NodeError> {
         let mut out = BTreeMap::new();
         for o in &self.outputs {
-            out.insert(ariflow::channel::ChannelId(o.clone()), format!("result_{}", self.id));
+            out.insert(
+                ariflow::channel::ChannelId(o.clone()),
+                format!("result_{}", self.id),
+            );
         }
         Ok(out)
     }
@@ -356,13 +362,18 @@ fn http_ok(body: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+/// Extract JSON body from HTTP request (after \r\n\r\n)
+fn extract_body(request: &str) -> Option<&str> {
+    request.split("\r\n\r\n").nth(1)
+}
+
 /// Handle a single HTTP connection on the daemon port
 fn handle_client(
     mut stream: TcpStream,
     start_time: Instant,
     receipt_store: &Arc<Mutex<ReceiptStore>>,
 ) {
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; 16384]; // larger buffer for POST bodies
     match stream.read(&mut buf) {
         Ok(n) if n > 0 => {
             let request = String::from_utf8_lossy(&buf[..n]);
@@ -382,18 +393,72 @@ fn handle_client(
                 })
                 .to_string();
                 http_ok(&body)
+            } else if request.starts_with("POST /ingest") {
+                match extract_body(&request) {
+                    Some(raw_json) => match serde_json::from_str::<FlowReceipt>(raw_json.trim()) {
+                        Ok(receipt) => {
+                            let mut store = receipt_store.lock().unwrap();
+                            match store.push(receipt) {
+                                Ok(()) => {
+                                    let fq = store.flow_quotient(20);
+                                    let body = serde_json::json!({
+                                        "status": "ingested",
+                                        "fq": {
+                                            "quotient": fq.quotient,
+                                            "verdict": format!("{}", fq.verdict),
+                                            "execute_count": fq.execute_count,
+                                            "verify_count": fq.verify_count,
+                                        },
+                                        "receipts": store.len(),
+                                    })
+                                    .to_string();
+                                    http_ok(&body)
+                                }
+                                Err(e) => {
+                                    let body = serde_json::json!({
+                                        "status": "rejected",
+                                        "error": e,
+                                    })
+                                    .to_string();
+                                    format!(
+                                            "HTTP/1.1 422 Unprocessable Entity\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                            body.len(), body
+                                        ).into_bytes()
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let body = serde_json::json!({
+                                "status": "invalid",
+                                "error": format!("{}", e),
+                            })
+                            .to_string();
+                            format!(
+                                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                    body.len(), body
+                                ).into_bytes()
+                        }
+                    },
+                    None => {
+                        let body = r#"{"status":"error","message":"Empty body"}"#;
+                        format!(
+                            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(), body
+                        ).into_bytes()
+                    }
+                }
             } else if request.starts_with("POST /flow") {
                 let body = serde_json::json!({
                     "status": "ack",
-                    "message": "Flow command received. Use A-FORGE adapter for execution.",
-                    "mode": "daemon"
+                    "message": "Flow command received. Use POST /ingest for receipt ingestion.",
+                    "endpoints": ["GET /health", "POST /ingest", "POST /flow"]
                 })
                 .to_string();
                 http_ok(&body)
             } else {
                 let body = serde_json::json!({
                     "status": "error",
-                    "message": "Not found. Use GET /health or POST /flow"
+                    "message": "Not found. Use GET /health, POST /ingest, or POST /flow"
                 })
                 .to_string();
                 format!(
