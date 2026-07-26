@@ -1,5 +1,5 @@
 [package]
-name = "ariflow"
+name = "arifflow"
 version = "2026.7.25"
 edition = "2024"
 description = "arifFlow — Governed Parallel Execution Engine for the arifOS Federation"
