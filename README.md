@@ -1,44 +1,64 @@
-# arifFlow — FLOW Layer
+# arifFlow — METABOLISM & FLOW Layer
 
-> **Governed Parallel Execution Engine for the arifOS Federation**
+> **Governed Parallel Execution & Attention Metabolism Engine for the arifOS Federation**
 >
 > DITEMPA BUKAN DIBERI — Forged, Not Given.
 
----
-
-## Trinity
-
-```
-arifOS       → LAW      → Python     → constitution, judge, 888
-arifFlow     → FLOW     → Rust       → orchestration, parallelism, Merkle
-A‑FORGE      → HANDS    → TypeScript → execution, MCP, deploy, forge
-```
-
-arifFlow sits **between** law and hands. It is the engine that drives governed parallel execution — BSP scheduler, channel-based topology orchestration, Merkle receipt anchoring, and VAULT999 envelope sealing.
+**SOT:** 2026-07-26 | **Version:** `v2026.07.26` | **License:** AGPL-3.0
 
 ---
 
-## Architecture
+## The 5-Organ Federation Substrate
 
-| Layer | Language | Role | Port |
-|-------|----------|------|------|
-| **arifOS** | Python | Constitutional judge, F1–F13, cc_id issuance | 8088 |
-| **arifFlow** | Rust | BSP scheduler, topology executor, Merkle hash chain, cooling queue | (Unix socket / HTTP bridge) |
-| **A‑FORGE** | TypeScript | Execution forge, MCP tools, orchestrators | 7071 |
+| Organ | Role | Substrate | Key Function |
+|---|---|---|---|
+| **arifOS** | **LAW** | Python (`:8088`) | Constitutional judge, F1–F13, 888 verdicts |
+| **AAA** | **MIND** | TypeScript (`:3001`) | Cockpit, A2A mesh, session routing |
+| **arifFlow** | **METABOLISM** | Rust (Native Daemon) | Attention Metabolism (U = E × M × D), BSP scheduler, Merkle receipts |
+| **A-FORGE** | **HANDS** | TypeScript (`:7071`) | Execution forge, MCP tools, deployments |
+| **VAULT999** | **MEMORY** | Immutable Ledger | Merkle envelope sealing & audit persistence |
 
-### Topologies
+arifFlow sits between mind and hands. It is the engine that drives governed parallel execution and **Attention Metabolism** — ensuring truth is not just delivered, but *metabolized, ordered, and decoded* without cognitive overexposure.
 
-- **Fan-out** — N workers in parallel, reduce at barrier
-- **Pipeline** — Sequential stage-by-stage with channel pass-through
-- **Cascade** — Tree fan-out with conditional pruning
+---
 
-### 5 Invariants (A1–A5)
+## The 13 Constitutional Axioms (A1–A13)
 
-1. **A1** — Per-lane reversibility (F1-compliant)
-2. **A2** — Barrier timeout < configurable max
-3. **A3** — Crash recovery: kill-9 → state restore
-4. **A4** — Merkle anchor every receipt
-5. **A5** — No cross-lane mutation outside barriers
+Every agent booting in the federation loads `EUREKA_PLAYBOOK v1.1` and executes under these 13 axioms:
+
+### Execution & Topology (A1–A10)
+
+| Axiom | Rule |
+|-------|------|
+| **A1** | Per-lane reversibility (F1-compliant) |
+| **A2** | Barrier timeout < configurable max |
+| **A3** | Crash recovery: kill-9 → state restore |
+| **A4** | Merkle anchor every receipt |
+| **A5** | No cross-lane mutation outside barriers |
+| **A6–A10** | Governed Fan-out, Pipeline, Cascade topologies |
+
+### Attention Metabolism & Decoding (A11–A13)
+
+| Axiom | Rule |
+|-------|------|
+| **A11** | **Attention Metabolism (EMD):** U = E × M × D. Filters entropy before rendering. |
+| **A12** | **Attention Ordering:** Strict priority ordering — "what should appear now?" not "where should this go?" |
+| **A13** | **Decoder Architecture:** One runtime, multiple decoders. Adapts output to target observer. |
+
+---
+
+## Hard Metabolic Anti-Patterns
+
+1. ❌ **Surfacing all truths** — Overexposure = Failure. Raw un-metabolized data breaks F4 (Clarity).
+2. ❌ **Treating arifFLOW as transport** — The metabolic spine is an active attention governor, not a passive pipe.
+
+---
+
+## Topologies Supported
+
+- **Fan-out:** N workers in parallel with barrier reduction
+- **Pipeline:** Sequential stage-by-stage with channel pass-through
+- **Cascade:** Tree fan-out with conditional branch pruning
 
 ---
 
@@ -51,7 +71,6 @@ cargo test
 ```
 
 ### Prerequisites
-
 - Rust 2024 edition (1.85+)
 - Tokio runtime
 
@@ -61,8 +80,8 @@ cargo test
 
 arifFlow is a **sovereign organ** — called by other organs via adapter:
 
-- `/root/A-FORGE/domain/orchestration/arifFlow_adapter.py`
-- `POST /bridge/execute` — submit a topology
+- **Adapter:** `/root/A-FORGE/domain/orchestration/arifFlow_adapter.py`
+- `POST /bridge/execute` — submit execution topology
 - `GET /bridge/status/:id` — poll execution state
 - `POST /bridge/cooling` — cooling queue enqueue
 
@@ -70,22 +89,19 @@ Every organ (GEOX, WEALTH, WELL, AAA, Hermes) may call arifFlow directly through
 
 ---
 
-## Versioning
+## Versioning & Release Cycle
 
-Date-stamped: `vYYYY.MM.DD` (Iron Rule — never semver).
+**Iron Rule:** Date-stamped `vYYYY.MM.DD` (never semver).
+
+```bash
+cargo build --release
+cargo test
+cargo test                    # 44/44 tests
+# Bump Cargo.toml version → vYYYY.MM.DD
+git tag vYYYY.MM.DD && git push --tags
+systemctl restart arifflow    # on deploy
+```
 
 ---
 
-## Release Cycle
-
-1. `cargo build --release`
-2. `cargo test`
-3. Bump Cargo.toml version → `vYYYY.MM.DD`
-4. `git tag vYYYY.MM.DD && git push --tags`
-5. `systemctl restart arifflow` (on deploy)
-
----
-
-## License
-
-AGPL-3.0 — arifOS Federation standard. See `LICENSE`.
+*AGPL-3.0 License · arifOS Federation Standard · Sovereign: Arif Fazil*
