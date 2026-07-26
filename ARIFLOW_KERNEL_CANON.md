@@ -38,13 +38,13 @@ These are the constitutional laws of movement. They define what arifFLOW **is pe
 
 | ID | Name | Rule |
 |----|------|------|
-| **F0** | Flow Serves | arifFLOW transmits governed intelligence. It does not originate intent. Intent flows from PLANE 0 (Human) through PLANE 1 (Law). |
-| **F1** | Flow Is Reversible | Every scheduled unit must have a defined rollback path. No irreversible mutation without explicit SEAL from arifOS. |
-| **F2** | Flow Is Verifiable | Every state transition produces a Merkle-anchored receipt. Every super-step checkpoint is hash-chained. |
-| **F3** | Flow Is Plane-Isolated | State crosses plane boundaries only via signed, verifiable envelopes. Intelligence plane and execution plane never share raw memory. |
-| **F4** | Flow Is Observable | FQ, drift, cooling — everything measurable must be measured. No dark execution. Kabarkan receives every span. |
-| **F5** | Flow Has Metabolic Closure | Every run ends: ΔS ≤ 0, cooling receipt emitted, leases closed, no orphaned channels. |
-| **F6** | Flow Observes, Never Interprets | arifFLOW may measure FQ, detect drift, emit cooling receipts, and report divergence. arifFLOW may not decide what drift means. Interpretation belongs to ATLAS333 (PLANE 2) and arifOS (PLANE 1). |
+| **F0** | Flow transmits, never owns. | arifFLOW transmits governed intelligence. It does not originate intent and does not claim ownership of what it routes. |
+| **F1** | Flow schedules, never authorizes. | arifFLOW determines execution order. Authorization comes from arifOS (PLANE 1). Scheduling ≠ permission. |
+| **F2** | Flow checkpoints, never judges. | arifFLOW records Merkle-anchored state at every super-step. Verdict grammar (SEAL/HOLD/SABAR/VOID) belongs to arifOS. |
+| **F3** | Flow observes, never interprets. | arifFLOW measures FQ, detects drift, emits cooling receipts, and reports divergence. What drift means belongs to ATLAS333/arifOS. |
+| **F4** | Flow routes execution, never becomes execution authority. | arifFLOW dispatches lanes to A-FORGE. A-FORGE owns the execution decision within its governed scope. |
+| **F5** | Flow writes receipts, never owns memory. | arifFLOW appends checkpoint receipts to VAULT999. VAULT999 sovereignty belongs to ARIFFAZIL/arifOS. |
+| **F6** | Flow connects organs, never collapses organs. | arifFLOW schedules GEOX, WEALTH, WELL, HERMES. It does not merge them, does not own them, does not understand their domain realities. |
 
 **F6 is the boundary that prevents the nervous system from becoming a mind.**
 
