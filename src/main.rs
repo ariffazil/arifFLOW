@@ -23,9 +23,9 @@
 //
 // DITEMPA BUKAN DIBERI — arifOS = law, arifFlow = flow, A-FORGE = hands
 
-use ariflow::channel::ChannelMode;
-use ariflow::receipt::{FlowReceipt, ReceiptStore};
-use ariflow::scheduler::{FlowNode, SuperStepScheduler, TopologyKind, VerdictClass};
+use arifflow::channel::ChannelMode;
+use arifflow::receipt::{FlowReceipt, ReceiptStore};
+use arifflow::scheduler::{FlowNode, SuperStepScheduler, TopologyKind, VerdictClass};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Read, Write};
@@ -111,21 +111,21 @@ impl FlowNode for NodeWrapper {
     fn id(&self) -> &str {
         &self.id
     }
-    fn subscriptions(&self) -> Vec<ariflow::channel::ChannelId> {
+    fn subscriptions(&self) -> Vec<arifflow::channel::ChannelId> {
         self.subs
             .iter()
-            .map(|s| ariflow::channel::ChannelId(s.clone()))
+            .map(|s| arifflow::channel::ChannelId(s.clone()))
             .collect()
     }
     fn run(
         &self,
-        _inputs: BTreeMap<ariflow::channel::ChannelId, Vec<ariflow::channel::Message<String>>>,
+        _inputs: BTreeMap<arifflow::channel::ChannelId, Vec<arifflow::channel::Message<String>>>,
         _lease_id: uuid::Uuid,
-    ) -> Result<BTreeMap<ariflow::channel::ChannelId, String>, ariflow::scheduler::NodeError> {
+    ) -> Result<BTreeMap<arifflow::channel::ChannelId, String>, arifflow::scheduler::NodeError> {
         let mut out = BTreeMap::new();
         for o in &self.outputs {
             out.insert(
-                ariflow::channel::ChannelId(o.clone()),
+                arifflow::channel::ChannelId(o.clone()),
                 format!("result_{}", self.id),
             );
         }
