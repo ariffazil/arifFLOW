@@ -31,6 +31,14 @@ function: |
   Nothing moves without FLOW. FLOW does not create law. FLOW does not own organs.
   FLOW transmits governed intelligence.
 
+invariants:
+  A1 — Constitutional-First: No parallel unit executes without lease + 888-JUDGE
+  A2 — Plane-Isolated: State crosses planes only via signed, verifiable envelopes
+  A3 — Checkpoint-with-Verdict: Every super-step logs Merkle root + verdict
+  A4 — Verifiable-Reduction: Merge functions are deterministic + TRI_WITNESS auditable
+  A5 — Metabolic-Closure: Every run ends with cooling receipt, leases closed, no orphans
+  A6 — Flow Observes, Never Interprets: arifFLOW may measure FQ, detect drift, emit cooling receipts, and report divergence. arifFLOW may not decide what drift means. Interpretation belongs to ATLAS333 / arifOS.
+
 upstream:
   - ariffazil/arifos       # L0 — constitutional kernel (verdict authority)
   - ariffazil/ariffazil    # L0 — human sovereign
