@@ -1,34 +1,20 @@
 /**
  * arifFLOW Client — TypeScript bridge for AAA / A-FORGE federation organs.
  *
+ * Matches the Rust FlowReceipt struct EXACTLY for POST /ingest compatibility.
+ *
  * Usage:
  *   import { ArifFlowClient, emitReceipt } from './arifflow-client.js';
- *
  *   const client = new ArifFlowClient('http://127.0.0.1:7073');
- *   const result = await client.ingest({
- *     receipt_id: crypto.randomUUID(),
- *     step_type: 'Execute',
- *     organ: 'A-FORGE',
- *     actor_id: 'forge',
- *     session_id: 'sess_abc',
- *     summary: 'Deployed authentication fix',
- *     epistemic: 'OBS',
- *     cost_ns: 2_500_000,
- *   });
+ *   await emitReceipt({ actor_id: 'forge', session_id: 'sess_abc', summary: '...' });
  *
  * DITEMPA BUKAN DIBERI — receipts are evidence, not decoration.
  */
 
-// ── Enums ────────────────────────────────────────────────────────────────
+// ── Enums (match Rust receipt.rs exactly) ─────────────────────────────────
 
 export type StepType =
-  | 'Execute'
-  | 'Verify'
-  | 'Cool'
-  | 'Seal'
-  | 'Barrier'
-  | 'Merge'
-  | 'Route';
+  | 'Execute' | 'Verify' | 'Cool' | 'Seal' | 'Barrier' | 'Merge' | 'Route';
 
 export type EpistemicLabel = 'OBS' | 'DER' | 'INT' | 'SPEC' | 'SEAL';
 
@@ -44,26 +30,38 @@ export interface TriWitnessVotes {
   earth: number;
 }
 
-export interface FlowReceiptEnvelope {
+/**
+ * Rust serde enum variant names (PascalCase — NOT display strings).
+ * EpistemicLabel: "Observation"|"Derivation"|"Interpretation"|"Specification"|"Seal"
+ * FloorVerdict:   "Pass"|"Caution"|"Hold"|"Void"
+ * CoolingDecision:"None"|"Hold"|"Clamp"|"Bypass"
+ */
+export type RustStepType = 'Execute' | 'Verify' | 'Cool' | 'Seal' | 'Barrier' | 'Merge' | 'Route';
+export type RustEpistemicLabel = 'Observation' | 'Derivation' | 'Interpretation' | 'Specification' | 'Seal';
+export type RustFloorVerdict = 'Pass' | 'Caution' | 'Hold' | 'Void';
+export type RustCoolingDecision = 'None' | 'Hold' | 'Clamp' | 'Bypass';
+
+/** EXACT match for Rust FlowReceipt struct fields */
+export interface FlowReceiptIngest {
   receipt_id: string;
-  step_type: StepType;
-  step_index: number;
+  previous_receipt_hash: string | null;
+  created_at: string;
   actor_id: string;
   session_id: string;
-  organ: string;
-  epistemic: EpistemicLabel;
-  floor_verdict: FloorVerdict;
-  cooling: CoolingDecision;
-  tri_witness?: TriWitnessVotes;
+  session_token: string | null;
+  step_type: RustStepType;
+  topology_id: string | null;
+  lane_id: number | null;
+  step_number: number;
   cost_ns: number;
-  cost_type: string;
-  summary: string;
-  details: Record<string, unknown>;
-  parent_receipt_id?: string | null;
-  chain_id?: string | null;
-  lease_id?: string | null;
-  timestamp_iso: string;
-  sha256: string;
+  preceding_verify_cost_ns: number | null;
+  epistemic_label: RustEpistemicLabel;
+  floor_verdict: RustFloorVerdict;
+  cooling_decision: RustCoolingDecision;
+  tri_witness_votes: TriWitnessVotes | null;
+  merkle_root: string | null;
+  merkle_inclusion_proof: string | null;
+  payload: Record<string, unknown> | null;
 }
 
 export interface IngestResponse {
@@ -75,6 +73,24 @@ export interface IngestResponse {
     verify_count: number;
   };
   receipts: number;
+}
+
+export interface EmitReceiptParams {
+  step_type?: StepType;
+  organ?: string;
+  actor_id: string;
+  session_id: string;
+  summary: string;
+  epistemic_label?: EpistemicLabel;
+  floor_verdict?: FloorVerdict;
+  cooling_decision?: CoolingDecision;
+  cost_ns?: number;
+  preceding_verify_cost_ns?: number;
+  parent_receipt_id?: string;
+  chain_id?: string;
+  lease_id?: string;
+  details?: Record<string, unknown>;
+  tri_witness_votes?: TriWitnessVotes;
 }
 
 export interface HealthResponse {
@@ -126,7 +142,6 @@ export class ArifFlowClient {
     this.timeout = timeout;
   }
 
-  /** GET /health — returns FQ, receipt count, uptime */
   async health(): Promise<HealthResponse> {
     const res = await fetch(`${this.baseUrl}/health`, {
       signal: AbortSignal.timeout(this.timeout),
@@ -135,10 +150,8 @@ export class ArifFlowClient {
     return res.json();
   }
 
-  /** POST /ingest — submit a receipt to arifFLOW */
-  async ingest(
-    receipt: FlowReceiptEnvelope | Partial<FlowReceiptEnvelope>,
-  ): Promise<IngestResponse> {
+  /** POST /ingest — submit a Rust FlowReceipt-compatible JSON */
+  async ingest(receipt: FlowReceiptIngest): Promise<IngestResponse> {
     const res = await fetch(`${this.baseUrl}/ingest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -152,117 +165,71 @@ export class ArifFlowClient {
     return res.json();
   }
 
-  /** Get current Flow Quotient */
   async fq(): Promise<HealthResponse['fq']> {
     const h = await this.health();
     return h.fq;
   }
 
-  /** Check if arifFLOW is reachable */
   async isAlive(): Promise<boolean> {
-    try {
-      await this.health();
-      return true;
-    } catch {
-      return false;
-    }
+    try { await this.health(); return true; } catch { return false; }
   }
 }
 
-// ── Convenience Functions ────────────────────────────────────────────────
-
-// Module-level singleton
+// Singleton
 let _client: ArifFlowClient | null = null;
-
 export function getClient(baseUrl?: string): ArifFlowClient {
-  if (!_client) {
-    _client = new ArifFlowClient(baseUrl);
-  }
+  if (!_client) _client = new ArifFlowClient(baseUrl);
   return _client;
 }
 
 /**
- * Emit a single receipt to arifFLOW.
- *
- * This is the ONE function every organ should call instead of generating
- * receipts independently. After P1, all 32 receipt sources converge here.
+ * Emit a receipt to arifFLOW. Matches Rust FlowReceipt struct exactly.
+ * This is the ONE function every organ calls after P1.
  */
+// ── Enum mapping (Python/TS → Rust serde variant names) ──────────────────
+
+const EPISTEMIC_TO_RUST: Record<string, RustEpistemicLabel> = {
+  OBS: 'Observation', DER: 'Derivation', INT: 'Interpretation',
+  SPEC: 'Specification', SEAL: 'Seal',
+};
+const FLOOR_TO_RUST: Record<string, RustFloorVerdict> = {
+  PASS: 'Pass', CAUTION: 'Caution', HOLD: 'Hold', VOID: 'Void',
+};
+const COOLING_TO_RUST: Record<string, RustCoolingDecision> = {
+  NONE: 'None', HOLD: 'Hold', CLAMP: 'Clamp', BYPASS: 'Bypass',
+};
+
 export async function emitReceipt(
   params: EmitReceiptParams,
   client?: ArifFlowClient,
 ): Promise<IngestResponse> {
   const c = client || getClient();
   const now = new Date().toISOString();
-  const receiptId = crypto.randomUUID();
 
-  const envelope: FlowReceiptEnvelope = {
-    receipt_id: receiptId,
-    step_type: params.step_type || 'Execute',
-    step_index: 0,
+  const payload: Record<string, unknown> = {
+    organ: params.organ || 'A-FORGE', summary: params.summary,
+  };
+  if (params.details) payload.details = params.details;
+  if (params.chain_id) payload.chain_id = params.chain_id;
+  if (params.lease_id) payload.lease_id = params.lease_id;
+
+  const ingest: FlowReceiptIngest = {
+    receipt_id: crypto.randomUUID(),
+    previous_receipt_hash: params.parent_receipt_id || null,
+    created_at: now,
     actor_id: params.actor_id,
     session_id: params.session_id,
-    organ: params.organ || 'A-FORGE',
-    epistemic: params.epistemic || 'OBS',
-    floor_verdict: params.floor_verdict || 'PASS',
-    cooling: params.cooling || 'NONE',
-    tri_witness: params.tri_witness || DEFAULT_TRI_WITNESS,
+    session_token: null,
+    step_type: (params.step_type || 'Execute') as RustStepType,
+    topology_id: null, lane_id: null, step_number: 0,
     cost_ns: params.cost_ns || 0,
-    cost_type: params.cost_type || 'compute',
-    summary: params.summary,
-    details: params.details || {},
-    parent_receipt_id: params.parent_receipt_id || null,
-    chain_id: params.chain_id || null,
-    lease_id: params.lease_id || null,
-    timestamp_iso: now,
-    sha256: '', // computed server-side
+    preceding_verify_cost_ns: params.preceding_verify_cost_ns || null,
+    epistemic_label: EPISTEMIC_TO_RUST[params.epistemic_label || 'OBS'] || 'Observation',
+    floor_verdict: FLOOR_TO_RUST[params.floor_verdict || 'PASS'] || 'Pass',
+    cooling_decision: COOLING_TO_RUST[params.cooling_decision || 'NONE'] || 'None',
+    tri_witness_votes: params.tri_witness_votes || DEFAULT_TRI_WITNESS,
+    merkle_root: null, merkle_inclusion_proof: null,
+    payload,
   };
-
-  // Quick client-side SHA-256 for traceability
-  const hashContent = JSON.stringify({
-    receipt_id: envelope.receipt_id,
-    step_type: envelope.step_type,
-    actor_id: envelope.actor_id,
-    session_id: envelope.session_id,
-    organ: envelope.organ,
-    summary: envelope.summary,
-    cost_ns: envelope.cost_ns,
-    parent_receipt_id: envelope.parent_receipt_id || '',
-    timestamp_iso: envelope.timestamp_iso,
-  });
-  const hashBuffer = await crypto.subtle.digest(
-    'SHA-256',
-    new TextEncoder().encode(hashContent),
-  );
-  envelope.sha256 = Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-
-  return c.ingest(envelope);
-}
-
-// Legacy-compatible factory from AAA's emitReceipt() signature
-export function createReceipt(params: EmitReceiptParams): FlowReceiptEnvelope {
-  const receiptId = crypto.randomUUID();
-  const now = new Date().toISOString();
-  return {
-    receipt_id: receiptId,
-    step_type: params.step_type || 'Execute',
-    step_index: 0,
-    actor_id: params.actor_id,
-    session_id: params.session_id,
-    organ: params.organ || 'AAA',
-    epistemic: params.epistemic || 'OBS',
-    floor_verdict: params.floor_verdict || 'PASS',
-    cooling: params.cooling || 'NONE',
-    tri_witness: params.tri_witness || DEFAULT_TRI_WITNESS,
-    cost_ns: params.cost_ns || 0,
-    cost_type: params.cost_type || 'compute',
-    summary: params.summary,
-    details: params.details || {},
-    parent_receipt_id: params.parent_receipt_id || null,
-    chain_id: params.chain_id || null,
-    lease_id: params.lease_id || null,
-    timestamp_iso: now,
-    sha256: '',
-  };
+  return c.ingest(ingest);
 }

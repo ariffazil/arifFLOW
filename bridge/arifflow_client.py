@@ -127,30 +127,77 @@ class FlowReceiptEnvelope:
         return self.sha256
 
     def to_ingest_dict(self) -> dict[str, Any]:
-        """Convert to the format arifFLOW POST /ingest expects."""
+        """Convert to the EXACT format arifFLOW POST /ingest expects.
+
+        CRITICAL: Rust serde derives Deserialize using VARIANT NAMES (PascalCase),
+        NOT Display/StrEnum values. Must match EXACTLY:
+          EpistemicLabel: "Observation" | "Derivation" | "Interpretation" | "Specification" | "Seal"
+          FloorVerdict:   "Pass" | "Caution" | "Hold" | "Void"
+          CoolingDecision:"None" | "Hold" | "Clamp" | "Bypass"
+          StepType:       "Execute" | "Verify" | "Cool" | "Seal" | "Barrier" | "Merge" | "Route"
+        """
         self.compute_sha256()
+
+        # Map Python StrEnum values → Rust variant names
+        epistemic_map = {
+            "OBS": "Observation",
+            "DER": "Derivation",
+            "INT": "Interpretation",
+            "SPEC": "Specification",
+            "SEAL": "Seal",
+        }
+        floor_map = {
+            "PASS": "Pass",
+            "CAUTION": "Caution",
+            "HOLD": "Hold",
+            "VOID": "Void",
+        }
+        cooling_map = {
+            "NONE": "None",
+            "HOLD": "Hold",
+            "CLAMP": "Clamp",
+            "BYPASS": "Bypass",
+        }
+
+        payload: dict[str, Any] = {
+            "organ": self.organ,
+            "summary": self.summary,
+            "cost_type": self.cost_type,
+        }
+        if self.details:
+            payload["details"] = self.details
+        if self.chain_id:
+            payload["chain_id"] = self.chain_id
+        if self.lease_id:
+            payload["lease_id"] = self.lease_id
+        if self.parent_receipt_id:
+            payload["parent_receipt_id"] = self.parent_receipt_id
+        if self.sha256:
+            payload["client_sha256"] = self.sha256
+
         d: dict[str, Any] = {
             "receipt_id": self.receipt_id,
-            "step_type": str(self.step_type),
-            "step_index": self.step_index,
+            "previous_receipt_hash": self.parent_receipt_id,
+            "created_at": self.timestamp_iso,
             "actor_id": self.actor_id,
             "session_id": self.session_id,
-            "organ": self.organ,
-            "epistemic": str(self.epistemic),
-            "floor_verdict": str(self.floor_verdict),
-            "cooling": str(self.cooling),
+            "session_token": None,
+            "step_type": str(self.step_type),  # "Execute", "Verify" etc — matches Rust
+            "topology_id": None,
+            "lane_id": None,
+            "step_number": self.step_index,
             "cost_ns": self.cost_ns,
-            "cost_type": self.cost_type,
-            "summary": self.summary,
-            "details": self.details,
-            "parent_receipt_id": self.parent_receipt_id,
-            "chain_id": self.chain_id,
-            "lease_id": self.lease_id,
-            "timestamp_iso": self.timestamp_iso,
-            "sha256": self.sha256,
+            "preceding_verify_cost_ns": None,
+            "epistemic_label": epistemic_map.get(str(self.epistemic), "Observation"),
+            "floor_verdict": floor_map.get(str(self.floor_verdict), "Pass"),
+            "cooling_decision": cooling_map.get(str(self.cooling), "None"),
+            "tri_witness_votes": self.tri_witness.to_dict()
+            if self.tri_witness
+            else None,
+            "merkle_root": None,
+            "merkle_inclusion_proof": None,
+            "payload": payload,
         }
-        if self.tri_witness:
-            d["tri_witness"] = self.tri_witness.to_dict()
         return d
 
 
@@ -173,17 +220,30 @@ class ArifFlowClient:
     def ingest(self, receipt: FlowReceiptEnvelope | dict[str, Any]) -> dict[str, Any]:
         """POST /ingest — submit a receipt to arifFLOW."""
         if isinstance(receipt, FlowReceiptEnvelope):
-            body = receipt.to_ingest_dict()
+            body_dict = receipt.to_ingest_dict()
         else:
-            body = receipt
+            body_dict = receipt
 
-        r = requests.post(
-            f"{self.base_url}/ingest",
-            json=body,
-            timeout=self.timeout,
+        body_str = json.dumps(body_dict, default=str)
+
+        # Use raw HTTP via http.client to avoid requests library quirks
+        import http.client
+
+        conn = http.client.HTTPConnection("127.0.0.1", 7073, timeout=self.timeout)
+        conn.request(
+            "POST",
+            "/ingest",
+            body=body_str.encode(),
+            headers={"Content-Type": "application/json"},
         )
-        r.raise_for_status()
-        return r.json()
+        resp = conn.getresponse()
+        resp_body = resp.read().decode()
+        conn.close()
+
+        if resp.status != 200:
+            raise RuntimeError(f"arifFLOW ingest failed ({resp.status}): {resp_body}")
+
+        return json.loads(resp_body)
 
     @property
     def fq(self) -> dict[str, Any]:
