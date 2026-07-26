@@ -1,3 +1,6 @@
+<!-- CANONICAL: /root/AGENTS.md -->
+<!-- Status: DERIVED — organ-specific extension -->
+
 <!-- SOT-MANIFEST
 federation_release: v2026.07.25
 last_verified: 2026-07-25T00:00Z
