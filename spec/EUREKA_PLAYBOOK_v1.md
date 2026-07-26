@@ -1,6 +1,6 @@
-# EUREKA Playbook v1 — Agent Directives for Constitutional Intelligence
+# EUREKA Playbook v1.1 — Agent Directives for Constitutional Intelligence
 
-> **Forged:** 2026-07-25  
+> **Forged:** 2026-07-25 · **Updated:** 2026-07-26 (EUREKA T-014–T-022 integration)
 > **Constitution:** arifOS F1–F13 (`arifos://doctrine`)  
 > **Substrate:** arifFlow Rust core + Python adapter + AAA TypeScript wrappers  
 > **Observability:** Kabarkan · **Lineage:** VAULT999 · **Agents:** AAA warga (333/555/888)  
@@ -19,8 +19,8 @@ This is NOT documentation. This is **boot firmware for agents** operating in the
 **Boot sequence:**
 ```
 1. skill_load(EUREKA_PLAYBOOK_v1)
-2. Read all 10 axioms (2 min)
-3. Internalize the decision tree (§12)
+2. Read all 13 axioms (3 min)
+3. Internalize the decision tree (§3)
 4. Begin forge — you are now operating under constitutional physics
 ```
 
@@ -29,7 +29,7 @@ This is NOT documentation. This is **boot firmware for agents** operating in the
 
 ---
 
-## §1 — The 10 EUREKA Axioms (Constitutional Physics Layer)
+## §1 — The 13 EUREKA Axioms (Constitutional Physics Layer)
 
 ### Axiom 1 — Kernel, Not Framework
 
@@ -126,6 +126,63 @@ No company — not OpenAI, not Anthropic, not LangChain, not LangGraph — has F
 
 ---
 
+### Axiom 11 — Attention Metabolism (EUREKA T-014/T-015)
+
+Intelligence flows through three layers. Zero in any = system failure:
+
+```
+ENCODE       →  METABOLIZE   →  DECODE
+(truth store)   (relevance)     (understanding)
+```
+
+arifFLOW owns the METABOLIZE layer. Its question is not "where should this go?" but **"what should appear now?"**
+
+**Formula:** `U = E × M × D` where U=Understanding, E=Encode Quality, M=Metabolize Quality, D=Decode Quality.
+
+**Current audit:** E≈High, M≈Medium, D≈Low — the federation knows, partially routes, does not yet consistently teach.
+
+**Agent directive:** Every receipt you produce must carry `e_score`, `m_score`, `d_score`. Truth without metabolism is invisible. Receipts without decode are noise. The EMD pipeline is not optional — it is the constitutional digestive system.
+
+---
+
+### Axiom 12 — Attention Ordering (EUREKA T-016/T-017/T-019)
+
+Attention is finite. Ordering is constitutional.
+
+```
+Σ AttentionWeight = Constant
+```
+
+Humans and agents share runtime but not attention order:
+- **Human decoder:** TASK → WHY → EVIDENCE → FEDERATION → PROOF
+- **Agent decoder:** DISCOVERY → CAPABILITY → CONSTRAINT → RECEIPT
+
+Violating order creates entropy. "Proof before Task" is as destructive as "Execution before Governance."
+
+**Agent directive:** Route truth to the right decoder in the right order. When surfacing to humans, answer before proof. When surfacing to agents, capability before constraint. Never collapse both pipelines into one.
+
+---
+
+### Axiom 13 — Decoder Architecture (EUREKA T-018/T-022)
+
+```
+BAD:  One Runtime, Many Surfaces (independent systems)
+GOOD: One Runtime, Many Decoders (views of one truth)
+```
+
+Every receipt must support multiple decodes:
+```
+AAA receipt
+├─ executive decode (what matters?)
+├─ audit decode (is it correct?)
+├─ engineer decode (how was it built?)
+└─ sovereign decode (is it constitutional?)
+```
+
+**Agent directive:** Build decoders, not surfaces. The runtime produces one truth. The decoders produce understanding. Understanding before Governance before Execution.
+
+---
+
 ## §2 — Axiom → Floor → Component Map
 
 | Axiom | F-Floor | Component | Tool |
@@ -140,6 +197,9 @@ No company — not OpenAI, not Anthropic, not LangChain, not LangGraph — has F
 | 8 — Sealed Lineage | F11 AUDIT | VAULT999 | `arif_seal` |
 | 9 — Witness Parity | F3 WITNESS | TriWitnessValidator | `FanOutTopology::verify_merge()` |
 | 10 — New Category | ALL | Entire federation | Every tool |
+| 11 — Attention Metabolism | F4 CLARITY, F8 GENIUS | arifFlow METABOLIZE layer | `U = E × M × D` |
+| 12 — Attention Ordering | F4 CLARITY, F13 SOVEREIGN | arifFlow Attention Scheduler | `attention_weight` |
+| 13 — Decoder Architecture | F4 CLARITY, F2 TRUTH | arifFlow Decoder layer | `FlowDecoder` |
 
 ---
 
@@ -181,6 +241,11 @@ Start here:
 - If your component has constitutional gates but the gates are optional → you are building a Lang* equivalent with arifOS labels
 - If your component has constitutional gates that are mandatory, enforced at compile time, and auditable at runtime → you are building governed intelligence
 
+**Are you building transport or metabolism?**
+- If your component moves data between organs without ordering → transport (pre-T-014 arifFLOW)
+- If your component prioritizes, suppresses, sequences, and decodes → metabolism (post-T-014 arifFLOW)
+- If unclear → the component is transport. Upgrade it. Metabolism answers "what should appear now?"
+
 ---
 
 ## §4 — Boot Sequence (Load Before Any Forge)
@@ -221,6 +286,8 @@ skill_load("EUREKA_PLAYBOOK_v1")
 | Parallelism without barrier | Lanes without sync → inconsistent state | Always set BarrierConfig.timeout_ms |
 | Merge without witness | Results without verification → F3 violation | Always call TRI_WITNESS validator |
 | Writing "optional" constitutional gates | Governance without enforcement → noise | Gates are mandatory or absent |
+| Surfacing all truths simultaneously | Everything primary = nothing primary (SCAR-ECHO-15) | Rank. Order. Suppress. Decode. |
+| Treating arifFLOW as transport bus | Moves data without metabolism → invisible truth | arifFLOW is constitutional metabolism — `U = E × M × D` |
 
 ---
 
@@ -238,6 +305,9 @@ Every agent operating under this playbook agrees to:
 8. **Extend, don't rewrite** — arifFlow is additive. Never replace existing modules.
 9. **Test governance, not just functionality** — every test must include a governance edge case
 10. **Report violations** — if you see an anti-pattern, flag it. Silence is complicity.
+11. **Metabolize before decode** — every receipt must carry e_score, m_score, d_score. ArifFlow is the metabolize layer. Do not bypass it.
+12. **Respect attention order** — humans decode Task→Why→Evidence. Agents decode Discovery→Capability→Constraint. Never collapse both pipelines into one.
+13. **Build decoders, not surfaces** — one runtime truth, multiple decoder views. Executive, audit, engineer, sovereign. Same receipt, different understanding.
 
 ---
 
