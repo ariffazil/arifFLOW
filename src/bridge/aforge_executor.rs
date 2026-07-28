@@ -44,15 +44,18 @@ impl AForgeExecutorBridge {
 
     /// Schedule a node for execution via A-FORGE
     pub fn execute(&self, request: ExecutionRequest) -> Result<ExecutionResponse, String> {
-        let json = serde_json::to_string(&request)
-            .map_err(|e| format!("Serialization error: {}", e))?;
+        let json =
+            serde_json::to_string(&request).map_err(|e| format!("Serialization error: {}", e))?;
 
         // In production: call registered FFI function
         // For now, return stub for testing
         Ok(ExecutionResponse {
             success: true,
             result_hash: *blake3::hash(json.as_bytes()).as_bytes(),
-            receipt: format!("receipt_{}", &request.node_id[..8.min(request.node_id.len())]),
+            receipt: format!(
+                "receipt_{}",
+                &request.node_id[..8.min(request.node_id.len())]
+            ),
             error: None,
         })
     }

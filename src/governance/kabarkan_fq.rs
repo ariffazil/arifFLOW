@@ -362,11 +362,7 @@ impl KabarkanFqInstrument {
             let previous_fq = FlowQuotient {
                 quotient: self.previous_fq,
                 verdict: self.previous_verdict.clone(),
-                execute_count: 0,
-                verify_count: 0,
-                execute_cost_ns: 0,
-                verify_cost_ns: 0,
-                window_size: 0,
+                ..FlowQuotient::empty()
             };
             let alert = FqAlertEvent::new(&current_fq, &previous_fq, &self.session_id, step_number);
             // Serialize into Kabarkan event envelope
@@ -522,6 +518,7 @@ mod tests {
             quotient: 0.33,
             verdict: FlowVerdict::Stuck,
             window_size: 20,
+            ..FlowQuotient::empty()
         };
         let previous = FlowQuotient {
             execute_count: 0,
@@ -531,6 +528,7 @@ mod tests {
             quotient: 0.8,
             verdict: FlowVerdict::Watching,
             window_size: 0,
+            ..FlowQuotient::empty()
         };
         let alert = FqAlertEvent::new(&current, &previous, "test-session", 42);
         assert_eq!(alert.severity, "CRITICAL");
@@ -547,6 +545,7 @@ mod tests {
             quotient: 5.0,
             verdict: FlowVerdict::Optimal,
             window_size: 20,
+            ..FlowQuotient::empty()
         };
         let event = FqCoolingCorrelationEvent::new(&fq, 2, 1, 0, FqTrend::Rising, "test", 42);
         assert!(event
@@ -564,6 +563,7 @@ mod tests {
             quotient: 0.4,
             verdict: FlowVerdict::Stuck,
             window_size: 20,
+            ..FlowQuotient::empty()
         };
         let event = FqCoolingCorrelationEvent::new(&fq, 0, 0, 0, FqTrend::Falling, "test", 42);
         assert!(event

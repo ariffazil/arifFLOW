@@ -118,7 +118,7 @@ mod tests {
             channel_roots: BTreeMap::new(),
             state_root: MerkleRoot([step as u8; 32]),
             verdict_id: None,
-            verdict_class: VerdictClass::SEAL,
+            verdict_class: VerdictClass::UNJUDGED,
             arifos_verdict_hash: MerkleRoot::ZERO,
             timestamp_ns: 0,
             previous_checkpoint_hash: MerkleRoot::ZERO,

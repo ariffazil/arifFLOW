@@ -5,7 +5,7 @@
 // No raw memory sharing between execution plane and intelligence plane.
 
 use crate::merkle::MerkleRoot;
-use crate::receipt::{FlowReceipt, StepType, EpistemicLabel};
+use crate::receipt::{EpistemicLabel, FlowReceipt, StepType};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
@@ -136,8 +136,8 @@ impl<T: Serialize + Clone> Channel<T> {
         }
         let epoch = self.write_count;
         self.write_count += 1;
-        let msg = Message::new(payload, epoch)
-            .map_err(|e| ChannelError::Serialization(e.to_string()))?;
+        let msg =
+            Message::new(payload, epoch).map_err(|e| ChannelError::Serialization(e.to_string()))?;
         self.buffer.push(msg.clone());
         Ok(msg)
     }
@@ -196,10 +196,7 @@ mod tests {
 
     #[test]
     fn test_channel_write_read() {
-        let mut ch = Channel::new(
-            ChannelId("test".into()),
-            ChannelMode::Unbounded,
-        );
+        let mut ch = Channel::new(ChannelId("test".into()), ChannelMode::Unbounded);
         let msg = ch.write("hello".to_string()).unwrap();
         assert!(msg.verify().unwrap());
         let msgs = ch.read_all().unwrap();
@@ -209,10 +206,7 @@ mod tests {
 
     #[test]
     fn test_channel_hash_mismatch_detected() {
-        let mut ch = Channel::new(
-            ChannelId("test2".into()),
-            ChannelMode::Unbounded,
-        );
+        let mut ch = Channel::new(ChannelId("test2".into()), ChannelMode::Unbounded);
         let _ = ch.write("data".to_string()).unwrap();
         // Tamper with the buffer directly (simulating corruption)
         ch.buffer[0].content_hash = [0u8; 32];
@@ -223,10 +217,7 @@ mod tests {
 
     #[test]
     fn test_bounded_channel_backpressure() {
-        let mut ch = Channel::new(
-            ChannelId("bounded".into()),
-            ChannelMode::Bounded(2),
-        );
+        let mut ch = Channel::new(ChannelId("bounded".into()), ChannelMode::Bounded(2));
         assert!(ch.write("a".to_string()).is_ok());
         assert!(ch.write("b".to_string()).is_ok());
         assert!(matches!(
@@ -237,10 +228,7 @@ mod tests {
 
     #[test]
     fn test_closed_channel_rejects_writes() {
-        let mut ch = Channel::new(
-            ChannelId("closed".into()),
-            ChannelMode::Unbounded,
-        );
+        let mut ch = Channel::new(ChannelId("closed".into()), ChannelMode::Unbounded);
         ch.close();
         assert!(matches!(
             ch.write("data".to_string()),

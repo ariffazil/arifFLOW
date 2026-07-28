@@ -24,8 +24,10 @@
 // DITEMPA BUKAN DIBERI — arifOS = law, arifFlow = flow, A-FORGE = hands
 
 use arifflow::channel::ChannelMode;
+use arifflow::receipt::FlowQuotient;
 use arifflow::receipt::{FlowReceipt, ReceiptStore};
 use arifflow::scheduler::{FlowNode, SuperStepScheduler, TopologyKind, VerdictClass};
+use chrono;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Read, Write};
@@ -121,7 +123,8 @@ impl FlowNode for NodeWrapper {
         &self,
         _inputs: BTreeMap<arifflow::channel::ChannelId, Vec<arifflow::channel::Message<String>>>,
         _lease_id: uuid::Uuid,
-    ) -> Result<BTreeMap<arifflow::channel::ChannelId, String>, arifflow::scheduler::NodeError> {
+    ) -> Result<BTreeMap<arifflow::channel::ChannelId, String>, arifflow::scheduler::NodeError>
+    {
         let mut out = BTreeMap::new();
         for o in &self.outputs {
             out.insert(
@@ -305,6 +308,8 @@ fn stdin_protocol_loop() {
                     "HOLD" => VerdictClass::HOLD,
                     "VOID" => VerdictClass::VOID,
                     "SABAR" => VerdictClass::SABAR,
+                    "CANDIDATE" => VerdictClass::CANDIDATE,
+                    "UNJUDGED" => VerdictClass::UNJUDGED,
                     _ => VerdictClass::HOLD,
                 };
 
@@ -350,6 +355,108 @@ fn stdin_protocol_loop() {
     }
 }
 
+// ── Cooling State Machine (GAP-M4/M6) ─────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+enum CoolingPhase {
+    Active,
+    Cooling,
+    Notify,
+    Sovereign,
+}
+
+impl CoolingPhase {
+    fn label(&self) -> &'static str {
+        match self {
+            CoolingPhase::Active => "Active",
+            CoolingPhase::Cooling => "Cooling",
+            CoolingPhase::Notify => "Notify",
+            CoolingPhase::Sovereign => "Sovereign",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CoolingState {
+    phase: CoolingPhase,
+    stuck_since: Option<chrono::DateTime<chrono::Utc>>,
+    phase_start: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl CoolingState {
+    fn new() -> Self {
+        Self {
+            phase: CoolingPhase::Active,
+            stuck_since: None,
+            phase_start: None,
+        }
+    }
+
+    fn phase_label(&self) -> &'static str {
+        self.phase.label()
+    }
+
+    fn t_remaining_s(&self, _start_time: Instant) -> u64 {
+        let now = chrono::Utc::now();
+        match self.phase {
+            CoolingPhase::Cooling => {
+                if let Some(ps) = self.phase_start {
+                    let elapsed = now.signed_duration_since(ps).num_seconds() as u64;
+                    300u64.saturating_sub(elapsed)
+                } else {
+                    300
+                }
+            }
+            CoolingPhase::Notify => {
+                if let Some(ps) = self.phase_start {
+                    let elapsed = now.signed_duration_since(ps).num_seconds() as u64;
+                    300u64.saturating_sub(elapsed)
+                } else {
+                    300
+                }
+            }
+            _ => 0,
+        }
+    }
+
+    fn update_from_fq(&mut self, fq: &FlowQuotient, _start_time: &Instant) {
+        let now = chrono::Utc::now();
+        if fq.verdict == arifflow::receipt::FlowVerdict::Stuck {
+            match self.phase {
+                CoolingPhase::Active => {
+                    self.phase = CoolingPhase::Cooling;
+                    self.stuck_since = Some(now);
+                    self.phase_start = Some(now);
+                }
+                CoolingPhase::Cooling => {
+                    if let Some(ps) = self.phase_start {
+                        if now.signed_duration_since(ps).num_seconds() as u64 >= 300 {
+                            self.phase = CoolingPhase::Notify;
+                            self.phase_start = Some(now);
+                        }
+                    }
+                }
+                CoolingPhase::Notify => {
+                    if let Some(ps) = self.phase_start {
+                        if now.signed_duration_since(ps).num_seconds() as u64 >= 300 {
+                            self.phase = CoolingPhase::Sovereign;
+                            self.phase_start = Some(now);
+                        }
+                    }
+                }
+                CoolingPhase::Sovereign => { /* sticks until override */ }
+            }
+        } else {
+            // FQ recovered — auto-resume
+            if self.phase != CoolingPhase::Active {
+                self.phase = CoolingPhase::Active;
+                self.stuck_since = None;
+                self.phase_start = None;
+            }
+        }
+    }
+}
+
 // ── Daemon Mode ────────────────────────────────────────────────────
 
 /// HTTP response helper
@@ -372,6 +479,7 @@ fn handle_client(
     mut stream: TcpStream,
     start_time: Instant,
     receipt_store: &Arc<Mutex<ReceiptStore>>,
+    cooling_state: &Arc<Mutex<CoolingState>>,
 ) {
     let mut buf = [0u8; 16384]; // larger buffer for POST bodies
     match stream.read(&mut buf) {
@@ -379,33 +487,187 @@ fn handle_client(
             let request = String::from_utf8_lossy(&buf[..n]);
             let response = if request.starts_with("GET /health") {
                 let store = receipt_store.lock().unwrap();
-                let fq = store.flow_quotient(100);
-                let fq_hist: Vec<f64> = store.fq_history().to_vec();
+                let all_receipts = store.all().to_vec();
+                // Build timestamped FQ history for trend computation
+                let fq_hist_raw: Vec<f64> = store.fq_history().to_vec();
+                // For trend, pair each FQ value with a synthetic timestamp (now - index*10s)
+                let now = chrono::Utc::now();
+                let fq_timestamped: Vec<(f64, chrono::DateTime<chrono::Utc>)> = fq_hist_raw
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &v)| {
+                        let age_s = ((fq_hist_raw.len() - i) * 10) as i64;
+                        (v, now - chrono::Duration::seconds(age_s))
+                    })
+                    .collect();
+                let fq = FlowQuotient::compute_with_trend(&all_receipts, &fq_timestamped, 600);
+                let cooling = cooling_state.lock().unwrap().clone();
                 let body = serde_json::json!({
                     "status": "ok",
                     "fq": {
                         "quotient": fq.quotient,
                         "verdict": format!("{}", fq.verdict),
+                        "verdict_emoji": fq.verdict.emoji(),
                         "execute_count": fq.execute_count,
                         "verify_count": fq.verify_count,
+                        "execute_cost_ns": fq.execute_cost_ns,
+                        "verify_cost_ns": fq.verify_cost_ns,
+                        // GAP-M4: Formula transparency
+                        "raw_ratio": if fq.raw_ratio.is_infinite() { serde_json::Value::Null } else { serde_json::json!(fq.raw_ratio) },
+                        "is_smoothed": fq.is_smoothed,
+                        "alpha": fq.alpha,
+                        "window_s": fq.window_s,
+                        "cost_clamp_ns": {"min": fq.cost_clamp_ns.0, "max": fq.cost_clamp_ns.1},
+                        // GAP-M2: Actor-level FQ
+                        "by_actor": fq.by_actor,
+                        "worst_actor": fq.worst_actor,
+                        "actor_count": fq.actor_count,
+                        // GAP-M3: Trend
+                        "trend": {
+                            "direction": format!("{:?}", fq.trend.direction),
+                            "rate_per_min": fq.trend.rate_per_min,
+                            "volatility": fq.trend.volatility,
+                            "samples": fq.trend.samples,
+                            "window_s": fq.trend.window_s,
+                        }
                     },
-                    "fq_history": fq_hist,
+                    "fq_history": fq_hist_raw,
                     "receipts": store.len(),
                     "persist_path": store.persist_path().map(|p| p.display().to_string()),
                     "uptime_ms": start_time.elapsed().as_millis() as u64,
+                    // Build identity — verifiable deployment provenance
+                    "build": {
+                        "version": env!("CARGO_PKG_VERSION"),
+                        "git_commit": env!("GIT_COMMIT"),
+                        "git_branch": env!("GIT_BRANCH"),
+                        "build_timestamp": env!("BUILD_TIMESTAMP"),
+                        "build_dirty": env!("BUILD_DIRTY").parse::<bool>().unwrap_or(true),
+                    },
+                    // GAP-M4/M6: Cooling state
+                    "cooling": {
+                        "phase": cooling.phase_label(),
+                        "stuck_since": cooling.stuck_since.map(|t| t.to_rfc3339()),
+                        "t_remaining_s": cooling.t_remaining_s(start_time),
+                        "override_allowed": cooling.phase_label() == "Sovereign" || cooling.phase_label() == "Notify",
+                    },
                 })
                 .to_string();
                 http_ok(&body)
+            } else if request.starts_with("GET /cooling/status") {
+                let cooling = cooling_state.lock().unwrap().clone();
+                let store = receipt_store.lock().unwrap();
+                let fq = store.flow_quotient(20);
+                let body = serde_json::json!({
+                    "phase": cooling.phase_label(),
+                    "stuck_since": cooling.stuck_since.map(|t| t.to_rfc3339()),
+                    "t_remaining_s": cooling.t_remaining_s(start_time),
+                    "fq": fq.quotient,
+                    "fq_verdict": format!("{}", fq.verdict),
+                    "override_allowed": true, // Arif can always override
+                })
+                .to_string();
+                http_ok(&body)
+            } else if request.starts_with("POST /cooling/override") {
+                match extract_body(&request) {
+                    Some(raw_json) => {
+                        match serde_json::from_str::<serde_json::Value>(raw_json.trim()) {
+                            Ok(val) => {
+                                let source = val
+                                    .get("source")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
+                                let signal =
+                                    val.get("signal").and_then(|v| v.as_str()).unwrap_or("");
+                                // GAP-M6: Authorized sources only
+                                let authorized =
+                                    matches!(source, "hermes" | "cockpit" | "arifos" | "test");
+                                if !authorized {
+                                    let body = serde_json::json!({
+                                        "status": "forbidden",
+                                        "reason": format!("Source '{}' not authorized", source),
+                                    })
+                                    .to_string();
+                                    format!("HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).into_bytes()
+                                } else {
+                                    let mut cooling = cooling_state.lock().unwrap();
+                                    let mut store = receipt_store.lock().unwrap();
+                                    match signal {
+                                        "jalan_terus" => {
+                                            cooling.phase = CoolingPhase::Active;
+                                            cooling.stuck_since = None;
+                                            // Record SCAR
+                                            let receipt = FlowReceipt::new_first(
+                                                source,
+                                                "cooling-override",
+                                                arifflow::receipt::StepType::Cool,
+                                                arifflow::receipt::EpistemicLabel::Seal,
+                                                0,
+                                            )
+                                            .with_payload(serde_json::json!({
+                                                "override": "jalan_terus", "source": source,
+                                                "cooling_decision": "Overridden"
+                                            }));
+                                            store.push_force(receipt);
+                                            let body = serde_json::json!({
+                                                "status": "overridden",
+                                                "new_fq": 1.0,
+                                                "phase": "Active",
+                                            })
+                                            .to_string();
+                                            http_ok(&body)
+                                        }
+                                        "tunggu" => {
+                                            cooling.phase = CoolingPhase::Cooling;
+                                            let body = serde_json::json!({
+                                                "status": "extended",
+                                                "phase": "Cooling",
+                                                "t_remaining_s": cooling.t_remaining_s(start_time),
+                                            })
+                                            .to_string();
+                                            http_ok(&body)
+                                        }
+                                        "verify_metrics" => {
+                                            let body = serde_json::json!({
+                                                "status": "ack",
+                                                "message": "Override test successful",
+                                            })
+                                            .to_string();
+                                            http_ok(&body)
+                                        }
+                                        _ => {
+                                            let body = serde_json::json!({
+                                                "status": "invalid",
+                                                "reason": format!("Unknown signal: {}", signal),
+                                            })
+                                            .to_string();
+                                            format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).into_bytes()
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let body = serde_json::json!({"status": "invalid", "error": format!("{}", e)}).to_string();
+                                format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).into_bytes()
+                            }
+                        }
+                    }
+                    None => {
+                        let body = r#"{"status":"error","message":"Empty body"}"#;
+                        format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).into_bytes()
+                    }
+                }
             } else if request.starts_with("POST /ingest") {
                 match extract_body(&request) {
                     Some(raw_json) => match serde_json::from_str::<FlowReceipt>(raw_json.trim()) {
                         Ok(receipt) => {
                             let mut store = receipt_store.lock().unwrap();
-                            // Monitoring endpoint — accept receipts without strict chain validation.
-                            // Core chain-verified execution runs via stdin/stdout protocol.
-                            // /ingest is for observability: FQ monitoring, trend, cooling correlation.
                             store.push_force(receipt);
                             let fq = store.flow_quotient(20);
+                            // GAP-M1/M4: Update cooling state based on FQ
+                            {
+                                let mut cooling = cooling_state.lock().unwrap();
+                                cooling.update_from_fq(&fq, &start_time);
+                            }
                             let body = serde_json::json!({
                                 "status": "ingested",
                                 "fq": {
@@ -475,14 +737,15 @@ fn daemon_mode() {
     let addr = format!("127.0.0.1:{}", port);
     let start_time = Instant::now();
     // P3-1: File-backed receipt persistence — survives restart
-    let persist_dir = std::env::var("ARIFLOW_PERSIST_DIR")
-        .unwrap_or_else(|_| "/var/lib/arifflow".into());
+    let persist_dir =
+        std::env::var("ARIFLOW_PERSIST_DIR").unwrap_or_else(|_| "/var/lib/arifflow".into());
     let _ = std::fs::create_dir_all(&persist_dir);
     let persist_path = std::path::PathBuf::from(&persist_dir).join("receipts.jsonl");
     let receipt_store = Arc::new(Mutex::new(ReceiptStore::new_with_persistence(
         1000,
         persist_path,
     )));
+    let cooling_state = Arc::new(Mutex::new(CoolingState::new()));
     let loaded_count = receipt_store.lock().unwrap().len();
     if loaded_count > 0 {
         eprintln!(
@@ -499,9 +762,10 @@ fn daemon_mode() {
                 match stream {
                     Ok(s) => {
                         let store = receipt_store.clone();
+                        let cooling = cooling_state.clone();
                         let start = start_time;
                         std::thread::spawn(move || {
-                            handle_client(s, start, &store);
+                            handle_client(s, start, &store, &cooling);
                         });
                     }
                     Err(e) => {

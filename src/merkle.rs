@@ -76,7 +76,11 @@ impl MerkleTree {
             }
             _ => Self::compute_root(&leaves),
         };
-        Ok(Self { leaves, root, leaf_count })
+        Ok(Self {
+            leaves,
+            root,
+            leaf_count,
+        })
     }
 
     pub fn from_channels(

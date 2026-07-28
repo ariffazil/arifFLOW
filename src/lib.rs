@@ -29,17 +29,20 @@ pub mod merkle;
 pub mod receipt;
 pub mod scheduler;
 
-pub mod topology;
 pub mod bridge;
 pub mod governance;
+pub mod topology;
 
 /// Re-export core types at crate level
 pub use channel::{Channel, ChannelId, Message};
 pub use merkle::{MerkleRoot, MerkleTree};
-pub use scheduler::{SuperStepScheduler, SuperStepResult, TopologyKind, SchedulerError, CheckpointEnvelope, VerdictClass};
+pub use scheduler::{
+    CheckpointEnvelope, SchedulerError, SuperStepResult, SuperStepScheduler, TopologyKind,
+    VerdictClass,
+};
 
 /// Version constant — matches arifOS release cadence
-pub const VERSION: &str = "2026.7.25";
+pub const VERSION: &str = "2026.7.26";
 pub const CODENAME: &str = "LAW_FLOW_HANDS";
 
 #[cfg(test)]

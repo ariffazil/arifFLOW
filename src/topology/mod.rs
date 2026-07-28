@@ -3,9 +3,9 @@
 // Invariant A4 (Verifiable-Reduction): All merge functions are
 // deterministic and auditable by F3 TRI-WITNESS.
 
+pub mod cascade;
 pub mod fan_out;
 pub mod pipeline;
-pub mod cascade;
 
 use thiserror::Error;
 

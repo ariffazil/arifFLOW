@@ -17,7 +17,9 @@ use crate::governance::cooling::{Convergence, CoolingEntry, CoolingLedger, Drift
 use crate::governance::kabarkan::{KabarkanEvent, KabarkanTracer};
 use crate::governance::tri_witness::{TriWitness, WitnessMergeResult};
 use crate::merkle::{chain_roots, MerkleRoot, MerkleTree};
-use crate::receipt::{FlowQuotient, FlowReceipt, FlowVerdict, ReceiptStore, StepType, EpistemicLabel};
+use crate::receipt::{
+    EpistemicLabel, FlowQuotient, FlowReceipt, FlowVerdict, ReceiptStore, StepType,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -64,6 +66,8 @@ pub enum ExecutionMode {
 /// Verdict from arifOS 888-JUDGE
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VerdictClass {
+    UNJUDGED,
+    CANDIDATE,
     SEAL,
     HOLD,
     VOID,
@@ -77,6 +81,10 @@ impl VerdictClass {
 
     pub fn is_proceed(&self) -> bool {
         matches!(self, VerdictClass::SEAL)
+    }
+
+    pub fn is_judged(&self) -> bool {
+        !matches!(self, VerdictClass::UNJUDGED | VerdictClass::CANDIDATE)
     }
 }
 
@@ -346,13 +354,32 @@ impl SuperStepScheduler {
         for node in nodes.iter() {
             let rev = node.reversibility();
             let br = node.blast_radius();
-            // A node is "has_verdict" if a verdict was pre-assigned (from prior step).
-            // For now: nodes without an oracle call default to has_verdict=false.
-            let has_v = self.verdict_oracle.is_some();
+            // P0-1: Verdict presence != verdict approval.
+            // Irreversible nodes require an explicit SEAL returned by calling the oracle.
+            let has_v = if let Some(ref oracle) = self.verdict_oracle {
+                let trial_env = CheckpointEnvelope {
+                    actor_id: self.actor_id.clone(),
+                    lease_id: self.lease_id,
+                    constitutional_chain_id: self.constitutional_chain_id,
+                    super_step: step_number,
+                    channel_roots: BTreeMap::new(),
+                    state_root: MerkleRoot::ZERO,
+                    verdict_id: None,
+                    verdict_class: VerdictClass::UNJUDGED,
+                    arifos_verdict_hash: MerkleRoot::ZERO,
+                    timestamp_ns: 0,
+                    previous_checkpoint_hash: self.previous_checkpoint_hash,
+                    checkpoint_hash: MerkleRoot::ZERO,
+                };
+                let (v_class, _, _) = oracle(&trial_env);
+                v_class == VerdictClass::SEAL
+            } else {
+                false
+            };
 
             let passed = match rev {
                 Reversibility::Reversible => true, // reversible always passes F1
-                Reversibility::Irreversible => has_v, // irreversible needs a verdict
+                Reversibility::Irreversible => has_v, // irreversible needs explicit SEAL from oracle
             };
 
             f1_statuses.push(F1Status {
@@ -425,8 +452,8 @@ impl SuperStepScheduler {
             .unwrap_or_else(|_| MerkleTree::from_leaves(vec![MerkleRoot::ZERO]).unwrap());
         let state_root = tree.bind_authority(&self.lease_id, &self.actor_id);
 
-        // 4. Build checkpoint
-        let checkpoint = CheckpointEnvelope {
+        // 4. Build checkpoint (P0-2: Default UNJUDGED, evaluate oracle if present)
+        let mut checkpoint = CheckpointEnvelope {
             actor_id: self.actor_id.clone(),
             lease_id: self.lease_id,
             constitutional_chain_id: self.constitutional_chain_id,
@@ -434,7 +461,7 @@ impl SuperStepScheduler {
             channel_roots,
             state_root,
             verdict_id: None,
-            verdict_class: VerdictClass::SEAL,
+            verdict_class: VerdictClass::UNJUDGED,
             arifos_verdict_hash: MerkleRoot::ZERO,
             timestamp_ns: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -443,6 +470,13 @@ impl SuperStepScheduler {
             previous_checkpoint_hash: self.previous_checkpoint_hash,
             checkpoint_hash: MerkleRoot::ZERO,
         };
+
+        if let Some(ref oracle) = self.verdict_oracle {
+            let (v_class, v_id, v_hash) = oracle(&checkpoint);
+            checkpoint.verdict_class = v_class;
+            checkpoint.verdict_id = v_id;
+            checkpoint.arifos_verdict_hash = v_hash;
+        }
 
         // 5. GAP P0-1: Barrier timeout check
         let elapsed = start_time.elapsed();
@@ -527,11 +561,17 @@ impl SuperStepScheduler {
             }
         }
 
+        let final_verdict = if checkpoint.verdict_class != VerdictClass::UNJUDGED {
+            checkpoint.verdict_class
+        } else {
+            VerdictClass::SEAL
+        };
+
         Ok(SuperStepResult {
             step_number,
             channel_deltas: all_deltas,
             checkpoint,
-            verdict: VerdictClass::SEAL,
+            verdict: final_verdict,
             held_nodes,
             barrier_timed_out,
             fq: step_fq,
@@ -559,6 +599,9 @@ impl SuperStepScheduler {
                     let _ = ch.drain();
                     ch.close();
                 }
+            }
+            VerdictClass::UNJUDGED | VerdictClass::CANDIDATE => {
+                // Unjudged/candidate state does not alter committed state
             }
         }
     }
