@@ -540,8 +540,8 @@ fn handle_client(
                         "version": env!("CARGO_PKG_VERSION"),
                         "git_commit": env!("GIT_COMMIT"),
                         "git_branch": env!("GIT_BRANCH"),
-                        "build_timestamp": env!("BUILD_TIMESTAMP"),
-                        "build_dirty": env!("BUILD_DIRTY").parse::<bool>().unwrap_or(true),
+                        "build_timestamp_unix": env!("BUILD_TIMESTAMP"),
+                        "build_dirty": env!("BUILD_DIRTY") == "true",
                     },
                     // GAP-M4/M6: Cooling state
                     "cooling": {

@@ -7,6 +7,7 @@
 // repository truth can be compared to runtime truth.
 
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
     // Git commit hash
@@ -18,8 +19,11 @@ fn main() {
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    // Build timestamp (ISO 8601)
-    let build_timestamp = chrono::Utc::now().to_rfc3339();
+    // Build timestamp (Unix epoch seconds — portable, no chrono dependency)
+    let build_timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string());
 
     // Dirty worktree — is the git working tree clean?
     let dirty = Command::new("git")
