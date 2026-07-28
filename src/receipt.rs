@@ -550,21 +550,116 @@ pub fn verify_chain(receipts: &[FlowReceipt]) -> Result<(), String> {
 
 // ── Receipt Store ────────────────────────────────────────────────────────
 
-/// A simple in-memory store for flow receipts in a session.
+/// A store for flow receipts with optional file-backed persistence.
 ///
-/// Maintains chain order and provides FQ computation.
+/// Maintains chain order, provides FQ computation, and tracks FQ history.
+/// When `persist_path` is set, new receipts are appended to a JSONL file
+/// and loaded on restart.
 #[derive(Debug, Clone)]
 pub struct ReceiptStore {
     receipts: Vec<FlowReceipt>,
     max_receipts: usize,
+    persist_path: Option<std::path::PathBuf>,
+    fq_history: Vec<f64>,  // FQ values after each push (last 100)
 }
 
 impl ReceiptStore {
+    /// Maximum FQ history entries to retain.
+    const MAX_FQ_HISTORY: usize = 100;
+
     /// Create a new receipt store with a maximum capacity.
     pub fn new(max_receipts: usize) -> Self {
         Self {
             receipts: Vec::with_capacity(max_receipts.min(1000)),
             max_receipts,
+            persist_path: None,
+            fq_history: Vec::with_capacity(Self::MAX_FQ_HISTORY),
+        }
+    }
+
+    /// Create a new receipt store with file-backed persistence.
+    /// Loads existing receipts from disk if the file exists.
+    pub fn new_with_persistence(max_receipts: usize, persist_path: std::path::PathBuf) -> Self {
+        let mut store = Self {
+            receipts: Vec::with_capacity(max_receipts.min(1000)),
+            max_receipts,
+            persist_path: Some(persist_path.clone()),
+            fq_history: Vec::with_capacity(Self::MAX_FQ_HISTORY),
+        };
+        store.load_from_disk();
+        store
+    }
+
+    /// Load receipts from the persistence file (JSONL format).
+    fn load_from_disk(&mut self) {
+        let path = match &self.persist_path {
+            Some(p) => p,
+            None => return,
+        };
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => return, // File doesn't exist yet — fresh start
+        };
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(receipt) = serde_json::from_str::<FlowReceipt>(trimmed) {
+                if self.receipts.len() >= self.max_receipts {
+                    self.receipts.remove(0);
+                }
+                self.receipts.push(receipt);
+            }
+        }
+        // Rebuild FQ history from loaded receipts
+        self.rebuild_fq_history();
+    }
+
+    /// Persist a single receipt to the JSONL file.
+    fn persist_receipt(&self, receipt: &FlowReceipt) {
+        let path = match &self.persist_path {
+            Some(p) => p,
+            None => return,
+        };
+        if let Ok(json) = serde_json::to_string(receipt) {
+            let mut line = json;
+            line.push('\n');
+            // Append to file — create if doesn't exist
+            use std::io::Write;
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = file.write_all(line.as_bytes());
+            }
+        }
+    }
+
+    /// Record current FQ in history, maintaining max size.
+    fn record_fq(&mut self) {
+        let fq = self.flow_quotient(20).quotient;
+        if self.fq_history.len() >= Self::MAX_FQ_HISTORY {
+            self.fq_history.remove(0);
+        }
+        self.fq_history.push(fq);
+    }
+
+    /// Rebuild FQ history by replaying receipts in sliding windows.
+    fn rebuild_fq_history(&mut self) {
+        self.fq_history.clear();
+        if self.receipts.is_empty() {
+            return;
+        }
+        // For each receipt after the first, compute FQ on the window ending at that receipt
+        for i in 1..=self.receipts.len() {
+            let window = &self.receipts[..i];
+            let fq = FlowQuotient::compute(window).quotient;
+            if self.fq_history.len() >= Self::MAX_FQ_HISTORY {
+                self.fq_history.remove(0);
+            }
+            self.fq_history.push(fq);
         }
     }
 
@@ -573,7 +668,9 @@ impl ReceiptStore {
         if self.receipts.len() >= self.max_receipts {
             self.receipts.remove(0);
         }
+        self.persist_receipt(&receipt);
         self.receipts.push(receipt);
+        self.record_fq();
     }
     pub fn push(&mut self, receipt: FlowReceipt) -> Result<(), String> {
         // Validate chain continuity
@@ -605,7 +702,9 @@ impl ReceiptStore {
             self.receipts.remove(0); // drop oldest
         }
 
+        self.persist_receipt(&receipt);
         self.receipts.push(receipt);
+        self.record_fq();
         Ok(())
     }
 
@@ -619,6 +718,16 @@ impl ReceiptStore {
         let len = self.receipts.len();
         let start = len.saturating_sub(n);
         &self.receipts[start..]
+    }
+
+    /// Get the FQ history (up to last 100 values).
+    pub fn fq_history(&self) -> &[f64] {
+        &self.fq_history
+    }
+
+    /// Get the current persistence path, if any.
+    pub fn persist_path(&self) -> Option<&std::path::Path> {
+        self.persist_path.as_deref()
     }
 
     /// Compute the Flow Quotient over the last N receipts.

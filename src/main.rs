@@ -380,6 +380,7 @@ fn handle_client(
             let response = if request.starts_with("GET /health") {
                 let store = receipt_store.lock().unwrap();
                 let fq = store.flow_quotient(100);
+                let fq_hist: Vec<f64> = store.fq_history().to_vec();
                 let body = serde_json::json!({
                     "status": "ok",
                     "fq": {
@@ -388,7 +389,9 @@ fn handle_client(
                         "execute_count": fq.execute_count,
                         "verify_count": fq.verify_count,
                     },
+                    "fq_history": fq_hist,
                     "receipts": store.len(),
+                    "persist_path": store.persist_path().map(|p| p.display().to_string()),
                     "uptime_ms": start_time.elapsed().as_millis() as u64,
                 })
                 .to_string();
@@ -471,7 +474,22 @@ fn daemon_mode() {
         .unwrap_or(7073);
     let addr = format!("127.0.0.1:{}", port);
     let start_time = Instant::now();
-    let receipt_store = Arc::new(Mutex::new(ReceiptStore::new(1000)));
+    // P3-1: File-backed receipt persistence — survives restart
+    let persist_dir = std::env::var("ARIFLOW_PERSIST_DIR")
+        .unwrap_or_else(|_| "/var/lib/arifflow".into());
+    let _ = std::fs::create_dir_all(&persist_dir);
+    let persist_path = std::path::PathBuf::from(&persist_dir).join("receipts.jsonl");
+    let receipt_store = Arc::new(Mutex::new(ReceiptStore::new_with_persistence(
+        1000,
+        persist_path,
+    )));
+    let loaded_count = receipt_store.lock().unwrap().len();
+    if loaded_count > 0 {
+        eprintln!(
+            "[arifFlow] Loaded {} receipts from disk — persistence active",
+            loaded_count
+        );
+    }
 
     match TcpListener::bind(&addr) {
         Ok(listener) => {
