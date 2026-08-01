@@ -24,6 +24,7 @@
 // DITEMPA BUKAN DIBERI — arifOS = law, arifFlow = flow, A-FORGE = hands
 
 use arifflow::channel::ChannelMode;
+use arifflow::eureka::{EurekaRecord, EurekaState, EurekaStore};
 use arifflow::receipt::FlowQuotient;
 use arifflow::receipt::{FlowReceipt, ReceiptStore};
 use arifflow::scheduler::{FlowNode, SuperStepScheduler, TopologyKind, VerdictClass};
@@ -480,6 +481,7 @@ fn handle_client(
     start_time: Instant,
     receipt_store: &Arc<Mutex<ReceiptStore>>,
     cooling_state: &Arc<Mutex<CoolingState>>,
+    eureka_store: &Arc<Mutex<EurekaStore>>,
 ) {
     let mut buf = [0u8; 16384]; // larger buffer for POST bodies
     match stream.read(&mut buf) {
@@ -701,6 +703,179 @@ fn handle_client(
                         ).into_bytes()
                     }
                 }
+            } else if request.starts_with("POST /eureka") {
+                match extract_body(&request) {
+                    Some(raw_json) => {
+                        match serde_json::from_str::<serde_json::Value>(raw_json.trim()) {
+                            Ok(val) => {
+                                let title = val
+                                    .get("title")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("Untitled");
+                                let insight =
+                                    val.get("insight").and_then(|v| v.as_str()).unwrap_or("");
+                                let domain = val
+                                    .get("domain")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("arifFlow");
+                                let actor_id = val
+                                    .get("actor_id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
+                                let state_str = val
+                                    .get("state")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("CANDIDATE");
+                                let session_id = val
+                                    .get("session_id")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
+                                let delta_s = val.get("delta_s").and_then(|v| v.as_f64());
+
+                                let state = match state_str {
+                                    "RESOLVED" => EurekaState::Resolved,
+                                    "MAJOR" => EurekaState::Major,
+                                    "MINOR" => EurekaState::Minor,
+                                    "SUPERSEDED" => EurekaState::Superseded,
+                                    _ => EurekaState::Candidate,
+                                };
+
+                                let paradox_ids: Vec<String> = val
+                                    .get("paradox_ids")
+                                    .and_then(|v| v.as_array())
+                                    .map(|a| {
+                                        a.iter()
+                                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+
+                                let tags: Vec<String> = val
+                                    .get("tags")
+                                    .and_then(|v| v.as_array())
+                                    .map(|a| {
+                                        a.iter()
+                                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+
+                                let evidence_refs: Vec<String> = val
+                                    .get("evidence_refs")
+                                    .and_then(|v| v.as_array())
+                                    .map(|a| {
+                                        a.iter()
+                                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+
+                                let payload = val.get("payload").cloned();
+
+                                // Get current FQ for metabolic context
+                                let store = receipt_store.lock().unwrap();
+                                let fq = store.flow_quotient(20);
+                                drop(store);
+
+                                let mut record = EurekaRecord::new(
+                                    title.to_string(),
+                                    insight.to_string(),
+                                    domain.to_string(),
+                                    actor_id.to_string(),
+                                )
+                                .with_fq(&fq)
+                                .with_paradoxes(paradox_ids)
+                                .with_tags(tags)
+                                .with_evidence(evidence_refs);
+
+                                record.state = state;
+                                if let Some(sid) = session_id {
+                                    record = record.with_session(sid);
+                                }
+                                if let Some(ds) = delta_s {
+                                    record = record.with_delta_s(ds);
+                                }
+                                if let Some(p) = payload {
+                                    record = record.with_payload(p);
+                                }
+
+                                let mut eureka = eureka_store.lock().unwrap();
+                                let saved = eureka.record(record);
+                                let body = serde_json::json!({
+                                    "status": "recorded",
+                                    "eureka_id": saved.eureka_id,
+                                    "title": saved.title,
+                                    "state": format!("{}", saved.state),
+                                    "fq_at_emergence": saved.fq_at_emergence,
+                                    "total_eurekas": eureka.len(),
+                                })
+                                .to_string();
+                                http_ok(&body)
+                            }
+                            Err(e) => {
+                                let body = serde_json::json!({"status": "invalid", "error": format!("{}", e)}).to_string();
+                                format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).into_bytes()
+                            }
+                        }
+                    }
+                    None => {
+                        let body = r#"{"status":"error","message":"Empty body"}"#;
+                        format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).into_bytes()
+                    }
+                }
+            } else if request.starts_with("GET /eureka") {
+                let eureka = eureka_store.lock().unwrap();
+                // Parse query params for optional filtering
+                let query_start = request.find('?');
+                let mut domain_filter: Option<String> = None;
+                let mut state_filter: Option<String> = None;
+                let mut limit = 20usize;
+
+                if let Some(qs) = query_start {
+                    let query_str = &request[qs + 1..];
+                    let query_end = query_str.find(' ').unwrap_or(query_str.len());
+                    let query_str = &query_str[..query_end];
+                    for pair in query_str.split('&') {
+                        let mut parts = pair.splitn(2, '=');
+                        let key = parts.next().unwrap_or("");
+                        let val = parts.next().unwrap_or("");
+                        match key {
+                            "domain" => domain_filter = Some(val.to_string()),
+                            "state" => state_filter = Some(val.to_string()),
+                            "limit" => {
+                                if let Ok(n) = val.parse::<usize>() {
+                                    limit = n.min(100);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                let list: Vec<&EurekaRecord> = if let Some(ref domain) = domain_filter {
+                    eureka.list_by_domain(domain, limit)
+                } else if let Some(ref state_str) = state_filter {
+                    let s = match state_str.as_str() {
+                        "RESOLVED" => EurekaState::Resolved,
+                        "MAJOR" => EurekaState::Major,
+                        "CANDIDATE" => EurekaState::Candidate,
+                        "MINOR" => EurekaState::Minor,
+                        "SUPERSEDED" => EurekaState::Superseded,
+                        _ => EurekaState::Candidate,
+                    };
+                    eureka.list_by_state(&s, limit)
+                } else {
+                    eureka.list(limit)
+                };
+
+                let body = serde_json::json!({
+                    "status": "ok",
+                    "total": eureka.len(),
+                    "returned": list.len(),
+                    "eurekas": list,
+                })
+                .to_string();
+                http_ok(&body)
             } else if request.starts_with("POST /flow") {
                 let body = serde_json::json!({
                     "status": "ack",
@@ -743,14 +918,20 @@ fn daemon_mode() {
     let persist_path = std::path::PathBuf::from(&persist_dir).join("receipts.jsonl");
     let receipt_store = Arc::new(Mutex::new(ReceiptStore::new_with_persistence(
         1000,
-        persist_path,
+        persist_path.clone(),
+    )));
+    let eureka_persist_path = std::path::PathBuf::from(&persist_dir).join("eurekas.jsonl");
+    let eureka_store = Arc::new(Mutex::new(EurekaStore::new_with_persistence(
+        500,
+        eureka_persist_path,
     )));
     let cooling_state = Arc::new(Mutex::new(CoolingState::new()));
     let loaded_count = receipt_store.lock().unwrap().len();
-    if loaded_count > 0 {
+    let eureka_count = eureka_store.lock().unwrap().len();
+    if loaded_count > 0 || eureka_count > 0 {
         eprintln!(
-            "[arifFlow] Loaded {} receipts from disk — persistence active",
-            loaded_count
+            "[arifFlow] Loaded {} receipts + {} eurekas from disk — persistence active",
+            loaded_count, eureka_count
         );
     }
 
@@ -758,14 +939,16 @@ fn daemon_mode() {
         Ok(listener) => {
             eprintln!("[arifFlow] Daemon mode — listening on {}", addr);
             eprintln!("[arifFlow] Health: curl http://127.0.0.1:{}/health", port);
+            eprintln!("[arifFlow] Eureka: curl http://127.0.0.1:{}/eureka", port);
             for stream in listener.incoming() {
                 match stream {
                     Ok(s) => {
                         let store = receipt_store.clone();
                         let cooling = cooling_state.clone();
+                        let eureka = eureka_store.clone();
                         let start = start_time;
                         std::thread::spawn(move || {
-                            handle_client(s, start, &store, &cooling);
+                            handle_client(s, start, &store, &cooling, &eureka);
                         });
                     }
                     Err(e) => {

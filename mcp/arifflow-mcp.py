@@ -38,7 +38,11 @@ TOOLS = [
             "recent receipts). Verdicts: FLOWING (healthy metabolism), STUCK (no "
             "verification), BURNING (execution outruns verification). Read-only."
         ),
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
     },
     {
         "name": "flow_ingest",
@@ -51,20 +55,143 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "actor_id": {"type": "string", "description": "Agent performing the step (e.g. kimi-code/FI-008)"},
-                "session_id": {"type": "string", "description": "Governing session id (arif_init)"},
-                "step_type": {"type": "string", "enum": STEP_TYPES, "default": "Execute"},
+                "actor_id": {
+                    "type": "string",
+                    "description": "Agent performing the step (e.g. kimi-code/FI-008)",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Governing session id (arif_init)",
+                },
+                "step_type": {
+                    "type": "string",
+                    "enum": STEP_TYPES,
+                    "default": "Execute",
+                },
                 "step_number": {"type": "integer", "default": 1},
-                "cost_ns": {"type": "integer", "description": "Wall-clock step duration in ns", "default": 0},
-                "epistemic_label": {"type": "string", "enum": EPISTEMIC, "default": "Derivation"},
-                "floor_verdict": {"type": "string", "enum": VERDICTS, "default": "Pass"},
-                "session_token": {"type": "string", "description": "SCT token if governed by arifOS"},
+                "cost_ns": {
+                    "type": "integer",
+                    "description": "Wall-clock step duration in ns",
+                    "default": 0,
+                },
+                "epistemic_label": {
+                    "type": "string",
+                    "enum": EPISTEMIC,
+                    "default": "Derivation",
+                },
+                "floor_verdict": {
+                    "type": "string",
+                    "enum": VERDICTS,
+                    "default": "Pass",
+                },
+                "session_token": {
+                    "type": "string",
+                    "description": "SCT token if governed by arifOS",
+                },
                 "topology_id": {"type": "string"},
                 "lane_id": {"type": "integer"},
                 "previous_receipt_hash": {"type": "string"},
-                "payload": {"type": "object", "description": "Step-specific data, errors, intermediates"},
+                "payload": {
+                    "type": "object",
+                    "description": "Step-specific data, errors, intermediates",
+                },
             },
             "required": ["actor_id", "session_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "flow_eureka_record",
+        "description": (
+            "Record a Eureka insight into the arifFlow metabolic Eureka tracker "
+            "(POST /eureka). Captures when paradox tension resolves into new "
+            "structure — the ATLAS333 → EUREKA777 → CUBE777 loop made observable. "
+            "Every Eureka is timestamped with FQ context at emergence. "
+            "Returns the recorded eureka_id and total count."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Short label for the Eureka",
+                },
+                "insight": {
+                    "type": "string",
+                    "description": "The core insight — what was realized",
+                },
+                "domain": {
+                    "type": "string",
+                    "description": "Domain: arifOS, A-FORGE, arifFlow, AAA, GEOX, WEALTH, WELL, CROSS",
+                    "default": "arifFlow",
+                },
+                "actor_id": {
+                    "type": "string",
+                    "description": "Who recorded this Eureka",
+                },
+                "state": {
+                    "type": "string",
+                    "enum": ["CANDIDATE", "RESOLVED", "MAJOR", "MINOR", "SUPERSEDED"],
+                    "default": "CANDIDATE",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Session that produced this Eureka",
+                },
+                "delta_s": {
+                    "type": "number",
+                    "description": "Entropy reduction (ΔS). Negative = entropy reduced.",
+                },
+                "paradox_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "ATLAS333 paradox IDs this resolves",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tags for semantic search",
+                },
+                "evidence_refs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Links to evidence: files, receipts, vault entries",
+                },
+                "payload": {
+                    "type": "object",
+                    "description": "Raw context, conversation excerpt, etc.",
+                },
+            },
+            "required": ["title", "insight", "actor_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "flow_eureka_list",
+        "description": (
+            "List recent Eureka insights from the arifFlow metabolic tracker "
+            "(GET /eureka). Supports filtering by domain, state, and limit. "
+            "Returns eurekas with their FQ context at emergence. "
+            "Read-only — the ATLAS333 → EUREKA777 cooling loop."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "type": "string",
+                    "description": "Filter by domain (arifOS, A-FORGE, arifFlow, AAA, etc.)",
+                },
+                "state": {
+                    "type": "string",
+                    "enum": ["CANDIDATE", "RESOLVED", "MAJOR", "MINOR", "SUPERSEDED"],
+                    "description": "Filter by state",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results (default 20, max 100)",
+                    "default": 20,
+                },
+            },
             "additionalProperties": False,
         },
     },
@@ -138,6 +265,36 @@ def call_tool(name: str, args: dict) -> dict:
         }
         status, body = flow_post("/ingest", receipt)
         return {"http_status": status, "receipt_id": receipt["receipt_id"], **body}
+    if name == "flow_eureka_record":
+        eureka = {
+            "title": args.get("title", "Untitled"),
+            "insight": args.get("insight", ""),
+            "domain": args.get("domain", "arifFlow"),
+            "actor_id": args.get("actor_id", "unknown"),
+            "state": args.get("state", "CANDIDATE"),
+            "session_id": args.get("session_id"),
+            "delta_s": args.get("delta_s"),
+            "paradox_ids": args.get("paradox_ids", []),
+            "tags": args.get("tags", []),
+            "evidence_refs": args.get("evidence_refs", []),
+            "payload": args.get("payload"),
+        }
+        # Remove None values
+        eureka = {k: v for k, v in eureka.items() if v is not None}
+        status, body = flow_post("/eureka", eureka)
+        return {"http_status": status, **body}
+    if name == "flow_eureka_list":
+        params = []
+        if "domain" in args:
+            params.append(f"domain={args['domain']}")
+        if "state" in args:
+            params.append(f"state={args['state']}")
+        if "limit" in args:
+            params.append(f"limit={args['limit']}")
+        path = "/eureka"
+        if params:
+            path += "?" + "&".join(params)
+        return flow_get(path)
     raise ValueError(f"unknown tool: {name}")
 
 
@@ -164,11 +321,14 @@ def main() -> None:
         msg_id = msg.get("id")
 
         if method == "initialize":
-            respond(msg_id, {
-                "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "arifflow", "version": "2026.7.26"},
-            })
+            respond(
+                msg_id,
+                {
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "arifflow", "version": "2026.7.26"},
+                },
+            )
         elif method == "ping":
             respond(msg_id, {})
         elif method and method.startswith("notifications/"):
@@ -181,18 +341,29 @@ def main() -> None:
             targs = params.get("arguments", {}) or {}
             try:
                 result = call_tool(tname, targs)
-                respond(msg_id, {
-                    "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
-                    "isError": False,
-                })
+                respond(
+                    msg_id,
+                    {
+                        "content": [
+                            {"type": "text", "text": json.dumps(result, indent=2)}
+                        ],
+                        "isError": False,
+                    },
+                )
             except Exception as e:  # daemon down, bad input, etc.
-                respond(msg_id, {
-                    "content": [{"type": "text", "text": f"arifFLOW error: {e}"}],
-                    "isError": True,
-                })
+                respond(
+                    msg_id,
+                    {
+                        "content": [{"type": "text", "text": f"arifFLOW error: {e}"}],
+                        "isError": True,
+                    },
+                )
         else:
             if msg_id is not None:
-                respond(msg_id, error={"code": -32601, "message": f"method not found: {method}"})
+                respond(
+                    msg_id,
+                    error={"code": -32601, "message": f"method not found: {method}"},
+                )
 
 
 if __name__ == "__main__":
