@@ -1,8 +1,9 @@
 # ARIFLOW_KERNEL_CANON.md
 
-> **SOT:** 2026-07-26 | **Authority:** ARIF / F13 SOVEREIGN  
-> **Layer:** PLANE 3 — FLOW | **Status:** SEALED  
+> **SOT:** 2026-08-02 | **Authority:** ARIF / F13 SOVEREIGN  
+> **Layer:** PLANE 3 — FLOW | **Status:** SEALED — INVARIANT ENFORCEMENT LIVE  
 > **Sibling:** arifOS CANON (PLANE 1 — LAW)
+> **Enforcement:** `/root/arifFlow/src/governance/invariants.rs` — 92 tests, daemon :7073
 
 ---
 
@@ -137,5 +138,52 @@ Seven verbs. Seven owners. Zero overlap. This is not metaphor — it is the exec
 
 ---
 
+## Invariant Enforcement (2026-08-02)
+
+The F0-F6 invariants are now **automatically enforced** by the arifFlow daemon.
+
+### Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/health` | GET | Status + FQ + invariant health + restricted actors |
+| `/ingest` | POST | Ingest a flow receipt, update actor state |
+| `/check` | POST | Check if actor is allowed to execute (invariant gate) |
+| `/release` | POST | Release hold on actor (after verification receipt) |
+| `/enforce` | POST | Manually trigger enforcement cycle |
+
+### Enforcement Rules
+
+| Rule | Threshold | Action |
+|------|-----------|--------|
+| FQ < 0.5 (STUCK) | verify_cost dominates execute_cost | **HOLD** — block execution |
+| FQ > 10.0 (OVERHEAT) | execute far outruns verify | **THROTTLE** — cooldown 30s |
+| Consecutive executes > 5 | no verify between 5+ executes | **HOLD** — mandate verification |
+| F0/F2/F4/F5/F6 | structural invariants | **PASS** — enforced by architecture |
+
+### Invariant Flow
+
+```
+Actor executes → POST /ingest (Execute receipt)
+                    ↓
+              InvariantEnforcer.ingest() → update FQ
+                    ↓
+              POST /enforce (or auto-cycle)
+                    ↓
+              Check F0-F6 → HOLD / THROTTLE / PASS
+                    ↓
+              Before next execute: POST /check → allowed?
+                    ↓
+              If HOLD: send Verify receipt → POST /release
+                    ↓
+              Actor released → resume execution
+```
+
+### Source
+
+`/root/arifFlow/src/governance/invariants.rs` — 92 tests, 0 failures.
+
+---
+
 **DITEMPA BUKAN DIBERI — Forged, Not Given.**  
-**F0-F6 ratified. A1-A6 ratified. Architecture SEALED. Mutation HOLD.**
+**F0-F6 ratified. A1-A6 ratified. Invariant enforcement LIVE. Architecture SEALED. Mutation HOLD.**

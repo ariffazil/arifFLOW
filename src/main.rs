@@ -2,28 +2,18 @@
 //
 // Two modes:
 //   1) stdin/stdout JSON-L protocol (default) — for A-FORGE adapter / pipe usage
-//   2) --daemon mode — TCP listener on ARIFLOW_PORT (default 7073) with health endpoint
-//
-// Reads JSON-L topology commands from stdin, routes to SuperStepScheduler,
-// writes checkpoint/verdict envelopes to stdout.
-//
-// Protocol:
-//   stdin:  {"type":"configure","topology":"fan_out","lease_id":"...",...}
-//   stdin:  {"type":"seed","channel":"input","data":"..."}
-//   stdin:  {"type":"step","nodes":[...]}
-//   stdout: {"type":"need_verdict","step":0,"state_root":"...","lease_id":"...","chain_id":"..."}
-//   stdin:  {"type":"verdict","class":"SEAL","verdict_id":"...","hash":"..."}
-//   stdout: {"type":"step_result","step":0,"verdict":"SEAL","state_root":"...","deltas":{...}}
-//   stdin:  {"type":"stop"}
-//   stdout: {"type":"cooling","total_steps":3,"final_root":"...","leases_closed":1}
-//
-// Daemon mode:
-//   GET /health → {"status":"ok","fq":{...},"receipts":N,"uptime_ms":...}
-//   POST /flow  → JSON-L command (same as stdin protocol)
+//   2) --daemon mode — TCP listener on ARIFLOW_PORT (default 7073) with:
+//      GET /health    → status + FQ + invariant health
+//      POST /ingest   → ingest flow receipt, update actor state, enforce invariants
+//      POST /check    → check if actor is allowed to execute (invariant gate)
+//      POST /release  → release hold on actor (after verification)
+//      POST /enforce  → manually trigger enforcement cycle
+//      POST /flow     → JSON-L command (same as stdin protocol)
 //
 // DITEMPA BUKAN DIBERI — arifOS = law, arifFlow = flow, A-FORGE = hands
 
 use arifflow::channel::ChannelMode;
+use arifflow::governance::invariants::{EnforcerAction, FqThresholds, InvariantEnforcer};
 use arifflow::receipt::{FlowReceipt, ReceiptStore};
 use arifflow::scheduler::{FlowNode, SuperStepScheduler, TopologyKind, VerdictClass};
 use serde::{Deserialize, Serialize};
@@ -121,7 +111,8 @@ impl FlowNode for NodeWrapper {
         &self,
         _inputs: BTreeMap<arifflow::channel::ChannelId, Vec<arifflow::channel::Message<String>>>,
         _lease_id: uuid::Uuid,
-    ) -> Result<BTreeMap<arifflow::channel::ChannelId, String>, arifflow::scheduler::NodeError> {
+    ) -> Result<BTreeMap<arifflow::channel::ChannelId, String>, arifflow::scheduler::NodeError>
+    {
         let mut out = BTreeMap::new();
         for o in &self.outputs {
             out.insert(
@@ -372,14 +363,27 @@ fn handle_client(
     mut stream: TcpStream,
     start_time: Instant,
     receipt_store: &Arc<Mutex<ReceiptStore>>,
+    enforcer: &Arc<Mutex<InvariantEnforcer>>,
 ) {
-    let mut buf = [0u8; 16384]; // larger buffer for POST bodies
+    let mut buf = [0u8; 16384];
     match stream.read(&mut buf) {
         Ok(n) if n > 0 => {
             let request = String::from_utf8_lossy(&buf[..n]);
             let response = if request.starts_with("GET /health") {
                 let store = receipt_store.lock().unwrap();
+                let enf = enforcer.lock().unwrap();
                 let fq = store.flow_quotient(100);
+                let restricted: Vec<serde_json::Value> = enf
+                    .restricted_actors()
+                    .iter()
+                    .map(|(id, action, reason)| {
+                        serde_json::json!({
+                            "actor": id,
+                            "action": format!("{:?}", action),
+                            "reason": reason,
+                        })
+                    })
+                    .collect();
                 let body = serde_json::json!({
                     "status": "ok",
                     "fq": {
@@ -387,6 +391,12 @@ fn handle_client(
                         "verdict": format!("{}", fq.verdict),
                         "execute_count": fq.execute_count,
                         "verify_count": fq.verify_count,
+                    },
+                    "invariants": {
+                        "cycle_count": enf.cycle_count,
+                        "hold_count": enf.hold_count,
+                        "throttle_count": enf.throttle_count,
+                        "restricted_actors": restricted,
                     },
                     "receipts": store.len(),
                     "uptime_ms": start_time.elapsed().as_millis() as u64,
@@ -398,13 +408,15 @@ fn handle_client(
                     Some(raw_json) => match serde_json::from_str::<FlowReceipt>(raw_json.trim()) {
                         Ok(receipt) => {
                             let mut store = receipt_store.lock().unwrap();
-                            // Monitoring endpoint — accept receipts without strict chain validation.
-                            // Core chain-verified execution runs via stdin/stdout protocol.
-                            // /ingest is for observability: FQ monitoring, trend, cooling correlation.
-                            store.push_force(receipt);
+                            let mut enf = enforcer.lock().unwrap();
+                            store.push_force(receipt.clone());
+                            // Ingest into invariant enforcer
+                            enf.ingest(&receipt);
                             let fq = store.flow_quotient(20);
                             let body = serde_json::json!({
                                 "status": "ingested",
+                                "actor": receipt.actor_id,
+                                "step_type": format!("{}", receipt.step_type),
                                 "fq": {
                                     "quotient": fq.quotient,
                                     "verdict": format!("{}", fq.verdict),
@@ -423,9 +435,9 @@ fn handle_client(
                             })
                             .to_string();
                             format!(
-                                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                                    body.len(), body
-                                ).into_bytes()
+                                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                body.len(), body
+                            ).into_bytes()
                         }
                     },
                     None => {
@@ -436,18 +448,116 @@ fn handle_client(
                         ).into_bytes()
                     }
                 }
+            } else if request.starts_with("POST /check") {
+                // ── INVARIANT GATE: Check if actor is allowed to execute ──
+                match extract_body(&request) {
+                    Some(raw_json) => {
+                        #[derive(Deserialize)]
+                        struct CheckRequest {
+                            actor_id: String,
+                        }
+                        match serde_json::from_str::<CheckRequest>(raw_json.trim()) {
+                            Ok(req) => {
+                                let enf = enforcer.lock().unwrap();
+                                let (allowed, reason, action) = enf.check_actor(&req.actor_id);
+                                let body = serde_json::json!({
+                                    "actor": req.actor_id,
+                                    "allowed": allowed,
+                                    "reason": reason,
+                                    "action": format!("{:?}", action),
+                                });
+                                if allowed {
+                                    http_ok(&body.to_string())
+                                } else {
+                                    let body_str = body.to_string();
+                                    format!(
+                                        "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                        body_str.len(), body_str
+                                    ).into_bytes()
+                                }
+                            }
+                            Err(e) => {
+                                let body = serde_json::json!({"status": "invalid", "error": format!("{}", e)}).to_string();
+                                format!(
+                                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                    body.len(), body
+                                ).into_bytes()
+                            }
+                        }
+                    }
+                    None => {
+                        let body = r#"{"status":"error","message":"Empty body. Send {\"actor_id\":\"...\"}"}"#;
+                        format!(
+                            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(), body
+                        ).into_bytes()
+                    }
+                }
+            } else if request.starts_with("POST /release") {
+                // ── Release hold on actor (called after verification) ──
+                match extract_body(&request) {
+                    Some(raw_json) => {
+                        #[derive(Deserialize)]
+                        struct ReleaseRequest {
+                            actor_id: String,
+                        }
+                        match serde_json::from_str::<ReleaseRequest>(raw_json.trim()) {
+                            Ok(req) => {
+                                let mut enf = enforcer.lock().unwrap();
+                                enf.release_hold(&req.actor_id);
+                                let body = serde_json::json!({
+                                    "status": "released",
+                                    "actor": req.actor_id,
+                                });
+                                http_ok(&body.to_string())
+                            }
+                            Err(e) => {
+                                let body = serde_json::json!({"status": "invalid", "error": format!("{}", e)}).to_string();
+                                format!(
+                                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                    body.len(), body
+                                ).into_bytes()
+                            }
+                        }
+                    }
+                    None => {
+                        let body = r#"{"status":"error","message":"Empty body. Send {\"actor_id\":\"...\"}"}"#;
+                        format!(
+                            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(), body
+                        ).into_bytes()
+                    }
+                }
+            } else if request.starts_with("POST /enforce") {
+                // ── Manually trigger enforcement cycle ──
+                let mut enf = enforcer.lock().unwrap();
+                let report = enf.enforce();
+                let body = serde_json::json!({
+                    "status": "enforced",
+                    "overall": format!("{:?}", report.overall_status),
+                    "blocking": report.blocking_count,
+                    "warns": report.warn_count,
+                    "checks": report.checks.iter().map(|c| {
+                        serde_json::json!({
+                            "invariant": c.invariant.code(),
+                            "status": format!("{:?}", c.status),
+                            "reason": c.reason,
+                        })
+                    }).collect::<Vec<_>>(),
+                });
+                http_ok(&body.to_string())
             } else if request.starts_with("POST /flow") {
                 let body = serde_json::json!({
                     "status": "ack",
-                    "message": "Flow command received. Use POST /ingest for receipt ingestion.",
-                    "endpoints": ["GET /health", "POST /ingest", "POST /flow"]
+                    "message": "Flow command received. Endpoints: GET /health, POST /ingest, POST /check, POST /release, POST /enforce, POST /flow",
+                    "endpoints": ["GET /health", "POST /ingest", "POST /check", "POST /release", "POST /enforce", "POST /flow"]
                 })
                 .to_string();
                 http_ok(&body)
             } else {
                 let body = serde_json::json!({
                     "status": "error",
-                    "message": "Not found. Use GET /health, POST /ingest, or POST /flow"
+                    "message": "Not found. Use GET /health, POST /ingest, POST /check, POST /release, POST /enforce, or POST /flow"
                 })
                 .to_string();
                 format!(
@@ -472,18 +582,31 @@ fn daemon_mode() {
     let addr = format!("127.0.0.1:{}", port);
     let start_time = Instant::now();
     let receipt_store = Arc::new(Mutex::new(ReceiptStore::new(1000)));
+    let enforcer = Arc::new(Mutex::new(InvariantEnforcer::default()));
 
     match TcpListener::bind(&addr) {
         Ok(listener) => {
             eprintln!("[arifFlow] Daemon mode — listening on {}", addr);
-            eprintln!("[arifFlow] Health: curl http://127.0.0.1:{}/health", port);
+            eprintln!("[arifFlow] Health:  curl http://127.0.0.1:{}/health", port);
+            eprintln!("[arifFlow] Check:  curl -X POST http://127.0.0.1:{}/check -d '{{\"actor_id\":\"test\"}}'", port);
+            eprintln!(
+                "[arifFlow] Ingest: curl -X POST http://127.0.0.1:{}/ingest -d '{{...}}'",
+                port
+            );
+            eprintln!(
+                "[arifFlow] Enforce:curl -X POST http://127.0.0.1:{}/enforce",
+                port
+            );
+            eprintln!("[arifFlow] Invariants: F0-F6 flow-plane enforcement ACTIVE");
+
             for stream in listener.incoming() {
                 match stream {
                     Ok(s) => {
                         let store = receipt_store.clone();
+                        let enf = enforcer.clone();
                         let start = start_time;
                         std::thread::spawn(move || {
-                            handle_client(s, start, &store);
+                            handle_client(s, start, &store, &enf);
                         });
                     }
                     Err(e) => {
