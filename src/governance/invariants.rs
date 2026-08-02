@@ -271,13 +271,37 @@ impl ActorFlowState {
         } else {
             self.execute_cost_ns as f64 / self.verify_cost_ns as f64
         };
-        self.verdict = if self.fq > 10.0 {
-            FlowVerdict::Optimal // technically Optimal but suspicious — OVERHEAT
-        } else if self.fq > 3.0 {
+
+        // Heuristic: if all verify costs are exactly 1_000_000 (default placeholder)
+        // or 0, fall back to count-based ratio. Prevents false OVERHEAT from
+        // agents not reporting real verify costs.
+        let verify_costs_are_defaults = self.verify_count > 0
+            && (self.verify_cost_ns == self.verify_count as u64 * 1_000_000
+                || self.verify_cost_ns == 0);
+        let effective_fq = if self.fq.is_infinite() || self.fq == 0.0 || verify_costs_are_defaults {
+            if self.verify_count == 0 {
+                if self.execute_count > 0 {
+                    f64::MAX
+                } else {
+                    0.0
+                }
+            } else {
+                self.execute_count as f64 / self.verify_count as f64
+            }
+        } else {
+            self.fq
+        };
+
+        self.verdict = if effective_fq == f64::MAX {
+            // f64::MAX — no verification at all. Pure execution.
             FlowVerdict::Optimal
-        } else if self.fq > 1.0 {
+        } else if effective_fq > 10.0 {
+            FlowVerdict::Overheat
+        } else if effective_fq > 3.0 {
+            FlowVerdict::Optimal
+        } else if effective_fq > 1.0 {
             FlowVerdict::Balanced
-        } else if self.fq > 0.5 {
+        } else if effective_fq > 0.5 {
             FlowVerdict::Watching
         } else {
             FlowVerdict::Stuck
