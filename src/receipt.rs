@@ -18,7 +18,8 @@
 //!
 //! | FQ Range | Verdict | Meaning |
 //! |----------|---------|---------|
-//! | > 3.0    | Optimal | Agent in flow. Governance in the architecture. |
+//! | > 10.0   | Overheat | Execute far outruns verify — under-verification risk. THROTTLE. |
+//! | 3.0–10.0 | Optimal | Agent in flow. Governance in the architecture. |
 //! | 1.0–3.0  | Balanced | Healthy verification. |
 //! | 0.5–1.0  | Watching | Self-monitoring competes with execution. |
 //! | < 0.5    | Stuck | Self-monitoring has become the task. mPFC takeover. |
@@ -177,7 +178,10 @@ impl TriWitnessVotes {
     pub fn new(human: f64, ai: f64, earth: f64) -> Result<Self, String> {
         for (name, val) in [("human", human), ("ai", ai), ("earth", earth)] {
             if !(0.0..=1.0).contains(&val) {
-                return Err(format!("{} witness vote must be 0.0–1.0, got {}", name, val));
+                return Err(format!(
+                    "{} witness vote must be 0.0–1.0, got {}",
+                    name, val
+                ));
             }
         }
         Ok(Self { human, ai, earth })
@@ -209,7 +213,9 @@ impl Default for TriWitnessVotes {
 /// Flow health verdict based on Flow Quotient.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FlowVerdict {
-    /// FQ > 3.0 — Agent in flow. Governance in the architecture.
+    /// FQ > 10.0 — Execute far outruns verify. Under-verification risk. THROTTLE.
+    Overheat,
+    /// FQ 3.0–10.0 — Agent in flow. Governance in the architecture.
     Optimal,
     /// FQ 1.0–3.0 — Healthy verification. Self-monitoring supports execution.
     Balanced,
@@ -222,6 +228,7 @@ pub enum FlowVerdict {
 impl fmt::Display for FlowVerdict {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            FlowVerdict::Overheat => write!(f, "OVERHEAT"),
             FlowVerdict::Optimal => write!(f, "OPTIMAL"),
             FlowVerdict::Balanced => write!(f, "BALANCED"),
             FlowVerdict::Watching => write!(f, "WATCHING"),
@@ -289,11 +296,48 @@ impl FlowQuotient {
             execute_cost as f64 / verify_cost as f64
         };
 
-        let verdict = if quotient > 3.0 {
+        // Heuristic: if all verify costs are exactly 1_000_000 (the default placeholder
+        // when callers don't set cost_ns), the cost_ns values are unreliable.
+        // Fall back to count-based ratio to prevent false OVERHEAT.
+        // Example: 12 executes @ 250ms each vs 12 verifies @ 1ms each → cost FQ=250,
+        // but count FQ=1.0 → BALANCED (correct).
+        let verify_costs_are_defaults = verify_count > 0
+            && (verify_cost == verify_count as u64 * 1_000_000 || verify_cost == 0);
+
+        // Use step count ratio as fallback when cost_ns values are 0 (default)
+        // or when all verify costs are the default placeholder.
+        // This prevents FQ from being 0.0 or f64::MAX or falsely inflated
+        // when callers don't set cost_ns.
+        let effective_quotient =
+            if quotient.is_infinite() || quotient == 0.0 || verify_costs_are_defaults {
+                if verify_count == 0 {
+                    if execute_count > 0 {
+                        f64::MAX
+                    } else {
+                        0.0
+                    }
+                } else {
+                    execute_count as f64 / verify_count as f64
+                }
+            } else {
+                quotient
+            };
+
+        let verdict = if effective_quotient == f64::MAX {
+            // f64::MAX — no verification at all. Pure execution flow.
+            // Suspicious but not overheat — no verification was attempted.
             FlowVerdict::Optimal
-        } else if quotient > 1.0 {
+        } else if execute_count == 0 && verify_count == 0 {
+            // Fresh start — no receipts yet. Not stuck, not optimal.
+            // Neutral baseline until data arrives.
+            FlowVerdict::Optimal
+        } else if effective_quotient > 10.0 {
+            FlowVerdict::Overheat
+        } else if effective_quotient > 3.0 {
+            FlowVerdict::Optimal
+        } else if effective_quotient > 1.0 {
             FlowVerdict::Balanced
-        } else if quotient > 0.5 {
+        } else if effective_quotient > 0.5 {
             FlowVerdict::Watching
         } else {
             FlowVerdict::Stuck
@@ -304,7 +348,7 @@ impl FlowQuotient {
             execute_cost_ns: execute_cost,
             verify_count,
             verify_cost_ns: verify_cost,
-            quotient,
+            quotient: effective_quotient,
             verdict,
             window_size: receipts.len(),
         }
@@ -595,9 +639,7 @@ impl ReceiptStore {
                 }
             }
         } else if receipt.previous_receipt_hash.is_some() {
-            return Err(
-                "First receipt in store must have no previous hash".to_string(),
-            );
+            return Err("First receipt in store must have no previous hash".to_string());
         }
 
         // Enforce capacity
@@ -657,7 +699,13 @@ mod tests {
 
     #[test]
     fn test_create_first_receipt() {
-        let r = FlowReceipt::new_first("a-forge", "session-123", StepType::Execute, EpistemicLabel::Observation, 1_000_000);
+        let r = FlowReceipt::new_first(
+            "a-forge",
+            "session-123",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1_000_000,
+        );
         assert_eq!(r.actor_id, "a-forge");
         assert_eq!(r.session_id, "session-123");
         assert_eq!(r.step_type, StepType::Execute);
@@ -668,8 +716,21 @@ mod tests {
 
     #[test]
     fn test_create_chained_receipt() {
-        let r1 = FlowReceipt::new_first("a-forge", "session-123", StepType::Execute, EpistemicLabel::Observation, 1_000_000);
-        let r2 = FlowReceipt::new_chained(&r1, "a-forge", "session-123", StepType::Verify, EpistemicLabel::Derivation, 500_000);
+        let r1 = FlowReceipt::new_first(
+            "a-forge",
+            "session-123",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1_000_000,
+        );
+        let r2 = FlowReceipt::new_chained(
+            &r1,
+            "a-forge",
+            "session-123",
+            StepType::Verify,
+            EpistemicLabel::Derivation,
+            500_000,
+        );
 
         assert!(r2.previous_receipt_hash.is_some());
         assert_eq!(r2.step_number, 1);
@@ -682,7 +743,13 @@ mod tests {
 
     #[test]
     fn test_receipt_hash_deterministic() {
-        let r1 = FlowReceipt::new_first("a-forge", "session-123", StepType::Execute, EpistemicLabel::Observation, 1_000_000);
+        let r1 = FlowReceipt::new_first(
+            "a-forge",
+            "session-123",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1_000_000,
+        );
         let hash1 = r1.hash();
         let hash2 = r1.hash();
         assert_eq!(hash1, hash2);
@@ -691,13 +758,33 @@ mod tests {
     #[test]
     fn test_verify_chain_valid() {
         let mut receipts = Vec::new();
-        let r1 = FlowReceipt::new_first("agent", "s1", StepType::Execute, EpistemicLabel::Observation, 100);
+        let r1 = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
+        );
         receipts.push(r1.clone());
 
-        let r2 = FlowReceipt::new_chained(&r1, "agent", "s1", StepType::Verify, EpistemicLabel::Derivation, 50);
+        let r2 = FlowReceipt::new_chained(
+            &r1,
+            "agent",
+            "s1",
+            StepType::Verify,
+            EpistemicLabel::Derivation,
+            50,
+        );
         receipts.push(r2.clone());
 
-        let r3 = FlowReceipt::new_chained(&r2, "agent", "s1", StepType::Execute, EpistemicLabel::Observation, 200);
+        let r3 = FlowReceipt::new_chained(
+            &r2,
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            200,
+        );
         receipts.push(r3);
 
         assert!(verify_chain(&receipts).is_ok());
@@ -706,13 +793,26 @@ mod tests {
     #[test]
     fn test_verify_chain_break() {
         let mut receipts = Vec::new();
-        let r1 = FlowReceipt::new_first("agent", "s1", StepType::Execute, EpistemicLabel::Observation, 100);
+        let r1 = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
+        );
         receipts.push(r1);
 
         // Manually create a receipt with wrong hash
         let broken = FlowReceipt {
             previous_receipt_hash: Some("deadbeef".to_string()),
-            ..FlowReceipt::new_chained(&receipts[0], "agent", "s1", StepType::Execute, EpistemicLabel::Observation, 100)
+            ..FlowReceipt::new_chained(
+                &receipts[0],
+                "agent",
+                "s1",
+                StepType::Execute,
+                EpistemicLabel::Observation,
+                100,
+            )
         };
         receipts.push(broken);
 
@@ -745,37 +845,88 @@ mod tests {
 
     #[test]
     fn test_flow_quotient_optimal() {
-        // Lots of execute, little verify
+        // Execute with moderate verify — ratio ~5:1 (3.0-10.0 range)
         let mut store = ReceiptStore::new(100);
-        let r1 = FlowReceipt::new_first("agent", "s1", StepType::Execute, EpistemicLabel::Observation, 1_000_000);
+        let r1 = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1_000_000,
+        );
         store.push(r1).unwrap();
 
         let r2 = FlowReceipt {
-            preceding_verify_cost_ns: Some(100_000), // cheap verify
+            preceding_verify_cost_ns: Some(500_000), // moderate verify → ratio 6:1
             ..FlowReceipt::new_chained(
-                store.all().last().unwrap(), "agent", "s1",
-                StepType::Execute, EpistemicLabel::Observation, 2_000_000
+                store.all().last().unwrap(),
+                "agent",
+                "s1",
+                StepType::Execute,
+                EpistemicLabel::Observation,
+                2_000_000,
             )
         };
         store.push(r2).unwrap();
 
         let fq = store.flow_quotient(10);
         assert_eq!(fq.verdict, FlowVerdict::Optimal);
-        assert!(fq.quotient > 3.0);
+        assert!(fq.quotient > 3.0 && fq.quotient < 10.0);
+    }
+
+    #[test]
+    fn test_flow_quotient_overheat() {
+        // Execute far outruns verify — ratio > 10:1
+        let mut store = ReceiptStore::new(100);
+        let r1 = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1_000_000,
+        );
+        store.push(r1).unwrap();
+
+        let r2 = FlowReceipt {
+            preceding_verify_cost_ns: Some(50_000), // very cheap verify
+            ..FlowReceipt::new_chained(
+                store.all().last().unwrap(),
+                "agent",
+                "s1",
+                StepType::Execute,
+                EpistemicLabel::Observation,
+                2_000_000,
+            )
+        };
+        store.push(r2).unwrap();
+
+        let fq = store.flow_quotient(10);
+        assert_eq!(fq.verdict, FlowVerdict::Overheat);
+        assert!(fq.quotient > 10.0);
     }
 
     #[test]
     fn test_flow_quotient_stuck() {
         // Lots of verify, little execute
         let mut store = ReceiptStore::new(100);
-        let r1 = FlowReceipt::new_first("agent", "s1", StepType::Verify, EpistemicLabel::Derivation, 500_000);
+        let r1 = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Verify,
+            EpistemicLabel::Derivation,
+            500_000,
+        );
         store.push(r1).unwrap();
 
         let r2 = FlowReceipt {
             preceding_verify_cost_ns: Some(1_000_000),
             ..FlowReceipt::new_chained(
-                store.all().last().unwrap(), "agent", "s1",
-                StepType::Verify, EpistemicLabel::Derivation, 2_000_000
+                store.all().last().unwrap(),
+                "agent",
+                "s1",
+                StepType::Verify,
+                EpistemicLabel::Derivation,
+                2_000_000,
             )
         };
         store.push(r2).unwrap();
@@ -783,8 +934,12 @@ mod tests {
         let r3 = FlowReceipt {
             preceding_verify_cost_ns: Some(500_000),
             ..FlowReceipt::new_chained(
-                store.all().last().unwrap(), "agent", "s1",
-                StepType::Execute, EpistemicLabel::Observation, 100_000
+                store.all().last().unwrap(),
+                "agent",
+                "s1",
+                StepType::Execute,
+                EpistemicLabel::Observation,
+                100_000,
             )
         };
         store.push(r3).unwrap();
@@ -797,15 +952,25 @@ mod tests {
     #[test]
     fn test_flow_quotient_balanced() {
         let mut store = ReceiptStore::new(100);
-        let r1 = FlowReceipt::new_first("agent", "s1", StepType::Execute, EpistemicLabel::Observation, 1_000_000);
+        let r1 = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1_000_000,
+        );
         store.push(r1).unwrap();
 
         // FQ = 1_000_000 / (500_000 + 200_000) = 1.43 → Balanced
         let r2 = FlowReceipt {
             preceding_verify_cost_ns: Some(200_000),
             ..FlowReceipt::new_chained(
-                store.all().last().unwrap(), "agent", "s1",
-                StepType::Verify, EpistemicLabel::Derivation, 500_000
+                store.all().last().unwrap(),
+                "agent",
+                "s1",
+                StepType::Verify,
+                EpistemicLabel::Derivation,
+                500_000,
             )
         };
         store.push(r2).unwrap();
@@ -819,19 +984,35 @@ mod tests {
     fn test_receipt_store_push_validates_chain() {
         let mut store = ReceiptStore::new(100);
 
-        let r1 = FlowReceipt::new_first("agent", "s1", StepType::Execute, EpistemicLabel::Observation, 100);
+        let r1 = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
+        );
         assert!(store.push(r1).is_ok());
 
         let r2 = FlowReceipt::new_chained(
-            store.all().last().unwrap(), "agent", "s1",
-            StepType::Verify, EpistemicLabel::Derivation, 50
+            store.all().last().unwrap(),
+            "agent",
+            "s1",
+            StepType::Verify,
+            EpistemicLabel::Derivation,
+            50,
         );
         assert!(store.push(r2).is_ok());
 
         // Push a broken receipt
         let broken = FlowReceipt {
             previous_receipt_hash: Some("badhash".to_string()),
-            ..FlowReceipt::new_first("agent", "s1", StepType::Execute, EpistemicLabel::Observation, 100)
+            ..FlowReceipt::new_first(
+                "agent",
+                "s1",
+                StepType::Execute,
+                EpistemicLabel::Observation,
+                100,
+            )
         };
         assert!(store.push(broken).is_err());
     }
@@ -845,31 +1026,64 @@ mod tests {
     #[test]
     fn test_receipt_store_enforces_max() {
         let mut store = ReceiptStore::new(3);
-        let r1 = FlowReceipt::new_first("a", "s1", StepType::Execute, EpistemicLabel::Observation, 10);
+        let r1 = FlowReceipt::new_first(
+            "a",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            10,
+        );
         store.push(r1).unwrap();
-        let r2 = FlowReceipt::new_chained(store.all().last().unwrap(), "a", "s1", StepType::Execute, EpistemicLabel::Observation, 10);
+        let r2 = FlowReceipt::new_chained(
+            store.all().last().unwrap(),
+            "a",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            10,
+        );
         store.push(r2).unwrap();
-        let r3 = FlowReceipt::new_chained(store.all().last().unwrap(), "a", "s1", StepType::Execute, EpistemicLabel::Observation, 10);
+        let r3 = FlowReceipt::new_chained(
+            store.all().last().unwrap(),
+            "a",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            10,
+        );
         store.push(r3).unwrap();
 
         assert_eq!(store.len(), 3);
 
         // Push 4th — oldest should drop
-        let r4 = FlowReceipt::new_chained(store.all().last().unwrap(), "a", "s1", StepType::Execute, EpistemicLabel::Observation, 10);
+        let r4 = FlowReceipt::new_chained(
+            store.all().last().unwrap(),
+            "a",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            10,
+        );
         store.push(r4).unwrap();
         assert_eq!(store.len(), 3);
     }
 
     #[test]
     fn test_builder_pattern() {
-        let receipt = FlowReceipt::new_first("agent", "s1", StepType::Execute, EpistemicLabel::Observation, 100)
-            .with_epistemic(EpistemicLabel::Interpretation)
-            .with_floor_verdict(FloorVerdict::Caution)
-            .with_cooling(CoolingDecision::Clamp)
-            .with_witness(TriWitnessVotes::new(0.9, 0.85, 0.95).unwrap())
-            .with_preceding_verify_cost(50_000)
-            .with_topology("fan-out:build", 3)
-            .with_payload(serde_json::json!({"action": "deploy", "target": "production"}));
+        let receipt = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
+        )
+        .with_epistemic(EpistemicLabel::Interpretation)
+        .with_floor_verdict(FloorVerdict::Caution)
+        .with_cooling(CoolingDecision::Clamp)
+        .with_witness(TriWitnessVotes::new(0.9, 0.85, 0.95).unwrap())
+        .with_preceding_verify_cost(50_000)
+        .with_topology("fan-out:build", 3)
+        .with_payload(serde_json::json!({"action": "deploy", "target": "production"}));
 
         assert_eq!(receipt.epistemic_label, EpistemicLabel::Interpretation);
         assert_eq!(receipt.floor_verdict, FloorVerdict::Caution);
@@ -883,9 +1097,22 @@ mod tests {
     #[test]
     fn test_flow_quotient_no_verification() {
         let mut store = ReceiptStore::new(10);
-        let r1 = FlowReceipt::new_first("agent", "s1", StepType::Execute, EpistemicLabel::Observation, 1_000_000);
+        let r1 = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1_000_000,
+        );
         store.push(r1).unwrap();
-        let r2 = FlowReceipt::new_chained(store.all().last().unwrap(), "agent", "s1", StepType::Execute, EpistemicLabel::Observation, 2_000_000);
+        let r2 = FlowReceipt::new_chained(
+            store.all().last().unwrap(),
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            2_000_000,
+        );
         store.push(r2).unwrap();
 
         let fq = store.flow_quotient(10);
@@ -926,9 +1153,22 @@ mod tests {
     #[test]
     fn test_store_verify_chain() {
         let mut store = ReceiptStore::new(100);
-        let r1 = FlowReceipt::new_first("a", "s1", StepType::Execute, EpistemicLabel::Observation, 10);
+        let r1 = FlowReceipt::new_first(
+            "a",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            10,
+        );
         store.push(r1).unwrap();
-        let r2 = FlowReceipt::new_chained(store.all().last().unwrap(), "a", "s1", StepType::Verify, EpistemicLabel::Derivation, 5);
+        let r2 = FlowReceipt::new_chained(
+            store.all().last().unwrap(),
+            "a",
+            "s1",
+            StepType::Verify,
+            EpistemicLabel::Derivation,
+            5,
+        );
         store.push(r2).unwrap();
         assert!(store.verify_chain().is_ok());
     }
@@ -1016,7 +1256,16 @@ impl AFQMetric {
             execute_count: execution_steps,
             verify_count: governance_steps,
             afq: quotient,
-            verdict: if quotient > 3.0 { "OPTIMAL" } else if quotient > 1.0 { "BALANCED" } else if quotient > 0.5 { "WATCHING" } else { "STUCK" }.to_string(),
+            verdict: if quotient > 3.0 {
+                "OPTIMAL"
+            } else if quotient > 1.0 {
+                "BALANCED"
+            } else if quotient > 0.5 {
+                "WATCHING"
+            } else {
+                "STUCK"
+            }
+            .to_string(),
         }
     }
 
