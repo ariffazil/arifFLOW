@@ -4,8 +4,7 @@
 >
 > DITEMPA BUKAN DIBERI — Forged, Not Given.
 
-**SOT:** 2026-08-02 | **Version:** `v2026.08.02` | **License:** AGPL-3.0
-**live_commit:** 5c53232 | **last_verified:** 2026-08-02T06:19:13Z
+**SOT:** 2026-07-26 | **Version:** `v2026.07.26` | **License:** AGPL-3.0
 
 ---
 
