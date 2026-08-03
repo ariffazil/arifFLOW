@@ -1,13 +1,6 @@
 <!-- CANONICAL: /root/AGENTS.md -->
 <!-- Status: DERIVED — organ-specific extension -->
-
-<!-- SOT-MANIFEST
-federation_release: v2026.08.02
-last_verified: 2026-08-02T07:55Z
-live_commit: 17d649b
-owner_summary: GREEN — invariant enforcement LIVE
-truth_rule: cargo test + curl :7073/health beat any prose below
--->
+<!-- truth_rule: cargo test + curl :7073/health beat any prose below -->
 
 # AGENTS.md — arifFlow | arifOS Federation
 
@@ -111,7 +104,7 @@ ingest("333-AGI", session_id, "Execute", "Observation", cost_ns)
 
 ```bash
 cargo build --release
-cargo test                    # 92/92 tests (2026-08-02)
+cargo test                    # all tests (see CI for count)
 cargo clippy                  # lint
 cargo fmt                     # format
 ```
@@ -142,5 +135,3 @@ STDIN/STDOUT JSON-L protocol — arifOS sends commands, arifFlow streams verdict
 ## Versioning
 
 **Iron Rule — date-stamped only.** Tags: `vYYYY.MM.DD`. No semver.
-
-**Current:** v2026.08.02 — invariant enforcement LIVE. 92/92 tests.

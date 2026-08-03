@@ -38,7 +38,11 @@ TOOLS = [
             "recent receipts). Verdicts: FLOWING (healthy metabolism), STUCK (no "
             "verification), BURNING (execution outruns verification). Read-only."
         ),
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
     },
     {
         "name": "flow_ingest",
@@ -51,18 +55,46 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "actor_id": {"type": "string", "description": "Agent performing the step (e.g. kimi-code/FI-008)"},
-                "session_id": {"type": "string", "description": "Governing session id (arif_init)"},
-                "step_type": {"type": "string", "enum": STEP_TYPES, "default": "Execute"},
+                "actor_id": {
+                    "type": "string",
+                    "description": "Agent performing the step (e.g. kimi-code/FI-008)",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Governing session id (arif_init)",
+                },
+                "step_type": {
+                    "type": "string",
+                    "enum": STEP_TYPES,
+                    "default": "Execute",
+                },
                 "step_number": {"type": "integer", "default": 1},
-                "cost_ns": {"type": "integer", "description": "Wall-clock step duration in ns", "default": 0},
-                "epistemic_label": {"type": "string", "enum": EPISTEMIC, "default": "Derivation"},
-                "floor_verdict": {"type": "string", "enum": VERDICTS, "default": "Pass"},
-                "session_token": {"type": "string", "description": "SCT token if governed by arifOS"},
+                "cost_ns": {
+                    "type": "integer",
+                    "description": "Wall-clock step duration in ns",
+                    "default": 0,
+                },
+                "epistemic_label": {
+                    "type": "string",
+                    "enum": EPISTEMIC,
+                    "default": "Derivation",
+                },
+                "floor_verdict": {
+                    "type": "string",
+                    "enum": VERDICTS,
+                    "default": "Pass",
+                },
+                "session_token": {
+                    "type": "string",
+                    "description": "SCT token if governed by arifOS",
+                },
                 "topology_id": {"type": "string"},
                 "lane_id": {"type": "integer"},
                 "previous_receipt_hash": {"type": "string"},
-                "payload": {"type": "object", "description": "Step-specific data, errors, intermediates"},
+                "payload": {
+                    "type": "object",
+                    "description": "Step-specific data, errors, intermediates",
+                },
             },
             "required": ["actor_id", "session_id"],
             "additionalProperties": False,
@@ -137,6 +169,29 @@ def call_tool(name: str, args: dict) -> dict:
             "payload": args.get("payload"),
         }
         status, body = flow_post("/ingest", receipt)
+        # [TAP] Trace tool call for Dataset B training — fires once per ingest
+        try:
+            with open(
+                "/root/arifOS-model-registry/data/tool_traces.jsonl", "a"
+            ) as _tap:
+                _tap.write(
+                    json.dumps(
+                        {
+                            "actor_id": receipt["actor_id"],
+                            "session_id": receipt["session_id"],
+                            "turn": receipt["step_number"],
+                            "role": "assistant",
+                            "timestamp": receipt["created_at"],
+                            "tool_name": "flow_ingest",
+                            "tool_result": json.dumps(body)[:2000],
+                            "epistemic": receipt["epistemic_label"],
+                            "floor_verdict": receipt["floor_verdict"],
+                        }
+                    )
+                    + "\n"
+                )
+        except Exception:
+            pass  # tap failure never breaks the loop
         return {"http_status": status, "receipt_id": receipt["receipt_id"], **body}
     raise ValueError(f"unknown tool: {name}")
 
@@ -164,11 +219,14 @@ def main() -> None:
         msg_id = msg.get("id")
 
         if method == "initialize":
-            respond(msg_id, {
-                "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "arifflow", "version": "2026.7.26"},
-            })
+            respond(
+                msg_id,
+                {
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "arifflow", "version": "2026.7.26"},
+                },
+            )
         elif method == "ping":
             respond(msg_id, {})
         elif method and method.startswith("notifications/"):
@@ -181,18 +239,29 @@ def main() -> None:
             targs = params.get("arguments", {}) or {}
             try:
                 result = call_tool(tname, targs)
-                respond(msg_id, {
-                    "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
-                    "isError": False,
-                })
+                respond(
+                    msg_id,
+                    {
+                        "content": [
+                            {"type": "text", "text": json.dumps(result, indent=2)}
+                        ],
+                        "isError": False,
+                    },
+                )
             except Exception as e:  # daemon down, bad input, etc.
-                respond(msg_id, {
-                    "content": [{"type": "text", "text": f"arifFLOW error: {e}"}],
-                    "isError": True,
-                })
+                respond(
+                    msg_id,
+                    {
+                        "content": [{"type": "text", "text": f"arifFLOW error: {e}"}],
+                        "isError": True,
+                    },
+                )
         else:
             if msg_id is not None:
-                respond(msg_id, error={"code": -32601, "message": f"method not found: {method}"})
+                respond(
+                    msg_id,
+                    error={"code": -32601, "message": f"method not found: {method}"},
+                )
 
 
 if __name__ == "__main__":
