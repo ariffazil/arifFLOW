@@ -424,6 +424,14 @@ pub struct FlowReceipt {
     // ── Payload ──
     /// Flexible JSON payload — step-specific data, errors, intermediates
     pub payload: Option<serde_json::Value>,
+
+    // ── Provenance (Gate 1 Instrument — 2026-08-04) ──
+    /// FQ formula version used when this receipt was recorded
+    pub formula_version: Option<String>,
+    /// SHA3-256 of the formula source
+    pub formula_hash: Option<String>,
+    /// Organs that witnessed this step
+    pub witness_organs: Option<Vec<String>>,
 }
 
 impl FlowReceipt {
@@ -455,6 +463,9 @@ impl FlowReceipt {
             merkle_root: None,
             merkle_inclusion_proof: None,
             payload: None,
+            formula_version: Some("qg.v0.1".into()),
+            formula_hash: Some("sha256:placeholder".into()),
+            witness_organs: None,
         }
     }
 
@@ -488,6 +499,9 @@ impl FlowReceipt {
             merkle_root: None,
             merkle_inclusion_proof: None,
             payload: None,
+            formula_version: Some("qg.v0.1".into()),
+            formula_hash: Some("sha256:placeholder".into()),
+            witness_organs: None,
         }
     }
 

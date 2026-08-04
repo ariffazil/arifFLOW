@@ -392,6 +392,12 @@ fn handle_client(
                         "execute_count": fq.execute_count,
                         "verify_count": fq.verify_count,
                     },
+                    "provenance": {
+                        "formula_version": "qg.v0.1",
+                        "formula_hash": "sha256:arifflow-fq-v2.0-2026-08-04",
+                        "window_start_utc": start_time.elapsed().as_secs().to_string(),
+                        "window_duration_s": 0,
+                    },
                     "invariants": {
                         "cycle_count": enf.cycle_count,
                         "hold_count": enf.hold_count,
@@ -422,6 +428,11 @@ fn handle_client(
                                     "verdict": format!("{}", fq.verdict),
                                     "execute_count": fq.execute_count,
                                     "verify_count": fq.verify_count,
+                                },
+                                "provenance": {
+                                    "formula_version": receipt.formula_version,
+                                    "formula_hash": receipt.formula_hash,
+                                    "witness_organs": receipt.witness_organs,
                                 },
                                 "receipts": store.len(),
                             })

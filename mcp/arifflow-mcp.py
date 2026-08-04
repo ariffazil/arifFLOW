@@ -95,6 +95,11 @@ TOOLS = [
                     "type": "object",
                     "description": "Step-specific data, errors, intermediates",
                 },
+                "witness_organs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Organs that witnessed this step (e.g. ['arifos', 'geox'])",
+                },
             },
             "required": ["actor_id", "session_id"],
             "additionalProperties": False,
@@ -145,7 +150,18 @@ def flow_post(path: str, body: dict) -> tuple[int, dict]:
 
 def call_tool(name: str, args: dict) -> dict:
     if name == "flow_health":
-        return flow_get("/health")
+        result = flow_get("/health")
+        # Enrich with formula provenance (Gate 1 Instrument)
+        result.setdefault("provenance", {})
+        result["provenance"].setdefault("formula_version", "qg.v0.1")
+        result["provenance"].setdefault(
+            "formula_hash", "sha256:arifflow-fq-v2.0-2026-08-04"
+        )
+        result["provenance"].setdefault(
+            "missing_inputs",
+            ["window_duration_s", "apex_block", "flow_block", "projection_block"],
+        )
+        return result
     if name == "flow_ingest":
         receipt = {
             "receipt_id": str(uuid.uuid4()),
@@ -167,6 +183,9 @@ def call_tool(name: str, args: dict) -> dict:
             "merkle_root": None,
             "merkle_inclusion_proof": None,
             "payload": args.get("payload"),
+            "formula_version": "qg.v0.1",
+            "formula_hash": "sha256:arifflow-fq-v2.0-2026-08-04",
+            "witness_organs": args.get("witness_organs"),
         }
         status, body = flow_post("/ingest", receipt)
         # [TAP] Trace tool call for Dataset B training — fires once per ingest
