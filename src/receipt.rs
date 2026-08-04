@@ -331,6 +331,11 @@ impl FlowQuotient {
             // Fresh start — no receipts yet. Not stuck, not optimal.
             // Neutral baseline until data arrives.
             FlowVerdict::Optimal
+        } else if execute_count == 0 && verify_count > 0 {
+            // Observe-only window (probes/audits, no mutation). Healthy for
+            // throttled or monitoring cycles — not mPFC STUCK.
+            // Stabilization 2026-08-04: AED/sense probes are Verify-class.
+            FlowVerdict::Balanced
         } else if effective_quotient > 10.0 {
             FlowVerdict::Overheat
         } else if effective_quotient > 3.0 {
