@@ -223,7 +223,10 @@ pub struct ActorFlowState {
     pub verify_count: u64,
     pub execute_cost_ns: u64,
     pub verify_cost_ns: u64,
+    /// Raw cost-based ratio (legacy) — kept for serialization compat
     pub fq: f64,
+    /// v2.1 quotient: verify_count / execute_count. None when undefined.
+    pub quotient: Option<f64>,
     pub verdict: FlowVerdict,
     pub consecutive_executes_without_verify: u64,
     pub throttled: bool,
@@ -240,6 +243,7 @@ impl ActorFlowState {
             execute_cost_ns: 0,
             verify_cost_ns: 0,
             fq: 0.0,
+            quotient: None,
             verdict: FlowVerdict::Balanced,
             consecutive_executes_without_verify: 0,
             throttled: false,
@@ -261,7 +265,7 @@ impl ActorFlowState {
             self.verify_cost_ns = self.verify_cost_ns.saturating_add(receipt.cost_ns);
             self.consecutive_executes_without_verify = 0;
         }
-        // Recompute FQ
+        // Recompute FQ (v2.1: count-based quotient = verify / execute)
         self.fq = if self.verify_cost_ns == 0 {
             if self.execute_cost_ns > 0 {
                 f64::MAX
@@ -272,39 +276,34 @@ impl ActorFlowState {
             self.execute_cost_ns as f64 / self.verify_cost_ns as f64
         };
 
-        // Heuristic: if all verify costs are exactly 1_000_000 (default placeholder)
-        // or 0, fall back to count-based ratio. Prevents false OVERHEAT from
-        // agents not reporting real verify costs.
-        let verify_costs_are_defaults = self.verify_count > 0
-            && (self.verify_cost_ns == self.verify_count as u64 * 1_000_000
-                || self.verify_cost_ns == 0);
-        let effective_fq = if self.fq.is_infinite() || self.fq == 0.0 || verify_costs_are_defaults {
-            if self.verify_count == 0 {
-                if self.execute_count > 0 {
-                    f64::MAX
-                } else {
-                    0.0
-                }
-            } else {
-                self.execute_count as f64 / self.verify_count as f64
-            }
+        // v2.1 quotient: verify_count / execute_count (inverted, count-based)
+        self.quotient = if self.verify_count == 0 || self.execute_count == 0 {
+            None
         } else {
-            self.fq
+            Some(self.verify_count as f64 / self.execute_count as f64)
         };
 
-        self.verdict = if effective_fq == f64::MAX {
-            // f64::MAX — no verification at all. Pure execution.
-            FlowVerdict::Optimal
-        } else if effective_fq > 10.0 {
-            FlowVerdict::Overheat
-        } else if effective_fq > 3.0 {
-            FlowVerdict::Optimal
-        } else if effective_fq > 1.0 {
-            FlowVerdict::Balanced
-        } else if effective_fq > 0.5 {
-            FlowVerdict::Watching
+        // v2.1 verdict: six-state band per Arif F13 spec
+        self.verdict = if self.verify_count == 0 && self.execute_count == 0 {
+            FlowVerdict::Unmeasured
+        } else if self.verify_count == 0 {
+            FlowVerdict::Unmeasured
+        } else if self.verify_count < 2 {
+            FlowVerdict::Caution
+        } else if self.execute_count == 0 {
+            FlowVerdict::Flowing
+        } else if let Some(q) = self.quotient {
+            if q >= 1.0 {
+                FlowVerdict::Optimal
+            } else if q >= 0.5 {
+                FlowVerdict::Flowing
+            } else if q >= 0.1 {
+                FlowVerdict::Stuck
+            } else {
+                FlowVerdict::Burning
+            }
         } else {
-            FlowVerdict::Stuck
+            FlowVerdict::Unmeasured
         };
     }
 }
@@ -695,9 +694,9 @@ mod tests {
         state.ingest(&r2);
         assert_eq!(state.verify_count, 1);
         assert_eq!(state.consecutive_executes_without_verify, 0);
-        // FQ = 1_000_000 / 500_000 = 2.0 → Balanced
+        // v2.1: 1 exec + 1 verify → verify < 2 → Caution
         assert!((state.fq - 2.0).abs() < 0.01);
-        assert_eq!(state.verdict, FlowVerdict::Balanced);
+        assert_eq!(state.verdict, FlowVerdict::Caution);
     }
 
     #[test]
@@ -728,9 +727,9 @@ mod tests {
             100_000,
         );
         state.ingest(&r3);
-        // FQ = 100_000 / 2_000_000 = 0.05 → STUCK
+        // v2.1: 1 exec + 2 verify → quotient = 2/1 = 2.0 → Optimal
         assert!(state.fq < 0.5);
-        assert_eq!(state.verdict, FlowVerdict::Stuck);
+        assert_eq!(state.verdict, FlowVerdict::Optimal);
     }
 
     #[test]

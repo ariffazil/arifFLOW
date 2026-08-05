@@ -153,9 +153,9 @@ def call_tool(name: str, args: dict) -> dict:
         result = flow_get("/health")
         # Enrich with formula provenance (Gate 1 Instrument)
         result.setdefault("provenance", {})
-        result["provenance"].setdefault("formula_version", "qg.v0.1")
+        result["provenance"].setdefault("formula_version", "qg.v0.2")
         result["provenance"].setdefault(
-            "formula_hash", "sha256:arifflow-fq-v2.0-2026-08-04"
+            "formula_hash", "sha256:arifflow-fq-v2.1-2026-08-05"
         )
         result["provenance"].setdefault(
             "missing_inputs",
@@ -183,8 +183,8 @@ def call_tool(name: str, args: dict) -> dict:
             "merkle_root": None,
             "merkle_inclusion_proof": None,
             "payload": args.get("payload"),
-            "formula_version": "qg.v0.1",
-            "formula_hash": "sha256:arifflow-fq-v2.0-2026-08-04",
+            "formula_version": "qg.v0.2",
+            "formula_hash": "sha256:arifflow-fq-v2.1-2026-08-05",
             "witness_organs": args.get("witness_organs"),
         }
         status, body = flow_post("/ingest", receipt)

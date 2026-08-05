@@ -5,10 +5,11 @@
  * Mirrors the Rust FlowQuotient::compute() in src/receipt.rs.
  * Cross-language contract: same formula, same thresholds, same verdicts.
  *
- * FQ = Σ(Execute.cost_ns) / Σ(Verify.cost_ns + preceding_verify_cost_ns)
+ * v2.1 (2026-08-05): FQ = verify_count / execute_count (count-based, inverted)
+ * Prior v2.0: FQ = execute_cost / verify_cost (cost-based)
  *
- * This is the primary metric for whether an agent is in flow
- * or trapped in self-monitoring. Feeds the observatory dashboard.
+ * formula_hash: sha256:arifflow-fq-v2.1-2026-08-05
+ * formula_version: qg.v0.2
  *
  * DITEMPA BUKAN DIBERI — Forged, Not Given.
  */
@@ -35,41 +36,40 @@ export interface FQInput {
  * @returns FQPulse with verdict
  */
 export function computeFQ(steps: FQInput[]): FQPulse {
-  let execute_cost = 0;
-  let verify_cost = 0;
   let execute_count = 0;
   let verify_count = 0;
 
   for (const step of steps) {
     if (step.execute_cost_ns > 0) {
-      execute_cost += step.execute_cost_ns;
       execute_count++;
     }
     if (step.verify_cost_ns > 0) {
-      verify_cost += step.verify_cost_ns;
       verify_count++;
-    }
-    if (step.preceding_verify_cost_ns) {
-      verify_cost += step.preceding_verify_cost_ns;
     }
   }
 
-  const quotient = (() => {
-    if (verify_cost === 0) {
-      // No verification cost: pure execution (optimal but suspicious)
-      // or no receipts yet
-      return execute_cost > 0 ? Number.MAX_VALUE : 0;
-    }
-    return execute_cost / verify_cost;
-  })();
+  // v2.1: count-based quotient = verify / execute
+  // null when verify_count == 0 (undefined — not 0, not ∞)
+  const quotient: number | null = verify_count === 0 || execute_count === 0
+    ? null
+    : Math.round((verify_count / execute_count) * 100) / 100;
 
-  const clampedQuotient = quotient === Number.MAX_VALUE ? 999.0 : quotient;
+  const verdict = (() => {
+    if (execute_count === 0 && verify_count === 0) return 'UNMEASURED' as const;
+    if (verify_count === 0) return 'UNKNOWN' as const;
+    if (verify_count < 2) return 'CAUTION' as const;
+    const q = quotient ?? 0;
+    if (q >= 1.0) return 'OPTIMAL' as const;
+    if (q >= 0.5) return 'FLOWING' as const;
+    if (q >= 0.1) return 'STUCK' as const;
+    return 'BURNING' as const;
+  })();
 
   return {
     execute_count,
     verify_count,
-    quotient: Math.round(clampedQuotient * 100) / 100, // 2 decimal places
-    verdict: fqVerdict(clampedQuotient, execute_count, verify_count),
+    quotient,
+    verdict,
     window_size: steps.length,
     computed_at: new Date().toISOString(),
   };

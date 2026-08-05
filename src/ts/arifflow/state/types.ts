@@ -66,7 +66,7 @@ export interface SessionState {
 
 // ── Flow Quotient (FQ) ─────────────────────────────────────────────────
 
-export type FQVerdict = 'OPTIMAL' | 'BALANCED' | 'WATCHING' | 'STUCK' | 'UNMEASURED';
+export type FQVerdict = 'UNKNOWN' | 'CAUTION' | 'OPTIMAL' | 'FLOWING' | 'STUCK' | 'BURNING' | 'UNMEASURED';
 
 export interface FQPulse {
   /** Number of execution steps in window */
@@ -75,8 +75,8 @@ export interface FQPulse {
   /** Number of verification steps in window */
   verify_count: number;
 
-  /** Flow Quotient = execute_cost / verify_cost */
-  quotient: number;
+  /** Flow Quotient = verify_count / execute_count (v2.1: count-based, inverted). null when verify_count == 0 */
+  quotient: number | null;
 
   /** Health verdict from FQ range */
   verdict: FQVerdict;
@@ -89,19 +89,27 @@ export interface FQPulse {
 }
 
 /**
- * FQ Range thresholds (mirrors Rust FlowVerdict):
- *   > 3.0    → OPTIMAL   — Agent in flow. Governance in the architecture.
- *   1.0–3.0  → BALANCED  — Healthy verification.
- *   0.5–1.0  → WATCHING  — Self-monitoring competes with execution.
- *   < 0.5    → STUCK     — Self-monitoring has become the task. mPFC takeover.
- *   0/0      → UNMEASURED — No data yet.
+ * FQ Range thresholds v2.1 (Arif F13 spec — 2026-08-05):
+ *   verify=0  → UNKNOWN    — No verification data. Missing, not healthy.
+ *   verify<2  → CAUTION    — Single verification is coincidence, not pattern.
+ *   q >= 1.0  → OPTIMAL    — Verification leads execution.
+ *   q >= 0.5  → FLOWING    — Healthy metabolism.
+ *   q >= 0.1  → STUCK      — Verification lagging execution.
+ *   q < 0.1   → BURNING    — Execution far outruns verification.
+ *
+ * Quotient = verify_count / execute_count (inverted from v2.0 exec/verify).
+ * formula_hash: sha256:arifflow-fq-v2.1-2026-08-05
+ * formula_version: qg.v0.2
  */
-export function fqVerdict(quotient: number, executeCount: number, verifyCount: number): FQVerdict {
+export function fqVerdict(quotient: number | null, executeCount: number, verifyCount: number): FQVerdict {
   if (executeCount === 0 && verifyCount === 0) return 'UNMEASURED';
-  if (quotient > 3.0) return 'OPTIMAL';
-  if (quotient >= 1.0) return 'BALANCED';
-  if (quotient >= 0.5) return 'WATCHING';
-  return 'STUCK';
+  if (verifyCount === 0) return 'UNKNOWN';
+  if (verifyCount < 2) return 'CAUTION';
+  if (quotient === null) return 'UNKNOWN';
+  if (quotient >= 1.0) return 'OPTIMAL';
+  if (quotient >= 0.5) return 'FLOWING';
+  if (quotient >= 0.1) return 'STUCK';
+  return 'BURNING';
 }
 
 // ── State Store Stats ──────────────────────────────────────────────────

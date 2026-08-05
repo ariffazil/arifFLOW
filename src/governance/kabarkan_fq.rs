@@ -104,7 +104,10 @@ impl FqAlertEvent {
             _ => FqAlertSeverity::Recovered,
         };
 
-        let trend = compute_trend(current.quotient, previous.quotient);
+        let trend = compute_trend(
+            current.quotient.unwrap_or(0.0),
+            previous.quotient.unwrap_or(0.0),
+        );
 
         let diagnosis = match current.verdict {
             FlowVerdict::Stuck => format!(
@@ -119,20 +122,24 @@ impl FqAlertEvent {
             FlowVerdict::Watching => format!(
                 "Verification overhead rising. {} execution, {} verification. \
                  FQ={:.2}. Consider routing more through FLAME or reducing verify frequency.",
-                current.execute_count, current.verify_count, current.quotient,
+                current.execute_count,
+                current.verify_count,
+                current.quotient.unwrap_or(0.0),
             ),
             _ => format!(
                 "FQ recovered to {:.2}. {} execution, {} verification.",
-                current.quotient, current.execute_count, current.verify_count,
+                current.quotient.unwrap_or(0.0),
+                current.execute_count,
+                current.verify_count,
             ),
         };
 
         Self {
             timestamp_ns: chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
-            fq: current.quotient,
+            fq: current.quotient.unwrap_or(0.0),
             verdict: current.verdict.to_string(),
             severity: severity.to_string(),
-            previous_fq: previous.quotient,
+            previous_fq: previous.quotient.unwrap_or(0.0),
             previous_verdict: previous.verdict.to_string(),
             trend: trend.to_string(),
             session_id: session_id.to_string(),
@@ -162,10 +169,10 @@ pub struct FqSnapshotEvent {
 
 impl FqSnapshotEvent {
     pub fn new(fq: &FlowQuotient, previous_fq: f64, session_id: &str, step_number: u64) -> Self {
-        let trend = compute_trend(fq.quotient, previous_fq);
+        let trend = compute_trend(fq.quotient.unwrap_or(0.0), previous_fq);
         Self {
             timestamp_ns: chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
-            fq: fq.quotient,
+            fq: fq.quotient.unwrap_or(0.0),
             verdict: fq.verdict.to_string(),
             trend: trend.to_string(),
             execute_count: fq.execute_count,
@@ -205,7 +212,7 @@ impl FqLaneEvent {
             timestamp_ns: chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
             lane_id,
             topology_id: topology_id.to_string(),
-            fq: fq.quotient,
+            fq: fq.quotient.unwrap_or(0.0),
             verdict: fq.verdict.to_string(),
             execute_count: fq.execute_count,
             verify_count: fq.verify_count,
@@ -258,7 +265,7 @@ impl FqCoolingCorrelationEvent {
 
         Self {
             timestamp_ns: chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
-            fq: fq.quotient,
+            fq: fq.quotient.unwrap_or(0.0),
             fq_verdict: fq.verdict.to_string(),
             cooling_holds,
             cooling_clamps,
@@ -352,7 +359,7 @@ impl KabarkanFqInstrument {
         let current_fq = store.flow_quotient(self.window_size);
         self.sample_counter += 1;
 
-        let trend = compute_trend(current_fq.quotient, self.previous_fq);
+        let trend = compute_trend(current_fq.quotient.unwrap_or(0.0), self.previous_fq);
 
         // ── Always emit lightweight AFQ snapshot (backward compat) ──
         tracer.emit(KabarkanEvent::afq_snapshot(step_number, &current_fq));
@@ -360,7 +367,7 @@ impl KabarkanFqInstrument {
         // ── FQ Alert: emit on threshold breach ──
         if threshold_crossed(&self.previous_verdict, &current_fq.verdict) {
             let previous_fq = FlowQuotient {
-                quotient: self.previous_fq,
+                quotient: Some(self.previous_fq),
                 verdict: self.previous_verdict.clone(),
                 execute_count: 0,
                 verify_count: 0,
@@ -373,7 +380,7 @@ impl KabarkanFqInstrument {
             let alert_json = serde_json::to_value(&alert).unwrap_or_default();
             tracer.emit(KabarkanEvent::FqAlert {
                 step: step_number,
-                fq: current_fq.quotient,
+                fq: current_fq.quotient.unwrap_or(0.0),
                 verdict: current_fq.verdict.to_string(),
                 severity: alert.severity.clone(),
                 diagnosis: alert.diagnosis.clone(),
@@ -388,7 +395,7 @@ impl KabarkanFqInstrument {
             let snap_json = serde_json::to_value(&snapshot).unwrap_or_default();
             tracer.emit(KabarkanEvent::FqSnapshot {
                 step: step_number,
-                fq: current_fq.quotient,
+                fq: current_fq.quotient.unwrap_or(0.0),
                 verdict: current_fq.verdict.to_string(),
                 trend: trend.to_string(),
                 execute_count: current_fq.execute_count,
@@ -411,7 +418,7 @@ impl KabarkanFqInstrument {
             let corr_json = serde_json::to_value(&correlation).unwrap_or_default();
             tracer.emit(KabarkanEvent::FqCoolingCorrelation {
                 step: step_number,
-                fq: current_fq.quotient,
+                fq: current_fq.quotient.unwrap_or(0.0),
                 correlation_signal: correlation.correlation_signal.clone(),
                 payload: corr_json,
             });
@@ -419,7 +426,7 @@ impl KabarkanFqInstrument {
 
         // ── Update state for next sample ──
         self.previous_verdict = current_fq.verdict.clone();
-        self.previous_fq = current_fq.quotient;
+        self.previous_fq = current_fq.quotient.unwrap_or(0.0);
     }
 
     /// Emit per-lane FQ for a specific lane.
@@ -444,7 +451,7 @@ impl KabarkanFqInstrument {
             step: step_number,
             lane_id,
             topology_id: topology_id.to_string(),
-            fq: lane_fq.quotient,
+            fq: lane_fq.quotient.unwrap_or(0.0),
             verdict: lane_fq.verdict.to_string(),
             payload: lane_json,
         });
@@ -519,7 +526,7 @@ mod tests {
             verify_count: 30,
             execute_cost_ns: 1_000_000,
             verify_cost_ns: 3_000_000,
-            quotient: 0.33,
+            quotient: Some(0.33),
             verdict: FlowVerdict::Stuck,
             window_size: 20,
         };
@@ -528,7 +535,7 @@ mod tests {
             verify_count: 0,
             execute_cost_ns: 0,
             verify_cost_ns: 0,
-            quotient: 0.8,
+            quotient: Some(0.8),
             verdict: FlowVerdict::Watching,
             window_size: 0,
         };
@@ -544,7 +551,7 @@ mod tests {
             verify_count: 5,
             execute_cost_ns: 5_000_000,
             verify_cost_ns: 1_000_000,
-            quotient: 5.0,
+            quotient: Some(5.0),
             verdict: FlowVerdict::Optimal,
             window_size: 20,
         };
@@ -561,7 +568,7 @@ mod tests {
             verify_count: 15,
             execute_cost_ns: 1_000_000,
             verify_cost_ns: 3_000_000,
-            quotient: 0.4,
+            quotient: Some(0.4),
             verdict: FlowVerdict::Stuck,
             window_size: 20,
         };

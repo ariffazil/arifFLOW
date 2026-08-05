@@ -17,7 +17,9 @@ use crate::governance::cooling::{Convergence, CoolingEntry, CoolingLedger, Drift
 use crate::governance::kabarkan::{KabarkanEvent, KabarkanTracer};
 use crate::governance::tri_witness::{TriWitness, WitnessMergeResult};
 use crate::merkle::{chain_roots, MerkleRoot, MerkleTree};
-use crate::receipt::{FlowQuotient, FlowReceipt, FlowVerdict, ReceiptStore, StepType, EpistemicLabel};
+use crate::receipt::{
+    EpistemicLabel, FlowQuotient, FlowReceipt, FlowVerdict, ReceiptStore, StepType,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -477,7 +479,9 @@ impl SuperStepScheduler {
                 format!("FQ_WATCHING at step {}", step_number),
                 format!(
                     "FQ={:.2} execute={} verify={}",
-                    step_fq.quotient, step_fq.execute_count, step_fq.verify_count
+                    step_fq.quotient.unwrap_or(0.0),
+                    step_fq.execute_count,
+                    step_fq.verify_count
                 ),
                 Convergence::Converging,
                 DriftSeverity::Medium,
@@ -491,7 +495,9 @@ impl SuperStepScheduler {
                 format!("FQ_STUCK at step {}", step_number),
                 format!(
                     "FQ={:.2} execute={} verify={} — CRITICAL self-monitoring takeover",
-                    step_fq.quotient, step_fq.execute_count, step_fq.verify_count
+                    step_fq.quotient.unwrap_or(0.0),
+                    step_fq.execute_count,
+                    step_fq.verify_count
                 ),
                 Convergence::Diverging,
                 DriftSeverity::Critical,

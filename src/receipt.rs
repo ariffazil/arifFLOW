@@ -210,29 +210,53 @@ impl Default for TriWitnessVotes {
 
 // ── Flow Verdict ─────────────────────────────────────────────────────────
 
-/// Flow health verdict based on Flow Quotient.
+/// Flow health verdict based on Flow Quotient (v2.1 — 2026-08-05).
+///
+/// Six-state band per Arif F13 spec:
+///   UNKNOWN  — verify_count == 0 (missing data)
+///   CAUTION  — verify_count < 2 (insufficient pattern)
+///   OPTIMAL  — quotient >= 1.0 (verification leads execution)
+///   FLOWING  — quotient >= 0.5 (healthy metabolism)
+///   STUCK    — quotient >= 0.1 (verification lagging)
+///   BURNING  — quotient < 0.1 (execution outruns verification severely)
+///
+/// Legacy variants (retained for backward compat, not produced by v2.1):
+///   Overheat, Balanced, Watching
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FlowVerdict {
-    /// FQ > 10.0 — Execute far outruns verify. Under-verification risk. THROTTLE.
-    Overheat,
-    /// FQ 3.0–10.0 — Agent in flow. Governance in the architecture.
+    /// verify_count == 0 — no data to ratio against
+    Unmeasured,
+    /// verify_count < 2 — single verification is coincidence, not pattern
+    Caution,
+    /// quotient >= 1.0 — verification leads execution (v2.1)
     Optimal,
-    /// FQ 1.0–3.0 — Healthy verification. Self-monitoring supports execution.
-    Balanced,
-    /// FQ 0.5–1.0 — Agent spends as much time verifying as executing.
-    Watching,
-    /// FQ < 0.5 — Self-monitoring has become the task. mPFC takeover.
+    /// quotient >= 0.5 — healthy metabolism
+    Flowing,
+    /// quotient >= 0.1 — verification lagging execution
     Stuck,
+    /// quotient < 0.1 — execution far outruns verification
+    Burning,
+    // ── Legacy variants (retained for backward compat) ──
+    /// Legacy: FQ > 10.0 — under-verification risk
+    Overheat,
+    /// Legacy: FQ 1.0–3.0 — healthy verification
+    Balanced,
+    /// Legacy: FQ 0.5–1.0 — self-monitoring competes
+    Watching,
 }
 
 impl fmt::Display for FlowVerdict {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            FlowVerdict::Overheat => write!(f, "OVERHEAT"),
+            FlowVerdict::Unmeasured => write!(f, "UNKNOWN"),
+            FlowVerdict::Caution => write!(f, "CAUTION"),
             FlowVerdict::Optimal => write!(f, "OPTIMAL"),
+            FlowVerdict::Flowing => write!(f, "FLOWING"),
+            FlowVerdict::Stuck => write!(f, "STUCK"),
+            FlowVerdict::Burning => write!(f, "BURNING"),
+            FlowVerdict::Overheat => write!(f, "OVERHEAT"),
             FlowVerdict::Balanced => write!(f, "BALANCED"),
             FlowVerdict::Watching => write!(f, "WATCHING"),
-            FlowVerdict::Stuck => write!(f, "STUCK"),
         }
     }
 }
@@ -250,8 +274,9 @@ pub struct FlowQuotient {
     pub verify_count: usize,
     /// Total verification cost in nanoseconds (including preceding)
     pub verify_cost_ns: u64,
-    /// Flow Quotient = execute_cost / verify_cost
-    pub quotient: f64,
+    /// Flow Quotient = verify_count / execute_count (v2.1: count-based, inverted)
+    /// None when verify_count == 0 (undefined — no verification to ratio against)
+    pub quotient: Option<f64>,
     /// Health verdict
     pub verdict: FlowVerdict,
     /// Window size used
@@ -259,8 +284,15 @@ pub struct FlowQuotient {
 }
 
 impl FlowQuotient {
-    /// Compute FQ from a slice of receipts.
-    /// Uses the entire slice as the window.
+    /// Compute FQ from a slice of receipts (v2.1 formula — 2026-08-05).
+    ///
+    /// v2.1 changes (Arif F13 spec):
+    ///   - Quotient direction: verify_count / execute_count (was exec/verify)
+    ///   - verify_count == 0 → UNKNOWN, quotient = None (was OPTIMAL, f64::MAX)
+    ///   - verify_count < 2 → CAUTION, quotient = None
+    ///   - Six-state band: UNKNOWN → CAUTION → OPTIMAL → FLOWING → STUCK → BURNING
+    ///   - formula_hash: sha256:arifflow-fq-v2.1-2026-08-05
+    ///   - formula_version: qg.v0.2
     pub fn compute(receipts: &[FlowReceipt]) -> Self {
         let mut execute_cost = 0u64;
         let mut verify_cost = 0u64;
@@ -276,76 +308,52 @@ impl FlowQuotient {
                 verify_cost += r.cost_ns;
                 verify_count += 1;
             }
-            // Add preceding verification cost to verify total
             if let Some(preceding) = r.preceding_verify_cost_ns {
-                // This accounts for verification that preceded this step
                 verify_cost = verify_cost.saturating_add(preceding);
             }
         }
 
-        let quotient = if verify_cost == 0 {
-            // No verification cost means either:
-            // (a) pure execution flow — optimal, but suspicious
-            // (b) no receipts yet
-            if execute_cost > 0 {
-                f64::MAX // effectively infinite — no verification overhead
-            } else {
-                0.0
-            }
+        // v2.1: count-based quotient = verify / execute (inverted from v2.0)
+        // None when verify_count == 0 — undefined, not 0, not ∞
+        let raw_quotient = if verify_count == 0 {
+            None
+        } else if execute_count == 0 {
+            // All verification, no execution — observe-only window
+            // Return None to signal "no ratio possible" rather than ∞
+            None
         } else {
-            execute_cost as f64 / verify_cost as f64
+            Some(verify_count as f64 / execute_count as f64)
         };
 
-        // Heuristic: if all verify costs are exactly 1_000_000 (the default placeholder
-        // when callers don't set cost_ns), the cost_ns values are unreliable.
-        // Fall back to count-based ratio to prevent false OVERHEAT.
-        // Example: 12 executes @ 250ms each vs 12 verifies @ 1ms each → cost FQ=250,
-        // but count FQ=1.0 → BALANCED (correct).
-        let verify_costs_are_defaults = verify_count > 0
-            && (verify_cost == verify_count as u64 * 1_000_000 || verify_cost == 0);
-
-        // Use step count ratio as fallback when cost_ns values are 0 (default)
-        // or when all verify costs are the default placeholder.
-        // This prevents FQ from being 0.0 or f64::MAX or falsely inflated
-        // when callers don't set cost_ns.
-        let effective_quotient =
-            if quotient.is_infinite() || quotient == 0.0 || verify_costs_are_defaults {
-                if verify_count == 0 {
-                    if execute_count > 0 {
-                        f64::MAX
-                    } else {
-                        0.0
-                    }
-                } else {
-                    execute_count as f64 / verify_count as f64
-                }
-            } else {
-                quotient
-            };
-
-        let verdict = if effective_quotient == f64::MAX {
-            // f64::MAX — no verification at all. Pure execution flow.
-            // Suspicious but not overheat — no verification was attempted.
-            FlowVerdict::Optimal
-        } else if execute_count == 0 && verify_count == 0 {
-            // Fresh start — no receipts yet. Not stuck, not optimal.
-            // Neutral baseline until data arrives.
-            FlowVerdict::Optimal
-        } else if execute_count == 0 && verify_count > 0 {
-            // Observe-only window (probes/audits, no mutation). Healthy for
-            // throttled or monitoring cycles — not mPFC STUCK.
-            // Stabilization 2026-08-04: AED/sense probes are Verify-class.
-            FlowVerdict::Balanced
-        } else if effective_quotient > 10.0 {
-            FlowVerdict::Overheat
-        } else if effective_quotient > 3.0 {
-            FlowVerdict::Optimal
-        } else if effective_quotient > 1.0 {
-            FlowVerdict::Balanced
-        } else if effective_quotient > 0.5 {
-            FlowVerdict::Watching
+        // v2.1: six-state band per Arif F13 spec
+        let verdict = if verify_count == 0 {
+            // No verification at all — we don't know the state.
+            // Prior v2.0 returned OPTIMAL here (f64::MAX). That was misleading.
+            FlowVerdict::Unmeasured
+        } else if verify_count < 2 {
+            // Single verification is coincidence, not pattern.
+            FlowVerdict::Caution
+        } else if execute_count == 0 {
+            // Observe-only window — not stuck, not optimal.
+            // Neutral baseline until execution data arrives.
+            FlowVerdict::Flowing
         } else {
-            FlowVerdict::Stuck
+            let q = raw_quotient.unwrap_or(0.0);
+            if q >= 1.0 {
+                FlowVerdict::Optimal
+            } else if q >= 0.5 {
+                FlowVerdict::Flowing
+            } else if q >= 0.1 {
+                FlowVerdict::Stuck
+            } else {
+                FlowVerdict::Burning
+            }
+        };
+
+        // v2.1: quotient is None for Unmeasured/Caution (undefined or insufficient data)
+        let quotient = match verdict {
+            FlowVerdict::Unmeasured | FlowVerdict::Caution => None,
+            _ => raw_quotient,
         };
 
         Self {
@@ -353,7 +361,7 @@ impl FlowQuotient {
             execute_cost_ns: execute_cost,
             verify_count,
             verify_cost_ns: verify_cost,
-            quotient: effective_quotient,
+            quotient,
             verdict,
             window_size: receipts.len(),
         }
@@ -463,7 +471,7 @@ impl FlowReceipt {
             merkle_root: None,
             merkle_inclusion_proof: None,
             payload: None,
-            formula_version: Some("qg.v0.1".into()),
+            formula_version: Some("qg.v0.2".into()),
             formula_hash: Some("sha256:placeholder".into()),
             witness_organs: None,
         }
@@ -499,7 +507,7 @@ impl FlowReceipt {
             merkle_root: None,
             merkle_inclusion_proof: None,
             payload: None,
-            formula_version: Some("qg.v0.1".into()),
+            formula_version: Some("qg.v0.2".into()),
             formula_hash: Some("sha256:placeholder".into()),
             witness_organs: None,
         }
@@ -862,141 +870,165 @@ mod tests {
         assert!(TriWitnessVotes::new(0.5, -0.1, 0.5).is_err());
     }
 
-    #[test]
-    fn test_flow_quotient_optimal() {
-        // Execute with moderate verify — ratio ~5:1 (3.0-10.0 range)
-        let mut store = ReceiptStore::new(100);
-        let r1 = FlowReceipt::new_first(
-            "agent",
-            "s1",
-            StepType::Execute,
-            EpistemicLabel::Observation,
-            1_000_000,
-        );
-        store.push(r1).unwrap();
+    // ── Flow Quotient v2.1 Tests ────────────────────────────────────────────
 
-        let r2 = FlowReceipt {
-            preceding_verify_cost_ns: Some(500_000), // moderate verify → ratio 6:1
-            ..FlowReceipt::new_chained(
-                store.all().last().unwrap(),
+    #[test]
+    fn test_fq_v21_optimal() {
+        // 5 exec + 5 verify → quotient = 5/5 = 1.0 → OPTIMAL
+        let mut store = ReceiptStore::new(100);
+        for _ in 0..5 {
+            store.push_force(FlowReceipt::new_first(
                 "agent",
                 "s1",
                 StepType::Execute,
                 EpistemicLabel::Observation,
-                2_000_000,
-            )
-        };
-        store.push(r2).unwrap();
-
-        let fq = store.flow_quotient(10);
-        assert_eq!(fq.verdict, FlowVerdict::Optimal);
-        assert!(fq.quotient > 3.0 && fq.quotient < 10.0);
-    }
-
-    #[test]
-    fn test_flow_quotient_overheat() {
-        // Execute far outruns verify — ratio > 10:1
-        let mut store = ReceiptStore::new(100);
-        let r1 = FlowReceipt::new_first(
-            "agent",
-            "s1",
-            StepType::Execute,
-            EpistemicLabel::Observation,
-            1_000_000,
-        );
-        store.push(r1).unwrap();
-
-        let r2 = FlowReceipt {
-            preceding_verify_cost_ns: Some(50_000), // very cheap verify
-            ..FlowReceipt::new_chained(
-                store.all().last().unwrap(),
-                "agent",
-                "s1",
-                StepType::Execute,
-                EpistemicLabel::Observation,
-                2_000_000,
-            )
-        };
-        store.push(r2).unwrap();
-
-        let fq = store.flow_quotient(10);
-        assert_eq!(fq.verdict, FlowVerdict::Overheat);
-        assert!(fq.quotient > 10.0);
-    }
-
-    #[test]
-    fn test_flow_quotient_stuck() {
-        // Lots of verify, little execute
-        let mut store = ReceiptStore::new(100);
-        let r1 = FlowReceipt::new_first(
-            "agent",
-            "s1",
-            StepType::Verify,
-            EpistemicLabel::Derivation,
-            500_000,
-        );
-        store.push(r1).unwrap();
-
-        let r2 = FlowReceipt {
-            preceding_verify_cost_ns: Some(1_000_000),
-            ..FlowReceipt::new_chained(
-                store.all().last().unwrap(),
-                "agent",
-                "s1",
-                StepType::Verify,
-                EpistemicLabel::Derivation,
-                2_000_000,
-            )
-        };
-        store.push(r2).unwrap();
-
-        let r3 = FlowReceipt {
-            preceding_verify_cost_ns: Some(500_000),
-            ..FlowReceipt::new_chained(
-                store.all().last().unwrap(),
-                "agent",
-                "s1",
-                StepType::Execute,
-                EpistemicLabel::Observation,
-                100_000,
-            )
-        };
-        store.push(r3).unwrap();
-
-        let fq = store.flow_quotient(10);
-        assert_eq!(fq.verdict, FlowVerdict::Stuck);
-        assert!(fq.quotient < 0.5);
-    }
-
-    #[test]
-    fn test_flow_quotient_balanced() {
-        let mut store = ReceiptStore::new(100);
-        let r1 = FlowReceipt::new_first(
-            "agent",
-            "s1",
-            StepType::Execute,
-            EpistemicLabel::Observation,
-            1_000_000,
-        );
-        store.push(r1).unwrap();
-
-        // FQ = 1_000_000 / (500_000 + 200_000) = 1.43 → Balanced
-        let r2 = FlowReceipt {
-            preceding_verify_cost_ns: Some(200_000),
-            ..FlowReceipt::new_chained(
-                store.all().last().unwrap(),
+                1_000_000,
+            ));
+        }
+        for _ in 0..5 {
+            store.push_force(FlowReceipt::new_first(
                 "agent",
                 "s1",
                 StepType::Verify,
                 EpistemicLabel::Derivation,
                 500_000,
-            )
-        };
-        store.push(r2).unwrap();
+            ));
+        }
+        let fq = store.flow_quotient(20);
+        assert_eq!(fq.verdict, FlowVerdict::Optimal);
+        assert_eq!(fq.quotient, Some(1.0));
+    }
 
-        let fq = store.flow_quotient(10);
-        assert_eq!(fq.verdict, FlowVerdict::Balanced);
-        assert!(fq.quotient > 0.9 && fq.quotient < 2.0);
+    #[test]
+    fn test_fq_v21_flowing() {
+        // 4 exec + 3 verify → quotient = 3/4 = 0.75 → FLOWING
+        let mut store = ReceiptStore::new(100);
+        for _ in 0..4 {
+            store.push_force(FlowReceipt::new_first(
+                "agent",
+                "s1",
+                StepType::Execute,
+                EpistemicLabel::Observation,
+                1_000_000,
+            ));
+        }
+        for _ in 0..3 {
+            store.push_force(FlowReceipt::new_first(
+                "agent",
+                "s1",
+                StepType::Verify,
+                EpistemicLabel::Derivation,
+                500_000,
+            ));
+        }
+        let fq = store.flow_quotient(20);
+        assert_eq!(fq.verdict, FlowVerdict::Flowing);
+        assert_eq!(fq.quotient, Some(0.75));
+    }
+
+    #[test]
+    fn test_fq_v21_stuck() {
+        // 5 exec + 2 verify → quotient = 2/5 = 0.4 → STUCK
+        let mut store = ReceiptStore::new(100);
+        for _ in 0..5 {
+            store.push_force(FlowReceipt::new_first(
+                "agent",
+                "s1",
+                StepType::Execute,
+                EpistemicLabel::Observation,
+                1_000_000,
+            ));
+        }
+        for _ in 0..2 {
+            store.push_force(FlowReceipt::new_first(
+                "agent",
+                "s1",
+                StepType::Verify,
+                EpistemicLabel::Derivation,
+                500_000,
+            ));
+        }
+        let fq = store.flow_quotient(20);
+        assert_eq!(fq.verdict, FlowVerdict::Stuck);
+        assert_eq!(fq.quotient, Some(0.4));
+    }
+
+    #[test]
+    fn test_fq_v21_burning() {
+        // 21 exec + 2 verify → quotient = 2/21 ≈ 0.095 → BURNING
+        let mut store = ReceiptStore::new(100);
+        for _ in 0..21 {
+            store.push_force(FlowReceipt::new_first(
+                "agent",
+                "s1",
+                StepType::Execute,
+                EpistemicLabel::Observation,
+                1_000_000,
+            ));
+        }
+        for _ in 0..2 {
+            store.push_force(FlowReceipt::new_first(
+                "agent",
+                "s1",
+                StepType::Verify,
+                EpistemicLabel::Derivation,
+                500_000,
+            ));
+        }
+        let fq = store.flow_quotient(50);
+        assert_eq!(fq.verdict, FlowVerdict::Burning);
+        assert!(fq.quotient.unwrap() < 0.1);
+    }
+
+    #[test]
+    fn test_fq_v21_unknown_no_verify() {
+        // 3 exec + 0 verify → UNKNOWN (undefined quotient)
+        let mut store = ReceiptStore::new(100);
+        for _ in 0..3 {
+            store.push_force(FlowReceipt::new_first(
+                "agent",
+                "s1",
+                StepType::Execute,
+                EpistemicLabel::Observation,
+                1_000_000,
+            ));
+        }
+        let fq = store.flow_quotient(20);
+        assert_eq!(fq.verdict, FlowVerdict::Unmeasured);
+        assert_eq!(fq.quotient, None);
+    }
+
+    #[test]
+    fn test_fq_v21_caution_single_verify() {
+        // 3 exec + 1 verify → CAUTION (verify < 2)
+        let mut store = ReceiptStore::new(100);
+        for _ in 0..3 {
+            store.push_force(FlowReceipt::new_first(
+                "agent",
+                "s1",
+                StepType::Execute,
+                EpistemicLabel::Observation,
+                1_000_000,
+            ));
+        }
+        store.push_force(FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Verify,
+            EpistemicLabel::Derivation,
+            500_000,
+        ));
+        let fq = store.flow_quotient(20);
+        assert_eq!(fq.verdict, FlowVerdict::Caution);
+        assert_eq!(fq.quotient, None);
+    }
+
+    #[test]
+    fn test_fq_v21_empty() {
+        let store = ReceiptStore::new(100);
+        let fq = store.flow_quotient(20);
+        assert_eq!(fq.verdict, FlowVerdict::Unmeasured);
+        assert_eq!(fq.quotient, None);
     }
 
     #[test]
@@ -1135,8 +1167,8 @@ mod tests {
         store.push(r2).unwrap();
 
         let fq = store.flow_quotient(10);
-        assert_eq!(fq.verdict, FlowVerdict::Optimal);
-        assert_eq!(fq.quotient, f64::MAX);
+        assert_eq!(fq.verdict, FlowVerdict::Unmeasured);
+        assert_eq!(fq.quotient, None);
     }
 
     #[test]
@@ -1251,12 +1283,12 @@ impl AFQMetric {
     pub fn compute(receipts: &[FlowReceipt]) -> Self {
         let fq = FlowQuotient::compute(receipts);
         Self {
-            flow_quotient: fq.quotient,
+            flow_quotient: fq.quotient.unwrap_or(0.0),
             execution_steps: fq.execute_count as u64,
             governance_steps: fq.verify_count as u64,
             execute_count: fq.execute_count as u64,
             verify_count: fq.verify_count as u64,
-            afq: fq.quotient,
+            afq: fq.quotient.unwrap_or(0.0),
             verdict: fq.verdict.to_string(),
         }
     }

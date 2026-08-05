@@ -252,7 +252,7 @@ fn stdin_protocol_loop() {
                             chain_id: chain_id.clone(),
                             afq_execution_steps: result.fq.execute_count as u64,
                             afq_governance_steps: result.fq.verify_count as u64,
-                            afq: result.fq.quotient,
+                            afq: result.fq.quotient.unwrap_or(0.0),
                             afq_diagnosis: result.fq.verdict.to_string(),
                         });
                     }
@@ -393,8 +393,8 @@ fn handle_client(
                         "verify_count": fq.verify_count,
                     },
                     "provenance": {
-                        "formula_version": "qg.v0.1",
-                        "formula_hash": "sha256:arifflow-fq-v2.0-2026-08-04",
+                        "formula_version": "qg.v0.2",
+                        "formula_hash": "sha256:arifflow-fq-v2.1-2026-08-05",
                         "window_start_utc": start_time.elapsed().as_secs().to_string(),
                         "window_duration_s": 0,
                     },

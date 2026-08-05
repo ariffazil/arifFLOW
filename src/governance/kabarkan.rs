@@ -90,7 +90,7 @@ impl KabarkanEvent {
             step,
             execution_steps: fq.execute_count as u64,
             governance_steps: fq.verify_count as u64,
-            afq: fq.quotient,
+            afq: fq.quotient.unwrap_or(0.0),
             diagnosis: fq.verdict.to_string(),
         }
     }
