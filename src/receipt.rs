@@ -281,6 +281,10 @@ pub struct FlowQuotient {
     pub verdict: FlowVerdict,
     /// Window size used
     pub window_size: usize,
+    /// Latest APEX block number seen in the window (B6 follow-up, 2026-08-06)
+    /// Links FQ pulse to constitutional G/J evaluation cycles.
+    /// None when no APEX block registered in window.
+    pub apex_block: Option<u64>,
 }
 
 impl FlowQuotient {
@@ -356,6 +360,10 @@ impl FlowQuotient {
             _ => raw_quotient,
         };
 
+        // B6: Extract the largest APEX block number seen in this window.
+        // Links FQ pulse to constitutional G/J evaluation cycles.
+        let apex_block = receipts.iter().filter_map(|r| r.apex_block).max();
+
         Self {
             execute_count,
             execute_cost_ns: execute_cost,
@@ -364,6 +372,7 @@ impl FlowQuotient {
             quotient,
             verdict,
             window_size: receipts.len(),
+            apex_block,
         }
     }
 }
@@ -440,6 +449,9 @@ pub struct FlowReceipt {
     pub formula_hash: Option<String>,
     /// Organs that witnessed this step
     pub witness_organs: Option<Vec<String>>,
+    /// APEX block number — links this receipt to the constitutional G/J evaluation
+    /// cycle it belongs to (B6 follow-up, 2026-08-06). None when outside any APEX block.
+    pub apex_block: Option<u64>,
 }
 
 impl FlowReceipt {
@@ -474,6 +486,7 @@ impl FlowReceipt {
             formula_version: Some("qg.v0.2".into()),
             formula_hash: Some("sha256:placeholder".into()),
             witness_organs: None,
+            apex_block: None,
         }
     }
 
@@ -510,6 +523,7 @@ impl FlowReceipt {
             formula_version: Some("qg.v0.2".into()),
             formula_hash: Some("sha256:placeholder".into()),
             witness_organs: None,
+            apex_block: None,
         }
     }
 

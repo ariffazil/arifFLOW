@@ -22,6 +22,10 @@ export interface FQInput {
   execute_cost_ns: number;
   verify_cost_ns: number;
   preceding_verify_cost_ns?: number;
+  /** APEX block number — links FQ step to the constitutional G/J evaluation cycle.
+   *  Set by forge_apex_encode / forge_apex_metabolize to correlate metabolic
+   *  throughput with real-time flow health. Null when step is outside any APEX block. */
+  apex_block?: number;
 }
 
 /**
