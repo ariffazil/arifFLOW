@@ -69,13 +69,27 @@ class ArifFlowClient:
             with urlopen(req, timeout=5) as resp:
                 return json.loads(resp.read())
         except Exception as e:
-            # arifFlow unreachable — proceed with caution (don't block the agent)
+            # arifFlow unreachable — FAIL CLOSED (constitutional: governance unavailable, do not proceed)
+            # Emergency override: set ARIFLOW_FAIL_OPEN=true to bypass (e.g., arifFlow daemon down for maintenance)
+            fail_open = os.environ.get("ARIFLOW_FAIL_OPEN", "").lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            if fail_open:
+                return {
+                    "status": "error",
+                    "error": str(e),
+                    "allowed": True,
+                    "reason": "arifFlow unreachable (fail-open override active)",
+                    "action": "Allow",
+                }
             return {
                 "status": "error",
                 "error": str(e),
-                "allowed": True,
+                "allowed": False,
                 "reason": "arifFlow unreachable",
-                "action": "Allow",
+                "action": "Block",
             }
 
     def check(self, actor_id: str) -> CheckResult:
@@ -87,7 +101,7 @@ class ArifFlowClient:
         data = self._post("/check", {"actor_id": actor_id})
         return CheckResult(
             actor=data.get("actor", actor_id),
-            allowed=data.get("allowed", True),
+            allowed=data.get("allowed", False),
             reason=data.get("reason", "unknown"),
             action=data.get("action", "Allow"),
         )

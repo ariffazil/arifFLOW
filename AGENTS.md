@@ -17,6 +17,50 @@ Replaces LangGraph's role under arifOS constitutional law.
 
 **3 topologies:** Fan-out (1→N parallel), Pipeline (sequential stages), Cascade (escalation chain)
 
+## Declared vs Observed (Reality Map — 2026-08-10)
+
+The constitutional audit of 2026-08-10 surfaced a significant gap between declared architecture
+and observed runtime. This section is the honest reconciliation.
+
+### What arifFlow IS at runtime (observed)
+- HTTP daemon on :7073 (GET /health, POST /ingest, POST /check, POST /release, POST /enforce, POST /flow)
+- Receipt accumulator (in-memory + disk-persisted to `/var/lib/arifflow/receipts.jsonl`)
+- Flow Quotient (FQ) monitor — six-state band per Arif F13 spec (v2.1 formula)
+- Invariant enforcer (F0-F6 flow-plane, with auto-enforcement cycle every 10s)
+- Chain-aware ingest since 2026-08-10 (rejects receipts with invalid previous_receipt_hash)
+- Fail-CLOSED advisory gate (Python client default since 2026-08-10)
+
+### What arifFlow IS NOT at runtime (observed)
+- BSP scheduler is compiled but not invoked from daemon (lives in `stdin_protocol_loop` only)
+- Cross-organ coordination bridges (arifOS :8088, A-FORGE :7071) are compiled but not called
+- VAULT999 sealing is not wired to runtime ingest path (receipts go to local JSONL)
+- Merkle checkpointing is computed in scheduler path only (dead code at daemon runtime)
+
+### What arifFlow WAS DESIGNED TO BE (aspirational)
+- Governed parallel execution engine
+- Federation nervous system
+- Constitutional BSP scheduler with cross-organ coordination
+
+### Why the gap exists
+The deployment shipped the metabolism plane first. The governance plane (scheduler, bridges,
+Merkle, VAULT999) exists in source code as a compiled but inactive capability. Two interpretations
+are documented:
+
+**Interpretation A (phased deployment):** Build the whole architecture, ship metabolism first,
+activate governance plane when needed.
+
+**Interpretation B (deployment drift):** The scheduler was meant to be active but was never
+wired into the daemon.
+
+Resolution deferred to F13 SOVEREIGN verdict. Until then: this section is the SOT for actual
+behavior.
+
+### Audit Reference
+- Full audit: `/root/forge_work/ariflow-audit/` (8 files, 1141 lines)
+- Verdict: SABAR (Hold and Investigate)
+- 2 assumptions FALSIFIED, 3 WEAKENED, 0 fully SUPPORTED
+- Meta-audit verdict (apex-888): SEAL on audit quality
+
 ## Invariants
 
 ### Flow-Plane (F0-F6) — AUTOMATED ENFORCEMENT LIVE

@@ -265,16 +265,19 @@ impl ActorFlowState {
             self.verify_cost_ns = self.verify_cost_ns.saturating_add(receipt.cost_ns);
             self.consecutive_executes_without_verify = 0;
         }
-        // Recompute FQ (v2.1: count-based quotient = verify / execute)
-        self.fq = if self.verify_cost_ns == 0 {
-            if self.execute_cost_ns > 0 {
-                f64::MAX
-            } else {
-                0.0
-            }
-        } else {
-            self.execute_cost_ns as f64 / self.verify_cost_ns as f64
-        };
+        // ── FQ dual-formula fix (audit 2026-08-10) ──
+        // Legacy cost-based ratio (execute_cost_ns / verify_cost_ns) is DEPRECATED.
+        // It diverged from v2.1 semantics and miscalibrated HOLD/THROTTLE gates
+        // relative to /health which reports v2.1 (verify_count / execute_count).
+        // We now alias `self.fq` to the v2.1 count-based quotient so enforcement
+        // and /health share ONE formula. `self.quotient` remains the canonical field;
+        // `self.fq` is kept populated for backward compat with serialized state.
+        //
+        // v2.1 semantics: quotient = verify_count / execute_count — HIGHER = healthier.
+        // v2.0 semantics: fq = execute_cost / verify_cost — HIGHER = worse (overheat).
+        // Because the comparison direction flips for the overheat gate, see the
+        // enforcer loop below where the overheat_threshold comparison is inverted
+        // to its reciprocal (10.0 → 0.1 = "extreme imbalance" threshold).
 
         // v2.1 quotient: verify_count / execute_count (inverted, count-based)
         self.quotient = if self.verify_count == 0 || self.execute_count == 0 {
@@ -282,6 +285,9 @@ impl ActorFlowState {
         } else {
             Some(self.verify_count as f64 / self.execute_count as f64)
         };
+
+        // Alias: fq mirrors quotient for back-compat. None → 0.0 (no measurement yet).
+        self.fq = self.quotient.unwrap_or(0.0);
 
         // v2.1 verdict: six-state band per Arif F13 spec
         self.verdict = if self.verify_count == 0 && self.execute_count == 0 {
@@ -438,8 +444,12 @@ impl InvariantEnforcer {
                 ));
             }
 
-            // FQ > overheat_threshold → THROTTLE
-            if state.fq > self.thresholds.overheat_threshold && state.execute_count > 0 {
+            // FQ < 1/overheat_threshold → THROTTLE
+            // v2.1 direction flip (audit 2026-08-10): quotient = verify/execute,
+            // HIGHER = healthier. The legacy v2.0 "overheat" (execute ≫ verify)
+            // now reads as a LOW v2.1 quotient — extreme under-verification.
+            // overheat_threshold 10.0 → reciprocal 0.1 ("burning" band).
+            if state.fq < (1.0 / self.thresholds.overheat_threshold) && state.execute_count > 0 {
                 checks.push(InvariantCheck::new(
                     FlowInvariant::F3_ObserveNeverInterpret,
                     InvariantStatus::Warn,
@@ -682,7 +692,8 @@ mod tests {
         assert_eq!(state.execute_count, 1);
         assert_eq!(state.verify_count, 0);
         assert_eq!(state.consecutive_executes_without_verify, 1);
-        assert!(state.fq > 0.0); // f64::MAX since no verify
+        // v2.1: 1 exec, 0 verify → quotient None → fq aliased to 0.0
+        assert_eq!(state.fq, 0.0);
 
         let r2 = FlowReceipt::new_first(
             "test-agent",
@@ -694,8 +705,8 @@ mod tests {
         state.ingest(&r2);
         assert_eq!(state.verify_count, 1);
         assert_eq!(state.consecutive_executes_without_verify, 0);
-        // v2.1: 1 exec + 1 verify → verify < 2 → Caution
-        assert!((state.fq - 2.0).abs() < 0.01);
+        // v2.1: 1 exec + 1 verify → quotient = 1/1 = 1.0 (verify_count < 2 → Caution verdict)
+        assert!((state.fq - 1.0).abs() < 0.01);
         assert_eq!(state.verdict, FlowVerdict::Caution);
     }
 
@@ -727,8 +738,8 @@ mod tests {
             100_000,
         );
         state.ingest(&r3);
-        // v2.1: 1 exec + 2 verify → quotient = 2/1 = 2.0 → Optimal
-        assert!(state.fq < 0.5);
+        // v2.1: 1 exec + 2 verify → quotient = 2/1 = 2.0 → Optimal (verify leads execution)
+        assert!(state.fq > 1.0);
         assert_eq!(state.verdict, FlowVerdict::Optimal);
     }
 

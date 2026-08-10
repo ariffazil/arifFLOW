@@ -660,6 +660,37 @@ impl ReceiptStore {
         }
         self.receipts.push(receipt);
     }
+
+    /// Push a receipt with chain-aware validation (multi-session safe).
+    ///
+    /// [OBS] 2026-08-10 — replaces push_force in daemon ingest to catch malformed hash chains
+    /// without requiring all clients to track chains. Acceptance rules:
+    ///
+    /// 1. If receipt has `previous_receipt_hash`, search store for a receipt whose hash
+    ///    equals that value. Found → accept (chain valid). Not found → reject.
+    /// 2. If receipt has no `previous_receipt_hash` → accept (new chain start, multi-session compatible).
+    pub fn push_chain_aware(&mut self, receipt: FlowReceipt) -> Result<(), String> {
+        if let Some(ref prev_hash) = receipt.previous_receipt_hash {
+            // Client claims this is chained — verify the predecessor exists in our store.
+            let found = self.receipts.iter().any(|r| r.hash() == *prev_hash);
+            if !found {
+                return Err(format!(
+                    "Chain-aware reject: previous_receipt_hash {} not found in store ({} receipts). \
+                     Accepting only: (a) receipts with no previous hash (new chain), or \
+                     (b) receipts whose previous hash matches a stored receipt.",
+                    prev_hash,
+                    self.receipts.len()
+                ));
+            }
+        }
+        // Either no hash (new chain) or hash matched → accept.
+        if self.receipts.len() >= self.max_receipts {
+            self.receipts.remove(0);
+        }
+        self.receipts.push(receipt);
+        Ok(())
+    }
+
     pub fn push(&mut self, receipt: FlowReceipt) -> Result<(), String> {
         // Validate chain continuity
         if let Some(last) = self.receipts.last() {
@@ -1130,6 +1161,119 @@ mod tests {
             10,
         );
         store.push(r4).unwrap();
+        assert_eq!(store.len(), 3);
+    }
+
+    // ── push_chain_aware tests (Fix 2 — 2026-08-10) ──────────────────────
+
+    #[test]
+    fn test_push_chain_aware_accepts_no_previous_hash() {
+        // [OBS] Receipt with no previous_receipt_hash → accepted (new chain start, multi-session safe)
+        let mut store = ReceiptStore::new(100);
+        let r = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
+        );
+        assert!(store.push_chain_aware(r).is_ok());
+        assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn test_push_chain_aware_accepts_valid_previous_hash() {
+        // [OBS] Receipt with valid previous_receipt_hash pointing to existing receipt → accepted
+        let mut store = ReceiptStore::new(100);
+        let r1 = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
+        );
+        store.push_chain_aware(r1.clone()).unwrap();
+
+        let r2 = FlowReceipt::new_chained(
+            &r1,
+            "agent",
+            "s1",
+            StepType::Verify,
+            EpistemicLabel::Derivation,
+            50,
+        );
+        assert!(store.push_chain_aware(r2).is_ok());
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn test_push_chain_aware_rejects_invalid_previous_hash() {
+        // [OBS] Receipt with previous_receipt_hash not matching any stored receipt → rejected
+        let mut store = ReceiptStore::new(100);
+        // Pre-populate with a receipt so the store isn't empty
+        let r1 = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
+        );
+        store.push_chain_aware(r1).unwrap();
+
+        // Create a receipt with a bogus hash
+        let broken = FlowReceipt {
+            previous_receipt_hash: Some("deadbeef_not_a_real_hash".to_string()),
+            ..FlowReceipt::new_first(
+                "agent",
+                "s1",
+                StepType::Execute,
+                EpistemicLabel::Observation,
+                100,
+            )
+        };
+        assert!(
+            store.push_chain_aware(broken).is_err(),
+            "Invalid hash must be rejected"
+        );
+        assert_eq!(store.len(), 1, "Store must not grow on reject");
+    }
+
+    #[test]
+    fn test_push_chain_aware_multi_session_interleaving() {
+        // [OBS] Multiple sessions can coexist — each starts with no previous hash.
+        let mut store = ReceiptStore::new(100);
+
+        // Session A: 2 receipts
+        let r_a1 = FlowReceipt::new_first(
+            "agent-a",
+            "session-a",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
+        );
+        store.push_chain_aware(r_a1.clone()).unwrap();
+        let r_a2 = FlowReceipt::new_chained(
+            &r_a1,
+            "agent-a",
+            "session-a",
+            StepType::Verify,
+            EpistemicLabel::Derivation,
+            50,
+        );
+        store.push_chain_aware(r_a2).unwrap();
+
+        // Session B: starts fresh (no previous hash)
+        let r_b1 = FlowReceipt::new_first(
+            "agent-b",
+            "session-b",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            200,
+        );
+        assert!(
+            store.push_chain_aware(r_b1).is_ok(),
+            "New session must be accepted"
+        );
         assert_eq!(store.len(), 3);
     }
 

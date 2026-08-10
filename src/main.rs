@@ -18,10 +18,12 @@ use arifflow::receipt::{FlowReceipt, ReceiptStore};
 use arifflow::scheduler::{FlowNode, SuperStepScheduler, TopologyKind, VerdictClass};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::{self, BufRead, Read, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 // ── Protocol Messages ──────────────────────────────────────────────────
 
@@ -364,6 +366,8 @@ fn handle_client(
     start_time: Instant,
     receipt_store: &Arc<Mutex<ReceiptStore>>,
     enforcer: &Arc<Mutex<InvariantEnforcer>>,
+    persist_path: &PathBuf,
+    persist_mutex: &Arc<Mutex<()>>,
 ) {
     let mut buf = [0u8; 16384];
     match stream.read(&mut buf) {
@@ -415,7 +419,44 @@ fn handle_client(
                         Ok(receipt) => {
                             let mut store = receipt_store.lock().unwrap();
                             let mut enf = enforcer.lock().unwrap();
-                            store.push_force(receipt.clone());
+                            // [FIX 2] 2026-08-10: chain-aware ingest — rejects receipts with
+                            // malformed previous_receipt_hash. Accepts new chain starts (no hash)
+                            // and receipts whose previous hash matches an existing stored receipt.
+                            // Multi-session safe: different sessions can coexist.
+                            match store.push_chain_aware(receipt.clone()) {
+                                Ok(_) => {
+                                    // [FIX 4] 2026-08-10: daemon-side receipt persistence.
+                                    // Append receipt as JSON line to durable file storage.
+                                    // Uses a shared mutex to serialize writes across threads.
+                                    let _lock = persist_mutex.lock().unwrap();
+                                    if let Ok(mut file) = OpenOptions::new()
+                                        .create(true)
+                                        .append(true)
+                                        .open(persist_path)
+                                    {
+                                        if let Ok(line) = serde_json::to_string(&receipt) {
+                                            let _ = writeln!(file, "{}", line);
+                                        }
+                                    }
+                                }
+                                Err(chain_err) => {
+                                    eprintln!(
+                                        "[arifFlow] Chain-aware reject for receipt {}: {}",
+                                        receipt.receipt_id, chain_err
+                                    );
+                                    let body = serde_json::json!({
+                                        "status": "chain_invalid",
+                                        "error": chain_err,
+                                    })
+                                    .to_string();
+                                    let response = format!(
+                                        "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                        body.len(), body
+                                    ).into_bytes();
+                                    let _ = stream.write_all(&response);
+                                    return;
+                                }
+                            }
                             // Ingest into invariant enforcer
                             enf.ingest(&receipt);
                             let fq = store.flow_quotient(20);
@@ -506,37 +547,87 @@ fn handle_client(
                 }
             } else if request.starts_with("POST /release") {
                 // ── Release hold on actor (called after verification) ──
+                // FIX 5 (audit 2026-08-10): require requester_id, deny self-release,
+                // and restrict to F13 SOVEREIGN ("arif") or external verifier.
+                // NOTE: plaintext requester_id is defense-in-depth, not a substitute
+                // for SCT-token-based cryptographic identity (deferred to F13 design).
                 match extract_body(&request) {
                     Some(raw_json) => {
                         #[derive(Deserialize)]
                         struct ReleaseRequest {
                             actor_id: String,
+                            requester_id: String,
                         }
                         match serde_json::from_str::<ReleaseRequest>(raw_json.trim()) {
                             Ok(req) => {
+                                // ── Self-release denied: an actor cannot release
+                                // its own hold without external verification. ──
+                                if req.requester_id == req.actor_id {
+                                    let body = serde_json::json!({
+                                        "status": "forbidden",
+                                        "reason": "self-release denied — external verification required",
+                                        "actor": req.actor_id,
+                                        "requester": req.requester_id,
+                                    })
+                                    .to_string();
+                                    let _ = stream.write_all(
+                                        &format!(
+                                            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                            body.len(), body
+                                        )
+                                        .into_bytes(),
+                                    );
+                                    return;
+                                }
+                                // ── Only F13 SOVEREIGN ("arif") or an external
+                                // verifier may authorize a release. ──
+                                if req.requester_id != "arif" {
+                                    let body = serde_json::json!({
+                                        "status": "forbidden",
+                                        "reason": "release requires F13 sovereign or external verifier",
+                                        "actor": req.actor_id,
+                                        "requester": req.requester_id,
+                                    })
+                                    .to_string();
+                                    let _ = stream.write_all(
+                                        &format!(
+                                            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                            body.len(), body
+                                        )
+                                        .into_bytes(),
+                                    );
+                                    return;
+                                }
                                 let mut enf = enforcer.lock().unwrap();
                                 enf.release_hold(&req.actor_id);
                                 let body = serde_json::json!({
                                     "status": "released",
                                     "actor": req.actor_id,
+                                    "released_by": req.requester_id,
                                 });
-                                http_ok(&body.to_string())
+                                let _ = stream.write_all(&http_ok(&body.to_string()));
                             }
                             Err(e) => {
                                 let body = serde_json::json!({"status": "invalid", "error": format!("{}", e)}).to_string();
-                                format!(
-                                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                                    body.len(), body
-                                ).into_bytes()
+                                let _ = stream.write_all(
+                                    &format!(
+                                        "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                        body.len(), body
+                                    )
+                                    .into_bytes(),
+                                );
                             }
                         }
                     }
                     None => {
-                        let body = r#"{"status":"error","message":"Empty body. Send {\"actor_id\":\"...\"}"}"#;
-                        format!(
-                            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                            body.len(), body
-                        ).into_bytes()
+                        let body = r#"{"status":"error","message":"Empty body. Send {\"actor_id\":\"...\",\"requester_id\":\"...\"}"}"#;
+                        let _ = stream.write_all(
+                            &format!(
+                                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                body.len(), body
+                            )
+                            .into_bytes(),
+                        );
                     }
                 }
             } else if request.starts_with("POST /enforce") {
@@ -595,6 +686,71 @@ fn daemon_mode() {
     let receipt_store = Arc::new(Mutex::new(ReceiptStore::new(1000)));
     let enforcer = Arc::new(Mutex::new(InvariantEnforcer::default()));
 
+    // ── Daemon-side receipt persistence (audit 2026-08-10) ──
+    // Load existing receipts on startup, then append new receipts as they arrive.
+    let persist_path = PathBuf::from("/var/lib/arifflow/receipts.jsonl");
+    let persist_mutex = Arc::new(Mutex::new(()));
+    if let Some(parent) = persist_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // Load last N receipts from existing file (if any) into in-memory store
+    {
+        let mut store = receipt_store.lock().unwrap();
+        if let Ok(file) = File::open(&persist_path) {
+            let reader = BufReader::new(file);
+            for line in reader.lines().flatten() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<FlowReceipt>(&line) {
+                    Ok(receipt) => {
+                        store.push_force(receipt);
+                    }
+                    Err(e) => {
+                        eprintln!("[arifFlow] Skip malformed receipt line: {}", e);
+                    }
+                }
+                if store.len() >= 1000 {
+                    break;
+                }
+            }
+        }
+        if store.len() > 0 {
+            eprintln!(
+                "[arifFlow] Loaded {} receipts from {}",
+                store.len(),
+                persist_path.display()
+            );
+        }
+    }
+
+    // ── Auto-enforcement timer (audit 2026-08-10) ──
+    // Spawn background thread that runs invariant enforcement every ARIFLOW_ENFORCE_INTERVAL_S
+    // seconds (default 10), so HOLD/THROTTLE/VOID gates fire even without explicit POST /enforce.
+    let enforcer_clone = enforcer.clone();
+    let enf_interval: u64 = std::env::var("ARIFLOW_ENFORCE_INTERVAL_S")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
+    eprintln!(
+        "[arifFlow] Auto-enforcement timer: {}s interval",
+        enf_interval
+    );
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(enf_interval));
+        let mut enf = match enforcer_clone.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let report = enf.enforce();
+        if report.blocking_count > 0 || report.warn_count > 0 {
+            eprintln!(
+                "[arifFlow] auto-enforce: status={:?} blocking={} warns={}",
+                report.overall_status, report.blocking_count, report.warn_count
+            );
+        }
+    });
+
     match TcpListener::bind(&addr) {
         Ok(listener) => {
             eprintln!("[arifFlow] Daemon mode — listening on {}", addr);
@@ -616,8 +772,10 @@ fn daemon_mode() {
                         let store = receipt_store.clone();
                         let enf = enforcer.clone();
                         let start = start_time;
+                        let pp = persist_path.clone();
+                        let pm = persist_mutex.clone();
                         std::thread::spawn(move || {
-                            handle_client(s, start, &store, &enf);
+                            handle_client(s, start, &store, &enf, &pp, &pm);
                         });
                     }
                     Err(e) => {
