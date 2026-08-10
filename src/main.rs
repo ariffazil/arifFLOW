@@ -14,6 +14,7 @@
 
 use arifflow::channel::ChannelMode;
 use arifflow::governance::invariants::{EnforcerAction, FqThresholds, InvariantEnforcer};
+use arifflow::governance::Vault999Sealer;
 use arifflow::receipt::{FlowReceipt, ReceiptStore};
 use arifflow::scheduler::{FlowNode, SuperStepScheduler, TopologyKind, VerdictClass};
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,10 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+// F5 (audit 2026-08-10): VAULT999 canonical witness-trail log.
+// arifFlow appends sealed receipts here; VAULT999 is the only immutable store.
+const VAULT999_LOG_PATH: &str = "/root/arifOS/VAULT999/arifflow_sealed.jsonl";
 
 // ── Protocol Messages ──────────────────────────────────────────────────
 
@@ -368,6 +373,7 @@ fn handle_client(
     enforcer: &Arc<Mutex<InvariantEnforcer>>,
     persist_path: &PathBuf,
     persist_mutex: &Arc<Mutex<()>>,
+    vault_sealer: &Arc<Mutex<Vault999Sealer>>,
 ) {
     let mut buf = [0u8; 16384];
     match stream.read(&mut buf) {
@@ -438,6 +444,11 @@ fn handle_client(
                                             let _ = writeln!(file, "{}", line);
                                         }
                                     }
+                                    // FIX 4 (audit 2026-08-10): chain-validation log line.
+                                    eprintln!(
+                                        "[arifFlow] Receipt {} ingested with chain validation",
+                                        receipt.receipt_id
+                                    );
                                 }
                                 Err(chain_err) => {
                                     eprintln!(
@@ -455,6 +466,53 @@ fn handle_client(
                                     ).into_bytes();
                                     let _ = stream.write_all(&response);
                                     return;
+                                }
+                            }
+                            // F5: Receipts are sealed to VAULT999 for canonical witness trail.
+                            // Receipt's SHA3-256 hash becomes the seal checkpoint, producing a
+                            // tamper-evident hash chain appended to VAULT999/arifflow_sealed.jsonl.
+                            // Failures here are logged but do not fail /ingest (in-memory primary).
+                            if let Ok(mut sealer) = vault_sealer.lock() {
+                                let checkpoint: [u8; 32] = match hex::decode(receipt.hash()) {
+                                    Ok(bytes) if bytes.len() == 32 => {
+                                        let mut arr = [0u8; 32];
+                                        arr.copy_from_slice(&bytes);
+                                        arr
+                                    }
+                                    _ => [0u8; 32],
+                                };
+                                match sealer.seal(checkpoint) {
+                                    Ok(seal_receipt) => {
+                                        let line = serde_json::json!({
+                                            "vault_entry_id": seal_receipt.vault_entry_id,
+                                            "chain_position": seal_receipt.chain_position,
+                                            "prev_hash": hex::encode(seal_receipt.prev_hash),
+                                            "chain_entry_hash": hex::encode(seal_receipt.chain_entry_hash),
+                                            "receipt_id": receipt.receipt_id,
+                                        })
+                                        .to_string();
+                                        match OpenOptions::new()
+                                            .create(true)
+                                            .append(true)
+                                            .open(VAULT999_LOG_PATH)
+                                        {
+                                            Ok(mut f) => {
+                                                let _ = writeln!(f, "{}", line);
+                                            }
+                                            Err(e) => {
+                                                eprintln!(
+                                                    "[arifFlow] WARN: VAULT999 log unwritable at {}: {} — seal kept in-memory",
+                                                    VAULT999_LOG_PATH, e
+                                                );
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[arifFlow] WARN: VAULT999 seal failed: {} — ingest continues in-memory",
+                                            e
+                                        );
+                                    }
                                 }
                             }
                             // Ingest into invariant enforcer
@@ -605,29 +663,23 @@ fn handle_client(
                                     "actor": req.actor_id,
                                     "released_by": req.requester_id,
                                 });
-                                let _ = stream.write_all(&http_ok(&body.to_string()));
+                                http_ok(&body.to_string())
                             }
                             Err(e) => {
                                 let body = serde_json::json!({"status": "invalid", "error": format!("{}", e)}).to_string();
-                                let _ = stream.write_all(
-                                    &format!(
-                                        "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                                        body.len(), body
-                                    )
-                                    .into_bytes(),
-                                );
+                                format!(
+                                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                    body.len(), body
+                                ).into_bytes()
                             }
                         }
                     }
                     None => {
                         let body = r#"{"status":"error","message":"Empty body. Send {\"actor_id\":\"...\",\"requester_id\":\"...\"}"}"#;
-                        let _ = stream.write_all(
-                            &format!(
-                                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                                body.len(), body
-                            )
-                            .into_bytes(),
-                        );
+                        format!(
+                            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(), body
+                        ).into_bytes()
                     }
                 }
             } else if request.starts_with("POST /enforce") {
@@ -686,6 +738,11 @@ fn daemon_mode() {
     let receipt_store = Arc::new(Mutex::new(ReceiptStore::new(1000)));
     let enforcer = Arc::new(Mutex::new(InvariantEnforcer::default()));
 
+    // ── VAULT999 sealer (audit 2026-08-10, F5) ──
+    // Receipts are sealed into the VAULT999 immutable hash chain (see F5:
+    // "Flow writes receipts, never owns memory"). In-memory chain + JSONL log.
+    let vault_sealer = Arc::new(Mutex::new(Vault999Sealer::new()));
+
     // ── Daemon-side receipt persistence (audit 2026-08-10) ──
     // Load existing receipts on startup, then append new receipts as they arrive.
     let persist_path = PathBuf::from("/var/lib/arifflow/receipts.jsonl");
@@ -743,6 +800,8 @@ fn daemon_mode() {
             Err(p) => p.into_inner(),
         };
         let report = enf.enforce();
+        // FIX 3 (audit 2026-08-10): single-line cycle log on every enforce.
+        eprintln!("[arifFlow] enforce cycle #{} complete", enf.cycle_count);
         if report.blocking_count > 0 || report.warn_count > 0 {
             eprintln!(
                 "[arifFlow] auto-enforce: status={:?} blocking={} warns={}",
@@ -774,8 +833,9 @@ fn daemon_mode() {
                         let start = start_time;
                         let pp = persist_path.clone();
                         let pm = persist_mutex.clone();
+                        let vs = vault_sealer.clone();
                         std::thread::spawn(move || {
-                            handle_client(s, start, &store, &enf, &pp, &pm);
+                            handle_client(s, start, &store, &enf, &pp, &pm, &vs);
                         });
                     }
                     Err(e) => {
