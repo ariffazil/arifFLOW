@@ -223,7 +223,9 @@ pub struct ActorFlowState {
     pub verify_count: u64,
     pub execute_cost_ns: u64,
     pub verify_cost_ns: u64,
-    /// Raw cost-based ratio (legacy) — kept for serialization compat
+    /// [DEPRECATED] Legacy cost-based ratio. Use `quotient` (v2.1 count-based) instead.
+    /// Kept for serialization backward compat only. Will be removed when all consumers migrate.
+    #[deprecated(note = "use quotient — fq is a legacy alias with cost-based semantics")]
     pub fq: f64,
     /// v2.1 quotient: verify_count / execute_count. None when undefined.
     pub quotient: Option<f64>,

@@ -133,10 +133,14 @@ class ArifFlowClient:
         floor_verdict: str = "Pass",
         cooling_decision: str = "None",
         payload: Optional[dict] = None,
+        intent_reason: Optional[str] = None,
+        expected_outcome: Optional[str] = None,
     ) -> IngestResult:
         """Ingest a flow receipt into arifFlow.
 
         Called after every Execute or Verify step.
+        T2-1: intent_reason + expected_outcome enable the WHY bridge —
+        governance without reading source code.
         """
         import uuid
         from datetime import datetime, timezone
@@ -155,6 +159,10 @@ class ArifFlowClient:
         }
         if payload:
             receipt["payload"] = payload
+        if intent_reason:
+            receipt["intent_reason"] = intent_reason
+        if expected_outcome:
+            receipt["expected_outcome"] = expected_outcome
 
         data = self._post("/ingest", receipt)
         fq = data.get("fq", {})
