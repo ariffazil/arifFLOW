@@ -425,6 +425,12 @@ pub struct FlowReceipt {
     // ── Governance ──
     /// F1–F13 constitutional verdict for this step
     pub floor_verdict: FloorVerdict,
+    /// T2-1 (audit 2026-08-10): WHY bridge — first-class intent field.
+    /// "Kenapa agent buat benda ni?" — governance without reading source code.
+    pub intent_reason: Option<String>,
+    /// T2-1: Expected outcome of this action — what the agent expected to happen.
+    /// Completes the WHY bridge: intent (why) + expected_outcome (what should happen).
+    pub expected_outcome: Option<String>,
     /// Cooling queue action
     pub cooling_decision: CoolingDecision,
 
@@ -478,6 +484,8 @@ impl FlowReceipt {
             preceding_verify_cost_ns: None,
             epistemic_label,
             floor_verdict: FloorVerdict::Pass,
+            intent_reason: None,
+            expected_outcome: None,
             cooling_decision: CoolingDecision::None,
             tri_witness_votes: None,
             merkle_root: None,
@@ -515,6 +523,8 @@ impl FlowReceipt {
             preceding_verify_cost_ns: None,
             epistemic_label,
             floor_verdict: FloorVerdict::Pass,
+                        intent_reason: None,
+            expected_outcome: None,
             cooling_decision: CoolingDecision::None,
             tri_witness_votes: None,
             merkle_root: None,
