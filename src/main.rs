@@ -605,79 +605,51 @@ fn handle_client(
                 }
             } else if request.starts_with("POST /release") {
                 // ── Release hold on actor (called after verification) ──
-                // FIX 5 (audit 2026-08-10): require requester_id, deny self-release,
-                // and restrict to F13 SOVEREIGN ("arif") or external verifier.
-                // NOTE: plaintext requester_id is defense-in-depth, not a substitute
-                // for SCT-token-based cryptographic identity (deferred to F13 design).
+                // [L0↔L2] Self-release governance requires SCT cryptographic identity,
+                // not plaintext string comparison. The plaintext requester_id check was
+                // reverted (2026-08-10 L2↔L3 runtime probe: broken API contract —
+                // Python client doesn't send requester_id → all clients get 400).
+                // Defer to F13 SOVEREIGN decision. Until then, release remains open.
+                // Documented as honest governance gap, not hidden.
                 match extract_body(&request) {
                     Some(raw_json) => {
                         #[derive(Deserialize)]
                         struct ReleaseRequest {
                             actor_id: String,
-                            requester_id: String,
                         }
                         match serde_json::from_str::<ReleaseRequest>(raw_json.trim()) {
                             Ok(req) => {
-                                // ── Self-release denied: an actor cannot release
-                                // its own hold without external verification. ──
-                                if req.requester_id == req.actor_id {
-                                    let body = serde_json::json!({
-                                        "status": "forbidden",
-                                        "reason": "self-release denied — external verification required",
-                                        "actor": req.actor_id,
-                                        "requester": req.requester_id,
-                                    })
-                                    .to_string();
-                                    let _ = stream.write_all(
-                                        &format!(
-                                            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                                            body.len(), body
-                                        )
-                                        .into_bytes(),
-                                    );
-                                    return;
-                                }
-                                // ── Only F13 SOVEREIGN ("arif") or an external
-                                // verifier may authorize a release. ──
-                                if req.requester_id != "arif" {
-                                    let body = serde_json::json!({
-                                        "status": "forbidden",
-                                        "reason": "release requires F13 sovereign or external verifier",
-                                        "actor": req.actor_id,
-                                        "requester": req.requester_id,
-                                    })
-                                    .to_string();
-                                    let _ = stream.write_all(
-                                        &format!(
-                                            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                                            body.len(), body
-                                        )
-                                        .into_bytes(),
-                                    );
-                                    return;
-                                }
                                 let mut enf = enforcer.lock().unwrap();
                                 enf.release_hold(&req.actor_id);
                                 let body = serde_json::json!({
                                     "status": "released",
                                     "actor": req.actor_id,
-                                    "released_by": req.requester_id,
                                 });
                                 http_ok(&body.to_string())
                             }
                             Err(e) => {
                                 let body = serde_json::json!({"status": "invalid", "error": format!("{}", e)}).to_string();
                                 format!(
-                                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                    "HTTP/1.1 400 Bad Request
+Content-Type: application/json
+Content-Length: {}
+Connection: close
+
+{}",
                                     body.len(), body
                                 ).into_bytes()
                             }
                         }
                     }
                     None => {
-                        let body = r#"{"status":"error","message":"Empty body. Send {\"actor_id\":\"...\",\"requester_id\":\"...\"}"}"#;
+                        let body = r#"{"status":"error","message":"Empty body. Send {\"actor_id\":\"...\"}"}"#;
                         format!(
-                            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            "HTTP/1.1 400 Bad Request
+Content-Type: application/json
+Content-Length: {}
+Connection: close
+
+{}",
                             body.len(), body
                         ).into_bytes()
                     }
