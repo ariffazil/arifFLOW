@@ -15,8 +15,13 @@ uuid = { version = "1", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["full"] }
 chrono = { version = "0.4", features = ["serde"] }
 hex = "0.4"
+<<<<<<< HEAD
 sha3 = "0.10"
 reqwest = { version = "0.13", features = ["blocking", "json"] }
+=======
+sha3 = "0.12"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+>>>>>>> be6cc80 (chore(deps)(deps): bump sha3 from 0.10.9 to 0.12.0)
 
 [dev-dependencies]
 tempfile = "3"
