@@ -1,0 +1,122 @@
+name: Auto-merge Dependabot PRs
+
+# Forged 2026-08-10 — F13 verdict, CI governance repair (Rust adapter).
+#
+# Trust domain:
+#   - Trigger: pull_request on Dependabot-opened PRs
+#   - Privileges: contents:write, pull-requests:write
+#   - Actions: label + auto-merge eligible patch/minor bumps
+#
+# Constitutional package denylist (F13 directive):
+#   For Rust: serde, tokio, hyper, axum, reqwest, rustls — wire/runtime surface.
+#   These MUST NOT auto-merge regardless of semver type. They get the
+#   `needs-human-arif` label and are blocked from auto-merge even if the
+#   semver bump is patch/minor. F13 review is the only merge path.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# Constitutional packages that F13 must always review. Patch/minor bumps on
+# these do NOT auto-merge.
+env:
+  CONSTITUTIONAL_DEPS: "serde tokio hyper axum reqwest rustls async-trait clap tracing"
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    if: github.actor == 'dependabot[bot]'
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v3
+        with:
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Check automation-freeze label
+        id: freeze
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          FROZEN=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
+            --json labels --jq '[.labels[].name] | contains(["automation-freeze"])')
+          echo "frozen=$FROZEN" >> "$GITHUB_OUTPUT"
+          if [ "$FROZEN" = "true" ]; then
+            echo "⛔ automation-freeze label present — skipping auto-merge"
+          fi
+
+      - name: Detect constitutional packages in this PR
+        id: constitutional
+        env:
+          DEP_NAMES: ${{ steps.metadata.outputs.dependency-names }}
+        run: |
+          CONST="$CONSTITUTIONAL_DEPS"
+          FOUND=""
+          for dep in $CONST; do
+            # dependency-names is a comma-separated string; match exact tokens
+            if echo ",$DEP_NAMES," | grep -qE ",${dep}(,|$)"; then
+              FOUND="$FOUND $dep"
+            fi
+          done
+          echo "found=${FOUND:-none}" >> "$GITHUB_OUTPUT"
+          if [ -n "$FOUND" ]; then
+            echo "🚨 Constitutional deps present: $FOUND — auto-merge blocked"
+          fi
+
+      - name: Label major bumps as needs-human-arif
+        if: steps.metadata.outputs.update-type == 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr edit "$PR_NUMBER" --repo "$REPO" \
+            --add-label "needs-human-arif" \
+            --add-label "deploy-risk"
+          echo "🚨 Major version bump — labelled needs-human-arif + deploy-risk"
+
+      - name: Label constitutional packages (any semver) as needs-human-arif
+        if: steps.constitutional.outputs.found != 'none'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr edit "$PR_NUMBER" --repo "$REPO" \
+            --add-label "needs-human-arif" \
+            --add-label "deploy-risk" \
+            --remove-label "safe-automerge" 2>/dev/null || true
+          echo "🚨 Constitutional deps present: ${{ steps.constitutional.outputs.found }} — needs-human-arif + deploy-risk"
+
+      - name: Auto-merge patch and minor updates
+        # Block auto-merge when ANY of these is true:
+        #   - automation-freeze label present
+        #   - constitutional package in diff (F13 directive, regardless of semver)
+        #   - not a patch/minor bump
+        if: |
+          steps.freeze.outputs.frozen != 'true' &&
+          steps.constitutional.outputs.found == 'none' &&
+          (
+            steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+            steps.metadata.outputs.update-type == 'version-update:semver-minor'
+          )
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "safe-automerge"
+          gh pr merge "$PR_URL" --squash --auto --delete-branch
+          echo "✅ Auto-merge enabled for $PR_URL"

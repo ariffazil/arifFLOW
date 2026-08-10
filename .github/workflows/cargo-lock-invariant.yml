@@ -1,0 +1,82 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Cargo lockfile invariant — Rust-adapted F13 CI governance pattern
+# Forged 2026-08-10 — pattern replication from arifOS PR #683
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Per F13 directive (2026-08-10):
+#   - Cargo.toml + Cargo.lock are the SOLE resolver authority for Rust deps.
+#   - `cargo check --locked` asserts Cargo.lock is consistent with Cargo.toml.
+#   - `cargo build --locked` asserts the lockfile builds deterministically.
+#   - `cargo audit` is the security scan (constitutional surface).
+#   - Both invariants run on every PR + push to main + manual dispatch.
+#
+# This is a HARD invariant — failure blocks. The intent is to catch resolver
+# drift BEFORE it propagates into the build/runtime.
+#
+# Equivalent of arifOS ci-uv-lock-invariant.yml but for Rust/Cargo.
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: cargo lockfile invariant
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cargo-invariant-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lockfile-invariant:
+    name: cargo check --locked && cargo build --locked
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Hard invariant — cargo check --locked
+        run: |
+          set -euo pipefail
+          echo "═══ F13 invariant: Cargo.lock consistent with Cargo.toml ═══"
+          cargo check --locked
+          echo "✅ Cargo.lock is consistent with Cargo.toml"
+
+      - name: Hard invariant — cargo build --locked
+        run: |
+          set -euo pipefail
+          echo "═══ F13 invariant: lockfile builds deterministically ═══"
+          cargo build --locked --release
+          echo "✅ cargo build --locked succeeded"
+
+      - name: Record lockfile SHA-256
+        id: lockhash
+        run: |
+          sha=$(sha256sum Cargo.lock | awk '{print $1}')
+          echo "lock_sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "Cargo.lock SHA-256: $sha"
+
+      - name: Report
+        if: always()
+        run: |
+          echo "## cargo lockfile invariant"
+          echo ""
+          echo "- ref: \`${{ github.ref }}\`"
+          echo "- head_sha: \`${{ github.sha }}\`"
+          echo "- lock_sha256: \`${{ steps.lockhash.outputs.lock_sha256 }}\`"
+          echo ""
+          echo "Verdict: this job's exit code (0 = invariant holds)."
