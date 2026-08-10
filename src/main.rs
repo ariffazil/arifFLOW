@@ -751,30 +751,43 @@ fn daemon_mode() {
         let _ = std::fs::create_dir_all(parent);
     }
     // Load last N receipts from existing file (if any) into in-memory store
+    // IMPORTANT (audit 2026-08-10): load the MOST RECENT receipts, not the first N.
+    // Loading the first 1000 of a 1288-line file puts STALE receipts in memory,
+    // making the FQ window (last 100 of store) reflect old metabolism, not current.
+    // Reality reconciliation probe (re_audit_drift_check.sh Probe 5) caught this:
+    // daemon FQ=0.515 vs disk-recomputed FQ=0.957. Fixed by taking the tail.
     {
         let mut store = receipt_store.lock().unwrap();
         if let Ok(file) = File::open(&persist_path) {
             let reader = BufReader::new(file);
+            let mut loaded: Vec<FlowReceipt> = Vec::new();
             for line in reader.lines().flatten() {
                 if line.trim().is_empty() {
                     continue;
                 }
                 match serde_json::from_str::<FlowReceipt>(&line) {
-                    Ok(receipt) => {
-                        store.push_force(receipt);
-                    }
+                    Ok(receipt) => loaded.push(receipt),
                     Err(e) => {
                         eprintln!("[arifFlow] Skip malformed receipt line: {}", e);
                     }
                 }
-                if store.len() >= 1000 {
-                    break;
+            }
+            // Keep only the most recent 1000 (store capacity), drop stale head.
+            let capacity = 1000;
+            if loaded.len() > capacity {
+                let keep_from = loaded.len() - capacity;
+                for receipt in loaded.drain(keep_from..) {
+                    store.push_force(receipt);
+                }
+            } else {
+                for receipt in loaded {
+                    store.push_force(receipt);
                 }
             }
         }
         if store.len() > 0 {
             eprintln!(
-                "[arifFlow] Loaded {} receipts from {}",
+                "[arifFlow] Loaded {} receipts from {} (most recent)",
                 store.len(),
                 persist_path.display()
             );
