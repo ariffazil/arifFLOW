@@ -5,32 +5,17 @@ arifFlow Python Client — Invariant Gate + Receipt Ingestion
 Wraps the arifFlow daemon (:7073) invariant enforcement endpoints
 for use by AAA agents (333-AGI, 555-ASI, 888-APEX, A-FORGE, etc.).
 
-Usage:
-    from arifflow.client import ArifFlowClient
-
-    client = ArifFlowClient()
-
-    # Before executing: check invariant gate
-    allowed, reason, action = client.check("333-AGI")
-    if not allowed:
-        print(f"HOLD: {reason}")
-        return
-
-    # After executing: ingest receipt
-    client.ingest("333-AGI", "session-123", "Execute", "Observation", 1_000_000)
-
-    # After verifying: ingest verify receipt + release
-    client.ingest("333-AGI", "session-123", "Verify", "Derivation", 500_000)
-    client.release("333-AGI")
-
-    # Trigger enforcement cycle
-    client.enforce()
+T1-1 Override Closure (2026-08-10):
+When ARIFLOW_FAIL_OPEN fires, an OVERRIDE_RECEIPT is emitted to
+/var/lib/arifflow/override_log.jsonl. Override is an observability
+event, not a configuration event.
 
 DITEMPA BUKAN DIBERI
 """
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 from dataclasses import dataclass
@@ -60,8 +45,40 @@ class ArifFlowClient:
     def __init__(self, base_url: str = "http://127.0.0.1:7073"):
         self.base_url = base_url.rstrip("/")
 
+    def _emit_override_receipt(self, error: str) -> None:
+        """T1-1: Emit governance receipt when fail-open override is used.
+
+        Every bypass MUST leave an audit trail: actor, reason, expiry, timestamp.
+        Written to override_log.jsonl — same persistence dir as daemon receipts.
+        """
+        try:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            expiry = now + datetime.timedelta(minutes=30)
+            receipt = {
+                "event": "OVERRIDE_RECEIPT",
+                "timestamp": now.isoformat(),
+                "expiry": expiry.isoformat(),
+                "actor": "arifflow-client",
+                "reason": f"ARIFLOW_FAIL_OPEN bypass: {error}",
+                "override_type": "ARIFLOW_FAIL_OPEN",
+                "status": "ACTIVE",
+                "expires_at": expiry.isoformat(),
+            }
+            log_path = "/var/lib/arifflow/override_log.jsonl"
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+            with open(log_path, "a") as f:
+                f.write(json.dumps(receipt) + "\n")
+        except Exception:
+            pass  # logging failure must not block the override
+
     def _post(self, path: str, data: dict) -> dict:
-        """Send a POST request to the arifFlow daemon."""
+        """Send a POST request to the arifFlow daemon.
+
+        On daemon unreachable:
+        - FAIL CLOSED by default (allowed=False, action=Hold)
+        - ARIFLOW_FAIL_OPEN=true overrides to allowed=True AND emits
+          an override governance receipt (T1-1: observability event).
+        """
         url = f"{self.base_url}{path}"
         body = json.dumps(data).encode("utf-8")
         req = Request(url, data=body, headers={"Content-Type": "application/json"})
@@ -69,16 +86,16 @@ class ArifFlowClient:
             with urlopen(req, timeout=5) as resp:
                 return json.loads(resp.read())
         except Exception as e:
-            # arifFlow unreachable — FAIL CLOSED (constitutional: governance unavailable, do not proceed)
-            # Emergency override: set ARIFLOW_FAIL_OPEN=true to bypass (e.g., arifFlow daemon down for maintenance)
+            # arifFlow unreachable — FAIL CLOSED (governance unavailable, do not proceed)
+            # Emergency override: ARIFLOW_FAIL_OPEN=true bypasses AND emits governance receipt
             fail_open = os.environ.get("ARIFLOW_FAIL_OPEN", "").lower() in (
-                "1",
-                "true",
-                "yes",
+                "1", "true", "yes",
             )
             if fail_open:
+                # T1-1: Override is an OBSERVABILITY EVENT, not a config event.
+                self._emit_override_receipt(str(e))
                 return {
-                    "status": "error",
+                    "status": "override",
                     "error": str(e),
                     "allowed": True,
                     "reason": "arifFlow unreachable (fail-open override active)",
@@ -88,8 +105,8 @@ class ArifFlowClient:
                 "status": "error",
                 "error": str(e),
                 "allowed": False,
-                "reason": "arifFlow unreachable",
-                "action": "Block",
+                "reason": "arifFlow unreachable — governance unavailable (fail-closed)",
+                "action": "Hold",
             }
 
     def check(self, actor_id: str) -> CheckResult:
@@ -131,7 +148,7 @@ class ArifFlowClient:
             "step_type": step_type,
             "epistemic_label": epistemic_label,
             "cost_ns": cost_ns,
-            "step_number": 1,  # will be tracked by daemon
+            "step_number": 1,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "floor_verdict": floor_verdict,
             "cooling_decision": cooling_decision,

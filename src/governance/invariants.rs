@@ -270,14 +270,14 @@ impl ActorFlowState {
         // It diverged from v2.1 semantics and miscalibrated HOLD/THROTTLE gates
         // relative to /health which reports v2.1 (verify_count / execute_count).
         // We now alias `self.fq` to the v2.1 count-based quotient so enforcement
-        // and /health share ONE formula. `self.quotient` remains the canonical field;
-        // `self.fq` is kept populated for backward compat with serialized state.
+        // T1-2 (audit 2026-08-10): FQ canonicalization.
+        // `self.quotient` is the SINGLE CANONICAL field for governance decisions.
+        // `self.fq` is a DEPRECATED alias — kept only for serialized backward compat.
+        // All enforcement and health reporting MUST use `self.quotient`.
+        // Do NOT read `self.fq` for governance — it is a mirror, not a source.
         //
-        // v2.1 semantics: quotient = verify_count / execute_count — HIGHER = healthier.
-        // v2.0 semantics: fq = execute_cost / verify_cost — HIGHER = worse (overheat).
-        // Because the comparison direction flips for the overheat gate, see the
-        // enforcer loop below where the overheat_threshold comparison is inverted
-        // to its reciprocal (10.0 → 0.1 = "extreme imbalance" threshold).
+        // Canonical semantics: quotient = verify_count / execute_count — HIGHER = healthier.
+        // Thresholds: stuck < 0.5, overheat > 10.0 (inverted to 1/overheat for v2.1 direction).
 
         // v2.1 quotient: verify_count / execute_count (inverted, count-based)
         self.quotient = if self.verify_count == 0 || self.execute_count == 0 {
