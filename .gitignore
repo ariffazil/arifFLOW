@@ -65,3 +65,4 @@ entropy-report.json
 # ── Backup (any pattern) ──
 *.bak*
 *.backup*
+.megamemory/
