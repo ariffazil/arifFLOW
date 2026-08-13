@@ -66,3 +66,4 @@ entropy-report.json
 *.bak*
 *.backup*
 .megamemory/
+.megamemory/
