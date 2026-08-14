@@ -1,0 +1,81 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# arifFLOW — Dependabot configuration (Rust adapter)
+# Forged 2026-08-10 — F13 verdict, CI governance repair (Rust adapter)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Resolver authority: Cargo.toml + Cargo.lock.
+# arifFLOW is the federation's Rust flow engine — Cargo replaces the Python
+# uv resolver. Same F13 doctrine, different tooling.
+#
+# Per F13 directive (2026-08-10):
+#   - Constitutional packages (serde, tokio, hyper, axum, reqwest, rustls,
+#     async-trait, clap, tracing) are KEPT UN-GROUPED — one PR per package,
+#     easy to bisect. NOT placed under `ignore:` (would lose visibility).
+#     Auto-merge is BLOCKED for them via auto-merge-dependabot.yml.
+#   - Cooldown default-days: 3 prevents back-to-back cascading bumps.
+#   - Open-pull-requests-limit: 5 keeps review surface manageable.
+# ═══════════════════════════════════════════════════════════════════════════
+
+version: 2
+
+updates:
+  # ── Cargo dependencies (root: Cargo.toml + Cargo.lock) ─────────────────
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Kuala_Lumpur"
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 5
+    labels:
+      - "deps"
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    # Groups — only safe-to-batch, build/test/runtime-adjacent crates.
+    # Constitutional crates are INTENTIONALLY NOT GROUPED — see header.
+    groups:
+      test-stack:
+        patterns:
+          - "mockall"
+          - "tokio-test"
+          - "proptest"
+          - "criterion"
+      dev-stack:
+        patterns:
+          - "rustfmt*"
+          - "clippy*"
+          - "cargo-*"
+      # NOTE: `serde tokio hyper axum reqwest rustls async-trait clap tracing`
+      # are NOT in any group. Each produces its own single-package PR.
+
+  # ── GitHub Actions versions ──────────────────────────────────────────────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Kuala_Lumpur"
+    open-pull-requests-limit: 5
+    labels:
+      - "deps"
+      - "ci"
+    commit-message:
+      prefix: "chore(actions)"
+      include: "scope"
+    groups:
+      github-actions-official:
+        patterns:
+          - "actions/*"
+          - "github/*"
+      third-party-actions:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "actions/*"
+          - "github/*"

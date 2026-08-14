@@ -8,7 +8,7 @@ authors = ["Arif (F13 SOVEREIGN) <arifbfazil@gmail.com>"]
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-bincode = "1"
+bincode = "3"
 blake3 = "1"
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -16,7 +16,7 @@ tokio = { version = "1", features = ["full"] }
 chrono = { version = "0.4", features = ["serde"] }
 hex = "0.4"
 sha3 = "0.10"
-reqwest = { version = "0.12", features = ["blocking", "json"] }
+reqwest = { version = "0.13", features = ["blocking", "json"] }
 
 [dev-dependencies]
 tempfile = "3"

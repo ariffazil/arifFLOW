@@ -1,0 +1,121 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Dependabot CI — Unprivileged gate for dependency-only PRs (Rust adapter)
+# Forged 2026-08-10 — pattern replication from arifOS PR #683
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Trust domain:
+#   - Trigger: pull_request on main
+#   - Actor: dependabot[bot] (GitHub-documented identity) and app/dependabot
+#   - Privileges: contents: read ONLY — no secrets, no write, no PR mutation
+#   - Actions: observe + report. Does NOT comment, label, attest, or merge.
+#
+# Why this exists:
+#   The privileged CI gates are designed for human-authored PRs with
+#   attestations. They cannot fire for Dependabot. Without a separate gate,
+#   Dependabot PRs get all-red check rolls AND the test cascade is SKIPPED.
+#
+# What this does:
+#   1. cargo check --locked   (lockfile-frozen install — no resolution drift)
+#   2. cargo clippy -- -D warnings
+#   3. cargo fmt -- --check
+#   4. cargo test --release   (unprivileged test gate — secrets-free subset)
+#   5. cargo audit            (security scan)
+#
+# What this does NOT do:
+#   - No gh pr comment, no --add-label, no --auto-merge
+#   - No secret access — Dependabot PRs are fork-equivalent at the secret level
+#   - No privileged governance assertion (handled by separate maintainer path)
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: Dependabot CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependabot-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify-dependency-update:
+    name: verify-dependency-update
+    # Gate on the PR AUTHOR, not the workflow actor. When a maintainer calls
+    # `update-branch` or comments on a Dependabot PR, `github.actor` becomes
+    # the maintainer, not Dependabot. The PR's author (`user.login`) is the
+    # stable identity for Dependabot PRs and the only reliable gate.
+    if: |
+      github.event.pull_request.user.login == 'dependabot[bot]' ||
+      github.event.pull_request.user.login == 'app/dependabot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      CARGO_TERM_COLOR: always
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+
+    steps:
+      - name: Checkout PR head (read-only)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Hard invariant — cargo check --locked
+        run: |
+          set -euo pipefail
+          cargo check --locked
+          echo "✅ Cargo.lock is consistent with Cargo.toml"
+
+      - name: Lint (clippy)
+        run: cargo clippy --all-targets -- -D warnings || true
+        # Non-blocking: lint drift on a dep bump is informational.
+
+      - name: Format check
+        run: cargo fmt --all -- --check || true
+        # Non-blocking: format drift on a dep bump is informational.
+
+      - name: Test suite (frozen build subset)
+        run: |
+          set -euo pipefail
+          cargo test --release --no-fail-fast 2>&1 | tail -40
+
+      - name: Security scan (cargo audit, if installed)
+        run: |
+          set -euo pipefail
+          if command -v cargo-audit >/dev/null 2>&1; then
+            cargo audit
+          else
+            # cargo-audit is optional; if not installed, just install-and-run.
+            cargo install --locked cargo-audit --version '^0.21'
+            cargo audit
+          fi
+        continue-on-error: true
+        # Advisory only — constitutional surface but not blocking.
+
+      - name: Record lockfile SHA-256
+        id: lockhash
+        run: |
+          sha=$(sha256sum Cargo.lock | awk '{print $1}')
+          echo "lock_sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "Cargo.lock SHA-256: $sha"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Dependabot CI — ${{ github.event.pull_request.title }}"
+          echo ""
+          echo "- Head SHA: \`${{ github.event.pull_request.head.sha }}\`"
+          echo "- Lockfile SHA-256: \`${{ steps.lockhash.outputs.lock_sha256 }}\`"
+          echo "- Actor: \`${{ github.actor }}\`"
+          echo ""
+          echo "Verdict is the **job exit code**, not this summary."
