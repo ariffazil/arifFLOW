@@ -92,9 +92,10 @@ The daemon (:7073) automatically enforces F0-F6:
 
 | Trigger | Threshold | Action |
 |---------|-----------|--------|
-| FQ < 0.5 (STUCK) | verify dominates execute | **HOLD** — block execution |
-| FQ > 10.0 (OVERHEAT) | execute far outruns verify | **THROTTLE** (30s cooldown) |
+| FQ < fq_required (risk-weighted) | per risk_class: T0=0.1, T1=0.3, T2=0.5, T3=1.0 | **HOLD** — verify before execute |
+| FQ < 0.1 (BURNING) | extreme under-verification | **WARN** — throttle recommended |
 | >5 consecutive executes | no verify between | **HOLD** — mandate verification |
+| actor `held: true` | anti-simulation lock | **BLOCK** — must GET /truth first |
 
 ### Endpoints
 
