@@ -113,6 +113,70 @@ impl fmt::Display for EpistemicLabel {
     }
 }
 
+// ── Risk Class ────────────────────────────────────────────────────────────
+
+/// Autonomy tier classification for risk-weighted FQ thresholds.
+///
+/// Maps F13 SOVEREIGN autonomy ladder to FQ enforcement floors.
+/// Higher risk = higher minimum FQ required before execution.
+///
+/// | RiskClass | FQ Required | Maps to |
+/// |-----------|-------------|---------|
+/// | T0Observe | 0.1 | Read, probe, grep |
+/// | T1Mutate  | 0.3 | Edit, test, commit |
+/// | T2Deploy  | 0.5 | Deploy, restart, multi-file |
+/// | T3Irreversible | 1.0 | Irreversible, credential rotation, F13-gated |
+///
+/// Forged 2026-08-14 — FQ vector operationalization.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum RiskClass {
+    /// T0: Read, probe, observe — minimal risk. FQ floor: 0.1
+    T0Observe,
+    /// T1: Edit, test, commit, lint — moderate risk. FQ floor: 0.3
+    T1Mutate,
+    /// T2: Deploy, restart, multi-file — elevated risk. FQ floor: 0.5
+    T2Deploy,
+    /// T3: Irreversible, credential rotation, production — critical risk. FQ floor: 1.0
+    T3Irreversible,
+}
+
+impl Default for RiskClass {
+    fn default() -> Self {
+        Self::T0Observe
+    }
+}
+
+impl RiskClass {
+    /// Minimum FQ required before this risk class can execute.
+    /// Higher risk = higher verification floor.
+    /// Derived from F13 SOVEREIGN autonomy ladder.
+    pub fn fq_required(&self) -> f64 {
+        match self {
+            Self::T0Observe => 0.1,
+            Self::T1Mutate => 0.3,
+            Self::T2Deploy => 0.5,
+            Self::T3Irreversible => 1.0,
+        }
+    }
+
+    /// Short code for logging and JSON serialization.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::T0Observe => "T0",
+            Self::T1Mutate => "T1",
+            Self::T2Deploy => "T2",
+            Self::T3Irreversible => "T3",
+        }
+    }
+}
+
+impl fmt::Display for RiskClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.code())
+    }
+}
+
+
 // ── Floor Verdict ────────────────────────────────────────────────────────
 
 /// F1–F13 constitutional verdict for this step.
@@ -417,6 +481,9 @@ pub struct FlowReceipt {
     // ── Flow Step ──
     /// What kind of step was this
     pub step_type: StepType,
+    /// Risk class for this receipt — maps F13 autonomy tier to FQ floor
+    #[serde(default)]
+    pub risk_class: RiskClass,
     /// Which topology (fan-out/pipeline/cascade)
     pub topology_id: Option<String>,
     /// Which parallel lane within a topology
@@ -489,6 +556,7 @@ impl FlowReceipt {
             session_id: session_id.into(),
             session_token: None,
             step_type,
+            risk_class: RiskClass::default(),
             topology_id: None,
             lane_id: None,
             step_number: 0,
@@ -528,6 +596,7 @@ impl FlowReceipt {
             session_id: session_id.into(),
             session_token: None,
             step_type,
+            risk_class: RiskClass::default(),
             topology_id: None,
             lane_id: None,
             step_number: previous.step_number + 1,
@@ -560,6 +629,12 @@ impl FlowReceipt {
     /// Set the step type builder-style.
     pub fn with_step_type(mut self, step_type: StepType) -> Self {
         self.step_type = step_type;
+        self
+    }
+
+    /// Set the risk class builder-style.
+    pub fn with_risk_class(mut self, risk_class: RiskClass) -> Self {
+        self.risk_class = risk_class;
         self
     }
 

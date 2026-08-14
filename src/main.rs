@@ -443,6 +443,8 @@ fn handle_client(
                                 "held": state.held,
                                 "throttled": state.throttled,
                                 "consecutive_exec_no_verify": state.consecutive_executes_without_verify,
+                                "risk_class": state.last_risk_class.code(),
+                                "fq_required": state.last_risk_class.fq_required(),
                             }),
                         )
                     })

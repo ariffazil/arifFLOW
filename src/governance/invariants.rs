@@ -15,7 +15,7 @@
 // execution invariants (A1-A6) enforced in scheduler.rs.
 
 use crate::governance::cooling::{Convergence, CoolingEntry, CoolingLedger, DriftSeverity};
-use crate::receipt::{FlowQuotient, FlowReceipt, FlowVerdict, ReceiptStore, StepType};
+use crate::receipt::{FlowQuotient, FlowReceipt, FlowVerdict, ReceiptStore, StepType, RiskClass};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -231,6 +231,8 @@ pub struct ActorFlowState {
     pub quotient: Option<f64>,
     pub verdict: FlowVerdict,
     pub consecutive_executes_without_verify: u64,
+    /// Last risk_class seen from this actor — used for risk-weighted FQ thresholds
+    pub last_risk_class: RiskClass,
     pub throttled: bool,
     pub held: bool,
     pub last_seen_ns: i64,
@@ -248,6 +250,7 @@ impl ActorFlowState {
             quotient: None,
             verdict: FlowVerdict::Balanced,
             consecutive_executes_without_verify: 0,
+            last_risk_class: RiskClass::default(),
             throttled: false,
             held: false,
             last_seen_ns: 0,
@@ -257,6 +260,7 @@ impl ActorFlowState {
     /// Update from a flow receipt.
     pub fn ingest(&mut self, receipt: &FlowReceipt) {
         self.last_seen_ns = receipt.created_at.timestamp_nanos_opt().unwrap_or(0);
+        self.last_risk_class = receipt.risk_class.clone();
         if receipt.step_type.is_execution() {
             self.execute_count += 1;
             self.execute_cost_ns = self.execute_cost_ns.saturating_add(receipt.cost_ns);
@@ -423,16 +427,18 @@ impl InvariantEnforcer {
         let mut checks = Vec::new();
 
         for (actor_id, state) in &self.actors {
-            // FQ < stuck_threshold → HOLD
-            if state.fq < self.thresholds.stuck_threshold && state.execute_count > 0 {
+            // Risk-weighted FQ gate: fq_required per risk_class replaces fixed stuck_threshold
+            let fq_required = state.last_risk_class.fq_required();
+            if state.fq < fq_required && state.execute_count > 0 {
                 checks.push(InvariantCheck::new(
                     FlowInvariant::F3_ObserveNeverInterpret,
                     InvariantStatus::Hold,
                     format!(
-                        "Actor '{}' is STUCK: FQ={:.2} (threshold: {:.2}). execute={} verify={}",
+                        "Actor '{}' is STUCK: FQ={:.2} < fq_required={:.2} (risk_class={}). execute={} verify={}",
                         actor_id,
                         state.fq,
-                        self.thresholds.stuck_threshold,
+                        fq_required,
+                        state.last_risk_class.code(),
                         state.execute_count,
                         state.verify_count
                     ),
