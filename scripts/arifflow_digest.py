@@ -99,17 +99,25 @@ def format_digest():
             "priority": 2,
         })
 
-    # FQ state
-    if fq_state:
-        fq = fq_state.get("fq", fq_state.get("quotient", "?"))
-        verdict = fq_state.get("verdict", fq_state.get("status", "?"))
+    # FQ diagnosis (not scalar — scalar is gameable via verification dominance)
+    if fq_state or health:
+        h_fq = health.get("fq", {}) if health else {}
+        execute = int(h_fq.get("execute_count", fq_state.get("execute_count", 0) if fq_state else 0))
+        verify = int(h_fq.get("verify_count", fq_state.get("verify_count", 0) if fq_state else 0))
+        total = execute + verify
+        verify_concentration = (verify / total * 100) if total > 0 else 0
+        balance = "BALANCED" if 20 <= verify_concentration <= 80 else "VERIFICATION DOMINANCE" if verify_concentration > 80 else "EXECUTION DOMINANCE"
+        diagnosis = f"{balance} ({verify_concentration:.0f}% verify, {execute}E/{verify}V)"
+
         events.append({
-            "type": "FQ_STATE",
-            "summary": f"FQ: {fq} ({verdict})",
+            "type": "DIAGNOSIS",
+            "summary": f"Flow: {diagnosis}",
             "details": {
-                "Quotient": str(fq),
-                "Verdict": verdict,
-                "Receipts": str(fq_state.get("receipt_count", fq_state.get("receipts", "?"))),
+                "Execute count": str(execute),
+                "Verify count": str(verify),
+                "Verify concentration": f"{verify_concentration:.1f}%",
+                "Balance verdict": balance,
+                "Scalar FQ (deprecated as health indicator)": str(h_fq.get("quotient", fq_state.get("fq", "?") if fq_state else "?")),
             },
             "priority": 3,
         })
@@ -120,10 +128,11 @@ def format_digest():
         h_inv = health.get("invariants", {})
         events.append({
             "type": "DAEMON_HEALTH",
-            "summary": f"Daemon: {h_fq.get('quotient', '?'):.2f} ({h_fq.get('verdict', '?')}) cycles={h_inv.get('cycle_count', '?')}",
+            "summary": f"Daemon: cycles={h_inv.get('cycle_count', '?')} restricted={h_inv.get('restricted_actors', [])}",
             "details": {
                 "Execute": str(h_fq.get("execute_count", "?")),
                 "Verify": str(h_fq.get("verify_count", "?")),
+                "Barrier": str(h_fq.get("barrier_count", "?")),
                 "Enforcement cycles": str(h_inv.get("cycle_count", "?")),
                 "Restricted actors": str(h_inv.get("restricted_actors", [])),
             },
