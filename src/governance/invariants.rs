@@ -295,27 +295,34 @@ impl ActorFlowState {
         // Alias: fq mirrors quotient for back-compat. None → 0.0 (no measurement yet).
         self.fq = self.quotient.unwrap_or(0.0);
 
-        // v2.1 verdict: six-state band per Arif F13 spec
+        // v2.2 verdict: seven-state band per Arif F13 spec + Helix Codex Lock 2
+        // Both ratio poles are Calhoun sink:
+        //   verify:execute > 3:1 → FOSSILIZED (contact, no motion)
+        //   execute:verify > 3:1 → BURNING (motion, no witness)
         self.verdict = if self.verify_count == 0 && self.execute_count == 0 {
-            FlowVerdict::Unmeasured
+            FlowVerdict::Unknown
         } else if self.verify_count == 0 {
-            FlowVerdict::Unmeasured
+            FlowVerdict::Unknown
         } else if self.verify_count < 2 {
             FlowVerdict::Caution
         } else if self.execute_count == 0 {
             FlowVerdict::Flowing
         } else if let Some(q) = self.quotient {
-            if q >= 1.0 {
+            if q > 3.0 {
+                // Helix Codex Lock 2: fossilisation pole
+                FlowVerdict::Fossilized
+            } else if q >= 1.0 {
                 FlowVerdict::Optimal
             } else if q >= 0.5 {
                 FlowVerdict::Flowing
             } else if q >= 0.1 {
                 FlowVerdict::Stuck
             } else {
+                // Helix Codex Lock 2: burn pole
                 FlowVerdict::Burning
             }
         } else {
-            FlowVerdict::Unmeasured
+            FlowVerdict::Unknown
         };
     }
 }
@@ -344,6 +351,8 @@ pub struct FqThresholds {
     pub stuck_threshold: f64,
     /// FQ above this → OVERHEAT → THROTTLE
     pub overheat_threshold: f64,
+    /// FQ above this → FOSSILIZED → HOLD (Helix Codex Lock 2: fossilisation pole)
+    pub fossilisation_threshold: f64,
     /// Max consecutive executes without verify before THROTTLE
     pub max_consecutive_executes: u64,
     /// Cooldown window in seconds (throttled actors wait this long between executes)
@@ -357,6 +366,7 @@ impl Default for FqThresholds {
         Self {
             stuck_threshold: 0.5,
             overheat_threshold: 10.0,
+            fossilisation_threshold: 3.0,
             max_consecutive_executes: 5,
             throttle_cooldown_s: 30,
             enforcement_interval_s: 10,
@@ -452,24 +462,42 @@ impl InvariantEnforcer {
                 ));
             }
 
-            // FQ < 1/overheat_threshold → THROTTLE
-            // v2.1 direction flip (audit 2026-08-10): quotient = verify/execute,
-            // HIGHER = healthier. The legacy v2.0 "overheat" (execute ≫ verify)
-            // now reads as a LOW v2.1 quotient — extreme under-verification.
-            // overheat_threshold 10.0 → reciprocal 0.1 ("burning" band).
+            // Helix Codex Lock 2: BURN pole
+            // execute:verify > 10:1 → motion without witness → HOLD
+            // v2.2: both Calhoun poles are equal-weight holds (Codex requirement).
             if state.fq < (1.0 / self.thresholds.overheat_threshold) && state.execute_count > 0 {
                 checks.push(InvariantCheck::new(
                     FlowInvariant::F3_ObserveNeverInterpret,
-                    InvariantStatus::Warn,
+                    InvariantStatus::Hold,
                     format!(
-                        "Actor '{}' is OVERHEAT: FQ={:.2} (threshold: {:.2})",
-                        actor_id, state.fq, self.thresholds.overheat_threshold
+                        "Actor '{}' is BURNING: FQ={:.2} (execute:verify > 10:1). Motion without witness.",
+                        actor_id, state.fq
                     ),
                     format!(
-                        "FQ={:.2} execute_count={} verify_count={}",
+                        "FQ={:.2} execute_count={} verify_count={} — Helix Codex Lock 2 burn pole",
                         state.fq, state.execute_count, state.verify_count
                     ),
                 ));
+            }
+
+            // Helix Codex Lock 2: FOSSILISATION pole
+            // verify:execute > 3:1 → contact exists, nothing moves → HOLD
+            // Both poles are Calhoun sink: fossilisation AND burning.
+            if let Some(q) = state.quotient {
+                if q > self.thresholds.fossilisation_threshold && state.execute_count > 0 {
+                    checks.push(InvariantCheck::new(
+                        FlowInvariant::F3_ObserveNeverInterpret,
+                        InvariantStatus::Hold,
+                        format!(
+                            "Actor '{}' is FOSSILIZED: FQ={:.2} > {:.2} (verify:execute > 3:1). Contact exists, nothing moves.",
+                            actor_id, q, self.thresholds.fossilisation_threshold
+                        ),
+                        format!(
+                            "FQ={:.2} execute_count={} verify_count={} — Helix Codex Lock 2 fossilisation pole",
+                            q, state.execute_count, state.verify_count
+                        ),
+                    ));
+                }
             }
 
             // Consecutive executes without verify → THROTTLE → HOLD

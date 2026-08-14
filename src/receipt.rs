@@ -278,25 +278,33 @@ impl Default for TriWitnessVotes {
 
 // ── Flow Verdict ─────────────────────────────────────────────────────────
 
-/// Flow health verdict based on Flow Quotient (v2.1 — 2026-08-05).
+/// Flow health verdict based on Flow Quotient (v2.2 — 2026-08-14).
 ///
-/// Six-state band per Arif F13 spec:
-///   UNKNOWN  — verify_count == 0 (missing data)
-///   CAUTION  — verify_count < 2 (insufficient pattern)
-///   OPTIMAL  — quotient >= 1.0 (verification leads execution)
-///   FLOWING  — quotient >= 0.5 (healthy metabolism)
-///   STUCK    — quotient >= 0.1 (verification lagging)
-///   BURNING  — quotient < 0.1 (execution outruns verification severely)
+/// Seven-state band per Arif F13 spec + Helix Codex Lock 2:
+///   UNKNOWN    — verify_count == 0 (missing data)
+///   CAUTION    — verify_count < 2 (insufficient pattern)
+///   FOSSILIZED — quotient > 3.0 (verify:execute > 3:1 — contact, no motion)
+///   OPTIMAL    — quotient >= 1.0 (verification leads execution)
+///   FLOWING    — quotient >= 0.5 (healthy metabolism)
+///   STUCK      — quotient >= 0.1 (verification lagging)
+///   BURNING    — quotient < 0.1 (execute:verify > 10:1 — motion, no witness)
 ///
-/// Legacy variants (retained for backward compat, not produced by v2.1):
+/// Helix Codex Lock 2 (Calhoun ratio-pole, both poles are sink):
+///   verify:execute > 3:1  → FOSSILIZED  (contact exists, nothing moves)
+///   execute:verify > 3:1  → BURNING     (motion without witness)
+///
+/// Legacy variants (retained for backward compat):
 ///   Overheat, Balanced, Watching
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FlowVerdict {
-    /// verify_count == 0 — no data to ratio against
-    Unmeasured,
+    /// verify_count == 0 — no data to ratio against (TS: UNKNOWN)
+    Unknown,
     /// verify_count < 2 — single verification is coincidence, not pattern
     Caution,
-    /// quotient >= 1.0 — verification leads execution (v2.1)
+    /// quotient > 3.0 — verification far exceeds execution (Helix Codex Lock 2)
+    /// Calhoun fossilisation: contact exists, nothing moves. HOLD.
+    Fossilized,
+    /// quotient >= 1.0 — verification leads execution (v2.2)
     Optimal,
     /// quotient >= 0.5 — healthy metabolism
     Flowing,
@@ -304,7 +312,9 @@ pub enum FlowVerdict {
     Stuck,
     /// quotient < 0.1 — execution far outruns verification
     Burning,
-    // ── Legacy variants (retained for backward compat) ──
+    // ── Legacy variants (retained for backward compat deserialization) ──
+    /// Legacy alias for Unknown (pre-v2.2)
+    Unmeasured,
     /// Legacy: FQ > 10.0 — under-verification risk
     Overheat,
     /// Legacy: FQ 1.0–3.0 — healthy verification
@@ -316,12 +326,14 @@ pub enum FlowVerdict {
 impl fmt::Display for FlowVerdict {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            FlowVerdict::Unmeasured => write!(f, "UNKNOWN"),
+            FlowVerdict::Unknown => write!(f, "UNKNOWN"),
             FlowVerdict::Caution => write!(f, "CAUTION"),
+            FlowVerdict::Fossilized => write!(f, "FOSSILIZED"),
             FlowVerdict::Optimal => write!(f, "OPTIMAL"),
             FlowVerdict::Flowing => write!(f, "FLOWING"),
             FlowVerdict::Stuck => write!(f, "STUCK"),
             FlowVerdict::Burning => write!(f, "BURNING"),
+            FlowVerdict::Unmeasured => write!(f, "UNKNOWN"), // legacy alias
             FlowVerdict::Overheat => write!(f, "OVERHEAT"),
             FlowVerdict::Balanced => write!(f, "BALANCED"),
             FlowVerdict::Watching => write!(f, "WATCHING"),
@@ -365,7 +377,7 @@ impl FlowQuotient {
     ///   - verify_count == 0 → UNKNOWN, quotient = None (was OPTIMAL, f64::MAX)
     ///   - verify_count < 2 → CAUTION, quotient = None
     ///   - Six-state band: UNKNOWN → CAUTION → OPTIMAL → FLOWING → STUCK → BURNING
-    ///   - formula_hash: sha256:arifflow-fq-v2.1-2026-08-05
+    ///   - formula_hash: sha256:arifflow-fq-v2.2-2026-08-14
     ///   - formula_version: qg.v0.2
     pub fn compute(receipts: &[FlowReceipt]) -> Self {
         let mut execute_cost = 0u64;
@@ -403,34 +415,38 @@ impl FlowQuotient {
             Some(verify_count as f64 / execute_count as f64)
         };
 
-        // v2.1: six-state band per Arif F13 spec
+        // v2.2: seven-state band per Arif F13 spec + Helix Codex Lock 2
+        // Both ratio poles are Calhoun sink:
+        //   verify:execute > 3:1 → FOSSILIZED (contact, no motion)
+        //   execute:verify > 3:1 → BURNING (motion, no witness)
         let verdict = if verify_count == 0 {
-            // No verification at all — we don't know the state.
-            // Prior v2.0 returned OPTIMAL here (f64::MAX). That was misleading.
-            FlowVerdict::Unmeasured
+            FlowVerdict::Unknown
         } else if verify_count < 2 {
-            // Single verification is coincidence, not pattern.
             FlowVerdict::Caution
         } else if execute_count == 0 {
-            // Observe-only window — not stuck, not optimal.
-            // Neutral baseline until execution data arrives.
             FlowVerdict::Flowing
         } else {
             let q = raw_quotient.unwrap_or(0.0);
-            if q >= 1.0 {
+            if q > 3.0 {
+                // Helix Codex Lock 2: fossilisation pole
+                // verify:execute > 3:1 — contact exists, nothing moves
+                FlowVerdict::Fossilized
+            } else if q >= 1.0 {
                 FlowVerdict::Optimal
             } else if q >= 0.5 {
                 FlowVerdict::Flowing
             } else if q >= 0.1 {
                 FlowVerdict::Stuck
             } else {
+                // Helix Codex Lock 2: burn pole
+                // execute:verify > 10:1 — motion without witness
                 FlowVerdict::Burning
             }
         };
 
-        // v2.1: quotient is None for Unmeasured/Caution (undefined or insufficient data)
+        // v2.2: quotient is None for Unknown/Caution (undefined or insufficient data)
         let quotient = match verdict {
-            FlowVerdict::Unmeasured | FlowVerdict::Caution => None,
+            FlowVerdict::Unknown | FlowVerdict::Unmeasured | FlowVerdict::Caution => None,
             _ => raw_quotient,
         };
 
@@ -1145,7 +1161,7 @@ mod tests {
             ));
         }
         let fq = store.flow_quotient(20);
-        assert_eq!(fq.verdict, FlowVerdict::Unmeasured);
+        assert_eq!(fq.verdict, FlowVerdict::Unknown);
         assert_eq!(fq.quotient, None);
     }
 
@@ -1178,7 +1194,7 @@ mod tests {
     fn test_fq_v21_empty() {
         let store = ReceiptStore::new(100);
         let fq = store.flow_quotient(20);
-        assert_eq!(fq.verdict, FlowVerdict::Unmeasured);
+        assert_eq!(fq.verdict, FlowVerdict::Unknown);
         assert_eq!(fq.quotient, None);
     }
 
@@ -1431,7 +1447,7 @@ mod tests {
         store.push(r2).unwrap();
 
         let fq = store.flow_quotient(10);
-        assert_eq!(fq.verdict, FlowVerdict::Unmeasured);
+        assert_eq!(fq.verdict, FlowVerdict::Unknown);
         assert_eq!(fq.quotient, None);
     }
 

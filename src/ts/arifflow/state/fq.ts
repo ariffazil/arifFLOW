@@ -5,10 +5,15 @@
  * Mirrors the Rust FlowQuotient::compute() in src/receipt.rs.
  * Cross-language contract: same formula, same thresholds, same verdicts.
  *
+ * v2.2 (2026-08-14): Added FOSSILIZED state (Helix Codex Lock 2)
+ *   - verify:execute > 3:1 → FOSSILIZED (contact, no motion)
+ *   - execute:verify > 3:1 → BURNING (motion, no witness)
+ *   - Both poles are Calhoun sink
+ *
  * v2.1 (2026-08-05): FQ = verify_count / execute_count (count-based, inverted)
  * Prior v2.0: FQ = execute_cost / verify_cost (cost-based)
  *
- * formula_hash: sha256:arifflow-fq-v2.1-2026-08-05
+ * formula_hash: sha256:arifflow-fq-v2.2-2026-08-14
  * formula_version: qg.v0.2
  *
  * DITEMPA BUKAN DIBERI — Forged, Not Given.
@@ -63,10 +68,11 @@ export function computeFQ(steps: FQInput[]): FQPulse {
     if (verify_count === 0) return 'UNKNOWN' as const;
     if (verify_count < 2) return 'CAUTION' as const;
     const q = quotient ?? 0;
+    if (q > 3.0) return 'FOSSILIZED' as const;  // Helix Codex Lock 2: fossilisation pole
     if (q >= 1.0) return 'OPTIMAL' as const;
     if (q >= 0.5) return 'FLOWING' as const;
     if (q >= 0.1) return 'STUCK' as const;
-    return 'BURNING' as const;
+    return 'BURNING' as const;                    // Helix Codex Lock 2: burn pole
   })();
 
   return {
