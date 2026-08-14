@@ -176,7 +176,6 @@ impl fmt::Display for RiskClass {
     }
 }
 
-
 // ── Floor Verdict ────────────────────────────────────────────────────────
 
 /// F1–F13 constitutional verdict for this step.
@@ -537,6 +536,12 @@ pub struct FlowReceipt {
     /// APEX block number — links this receipt to the constitutional G/J evaluation
     /// cycle it belongs to (B6 follow-up, 2026-08-06). None when outside any APEX block.
     pub apex_block: Option<u64>,
+    /// QG.v0.3 (2026-08-14): FLOW block number — the metabolic evaluation cycle
+    /// this receipt belongs to (vector spec §9 STEP 1). None when unwired.
+    pub flow_block: Option<u64>,
+    /// QG.v0.3 (2026-08-14): PROJECTION block number — the forward-model/projection
+    /// cycle this receipt belongs to. None when unwired.
+    pub projection_block: Option<u64>,
 }
 
 impl FlowReceipt {
@@ -575,6 +580,8 @@ impl FlowReceipt {
             formula_hash: Some("sha256:placeholder".into()),
             witness_organs: None,
             apex_block: None,
+            flow_block: None,
+            projection_block: None,
         }
     }
 
@@ -615,6 +622,8 @@ impl FlowReceipt {
             formula_hash: Some("sha256:placeholder".into()),
             witness_organs: None,
             apex_block: None,
+            flow_block: None,
+            projection_block: None,
         }
     }
 

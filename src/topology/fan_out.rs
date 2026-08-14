@@ -8,10 +8,10 @@
 //              [Node B] ──▶  Merge ──▶ Output
 //              [Node C] ──▶
 
-use serde::{Deserialize, Serialize};
 use super::{NodeResult, TopologyError};
 use crate::channel::Channel;
 use crate::merkle::{MerkleRoot, MerkleTree};
+use serde::{Deserialize, Serialize};
 
 /// Configuration for a fan-out run
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,7 +65,8 @@ impl FanOutTopology {
             MergeStrategy::MerkleRoot => {
                 let hashes: Vec<[u8; 32]> = results.iter().map(|r| r.receipt_hash).collect();
                 let leaves: Vec<MerkleRoot> = hashes.into_iter().map(MerkleRoot).collect();
-                let tree = MerkleTree::from_leaves(leaves).map_err(|_| TopologyError::DivergentMerge)?;
+                let tree =
+                    MerkleTree::from_leaves(leaves).map_err(|_| TopologyError::DivergentMerge)?;
                 Ok(tree.root().0.to_vec())
             }
         }
@@ -111,10 +112,7 @@ mod tests {
         };
         let topo = FanOutTopology::new(config);
 
-        let results = vec![
-            make_result("A", b"hello"),
-            make_result("B", b"world"),
-        ];
+        let results = vec![make_result("A", b"hello"), make_result("B", b"world")];
         let merged = topo.merge_results(&results).unwrap();
         assert_eq!(merged, b"helloworld");
     }
@@ -128,10 +126,7 @@ mod tests {
         };
         let topo = FanOutTopology::new(config);
 
-        let results = vec![
-            make_result("A", b"data_a"),
-            make_result("B", b"data_b"),
-        ];
+        let results = vec![make_result("A", b"data_a"), make_result("B", b"data_b")];
         let merged = topo.merge_results(&results).unwrap();
         assert_eq!(merged.len(), 32); // Merkle root = 32 bytes
     }

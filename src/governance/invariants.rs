@@ -15,7 +15,7 @@
 // execution invariants (A1-A6) enforced in scheduler.rs.
 
 use crate::governance::cooling::{Convergence, CoolingEntry, CoolingLedger, DriftSeverity};
-use crate::receipt::{FlowQuotient, FlowReceipt, FlowVerdict, ReceiptStore, StepType, RiskClass};
+use crate::receipt::{FlowQuotient, FlowReceipt, FlowVerdict, ReceiptStore, RiskClass, StepType};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};

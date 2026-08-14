@@ -17,6 +17,7 @@ use arifflow::governance::invariants::{EnforcerAction, FqThresholds, InvariantEn
 use arifflow::governance::Vault999Sealer;
 use arifflow::receipt::{FlowReceipt, ReceiptStore};
 use arifflow::scheduler::{FlowNode, SuperStepScheduler, TopologyKind, VerdictClass};
+use arifflow::vector::{Dimension, Epistemology, IndependenceMonitor, VectorStore};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -371,6 +372,8 @@ fn handle_client(
     start_time: Instant,
     receipt_store: &Arc<Mutex<ReceiptStore>>,
     enforcer: &Arc<Mutex<InvariantEnforcer>>,
+    vector_store: &Arc<Mutex<VectorStore>>,
+    independence: &Arc<Mutex<IndependenceMonitor>>,
     persist_path: &PathBuf,
     persist_mutex: &Arc<Mutex<()>>,
     vault_sealer: &Arc<Mutex<Vault999Sealer>>,
@@ -382,7 +385,13 @@ fn handle_client(
             let response = if request.starts_with("GET /health") {
                 let store = receipt_store.lock().unwrap();
                 let enf = enforcer.lock().unwrap();
+                let mut vs = vector_store.lock().unwrap();
+                let mut indep = independence.lock().unwrap();
+                vs.tick();
                 let fq = store.flow_quotient(100);
+                // Inject live FQ into the vector engine (MEASURE·LIVE)
+                vs.inject_fq(fq.quotient);
+                indep.record(&vs);
                 let restricted: Vec<serde_json::Value> = enf
                     .restricted_actors()
                     .iter()
@@ -451,6 +460,26 @@ fn handle_client(
                     .collect();
                 let actors_tracked = per_actor.len();
 
+                // ── QG.V0.3 VECTOR (2026-08-14, spec §4): full vector state ──
+                let vector_state = vs.vector_state();
+                let vector_rank = (vs.rank() * 1000.0).round() / 1000.0;
+                let constellation = vs.constellation();
+                let primary_pathology = vs
+                    .primary_pathology()
+                    .map(|d| d.failure().to_string())
+                    .unwrap_or_else(|| "NONE".to_string());
+                let collapse_pairs: Vec<serde_json::Value> = indep
+                    .collapse_pairs()
+                    .iter()
+                    .map(|(a, b, r)| {
+                        serde_json::json!({
+                            "dim_a": a.code(),
+                            "dim_b": b.code(),
+                            "pearson": (r * 100.0).round() / 100.0,
+                        })
+                    })
+                    .collect();
+
                 let body = serde_json::json!({
                     "status": "ok-v3-vector",
                     "fq": {
@@ -460,21 +489,47 @@ fn handle_client(
                         "verify_count": fq.verify_count,
                         "barrier_count": fq.barrier_count,
                         "diagnosis": diagnosis,
-                        "scalar_fq_note": "Deprecated as health indicator — use diagnosis + per_actor.",
-                        // ── FQ VECTOR ──
+                        "scalar_fq_note": "Deprecated as health indicator — use vector.diagnosis.",
+                        // ── FQ VECTOR (per-actor) ──
                         "per_actor": per_actor,
                         "metric_frame": {
                             "window_size": 100,
                             "sample_size": fq.window_size,
                             "actors_tracked": actors_tracked,
-                            "formula_version": "qg.v0.2-vector",
+                            "formula_version": "qg.v0.3.1-vector",
+                        },
+                    },
+                    // ── QG.V0.3.1 VECTOR ONTOLOGY (spec §4) ──
+                    "vector": {
+                        "diagnosis": {
+                            "constellation": constellation,
+                            "primary_pathology": primary_pathology,
+                            "fused_rank": vector_rank,
+                            "healthy_shape": "constellation, not maximum",
+                        },
+                        "dimensions": vector_state,
+                        "independence": {
+                            "collapse_pairs": collapse_pairs,
+                            "monitored": "INV-3 |ρ| ≤ 0.85",
+                        },
+                        "ontology": {
+                            "spec": "QG_V0_3_VECTOR_SPEC.md v0.3.1-AMD",
+                            "sealed": "2026-08-14",
+                            "formula_version": "qg.v0.3.1-vector",
+                            "invariants": ["INV-1","INV-2","INV-3","INV-4","INV-5","INV-6","INV-7","INV-8","INV-9","INV-10","INV-11","INV-12"],
                         },
                     },
                     "provenance": {
-                        "formula_version": "qg.v0.2",
+                        "formula_version": "qg.v0.3.1-vector",
                         "formula_hash": "sha256:arifflow-fq-v2.1-2026-08-05",
                         "window_start_utc": start_time.elapsed().as_secs().to_string(),
-                        "window_duration_s": 0,
+                        "window_duration_s": fq.window_size as u64,
+                        "tau_half_lives": {
+                            "LIVE": 10,
+                            "MEASURE": 100,
+                            "WITNESS": 250,
+                            "FEEL": "anchor N (default 10)",
+                        },
                     },
                     "invariants": {
                         "cycle_count": enf.cycle_count,
@@ -626,6 +681,116 @@ fn handle_client(
                         ).into_bytes()
                     }
                 }
+            } else if request.starts_with("POST /vector") {
+                // ── QG.V0.3 VECTOR INGEST (spec §2.1, §9) ──
+                // External organs push their dimension readings (G, J, W³, C_dark,
+                // ΔS, Ω₀). Each reading MUST declare its four-part epistemology
+                // contract. FQ is injected live from receipts — not accepted here.
+                match extract_body(&request) {
+                    Some(raw_json) => {
+                        #[derive(Deserialize)]
+                        struct VectorReading {
+                            dimension: String,
+                            value: f64,
+                            epistemology: Option<String>,
+                            method_id: Option<String>,
+                            producer: Option<String>,
+                            /// FEEL anchor present (WITNESS/MEASURE backing claim)
+                            anchored: Option<bool>,
+                        }
+                        match serde_json::from_str::<VectorReading>(raw_json.trim()) {
+                            Ok(reading) => {
+                                let mut vs = vector_store.lock().unwrap();
+                                let mut indep = independence.lock().unwrap();
+                                vs.tick();
+                                // Map dimension code → Dimension
+                                let dim = match reading.dimension.as_str() {
+                                    "g" | "G" => Dimension::G,
+                                    "j" | "J" => Dimension::J,
+                                    "w3" | "W3" | "w3_consensus" => Dimension::W3,
+                                    "c_dark" | "cdark" | "C_dark" => Dimension::CDark,
+                                    "ds" | "dS" | "ΔS" | "delta_s" => Dimension::DS,
+                                    "omega" | "omega0" | "Ω0" | "Ω₀" | "Omega0" => {
+                                        Dimension::Omega0
+                                    }
+                                    "fq" | "FQ" => {
+                                        let body = serde_json::json!({
+                                            "status": "rejected",
+                                            "error": "FQ is injected live from receipts (MEASURE·LIVE). Do not POST it.",
+                                        })
+                                        .to_string();
+                                        let response = format!(
+                                            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                            body.len(), body
+                                        ).into_bytes();
+                                        let _ = stream.write_all(&response);
+                                        return;
+                                    }
+                                    other => {
+                                        let body = serde_json::json!({
+                                            "status": "rejected",
+                                            "error": format!("Unknown dimension: {}", other),
+                                            "valid": ["g","j","w3","c_dark","ds","omega"],
+                                        })
+                                        .to_string();
+                                        let response = format!(
+                                            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                            body.len(), body
+                                        ).into_bytes();
+                                        let _ = stream.write_all(&response);
+                                        return;
+                                    }
+                                };
+                                // Declared or default epistemology per spec §1 table
+                                let ep = match reading.epistemology.as_deref() {
+                                    Some("MEASURE") | Some("measure") => Epistemology::Measure,
+                                    Some("WITNESS") | Some("witness") => Epistemology::Witness,
+                                    Some("FEEL") | Some("feel") => Epistemology::Feel,
+                                    Some("LIVE") | Some("live") => Epistemology::Live,
+                                    _ => dim.default_epistemology(),
+                                };
+                                let method_id = reading.method_id.unwrap_or_else(|| {
+                                    dim.default_epistemology().code().to_string()
+                                });
+                                let producer =
+                                    reading.producer.unwrap_or_else(|| "external".to_string());
+                                let anchored = reading.anchored.unwrap_or(false);
+                                vs.ingest(dim, reading.value, ep, &method_id, &producer, anchored);
+                                indep.record(&vs);
+                                let body = serde_json::json!({
+                                    "status": "ingested",
+                                    "dimension": dim.code(),
+                                    "value": reading.value,
+                                    "epistemology": ep.code(),
+                                    "method_id": method_id,
+                                    "producer": producer,
+                                    "vector": vs.vector_state().get(dim.code()).cloned().unwrap_or(serde_json::Value::Null),
+                                })
+                                .to_string();
+                                http_ok(&body)
+                            }
+                            Err(e) => {
+                                let body = serde_json::json!({
+                                    "status": "invalid",
+                                    "error": format!("{}", e),
+                                    "example": {"dimension":"g","value":0.85,"epistemology":"WITNESS","method_id":"forge_evaluate","producer":"A-FORGE","anchored":true},
+                                })
+                                .to_string();
+                                format!(
+                                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                    body.len(), body
+                                ).into_bytes()
+                            }
+                        }
+                    }
+                    None => {
+                        let body = r#"{"status":"error","message":"Empty body"}"#;
+                        format!(
+                            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(), body
+                        ).into_bytes()
+                    }
+                }
             } else if request.starts_with("POST /check") {
                 // ── INVARIANT GATE: Check if actor is allowed to execute ──
                 match extract_body(&request) {
@@ -747,8 +912,8 @@ Connection: close
             } else if request.starts_with("POST /flow") {
                 let body = serde_json::json!({
                     "status": "ack",
-                    "message": "Flow command received. Endpoints: GET /health, POST /ingest, POST /check, POST /release, POST /enforce, POST /flow",
-                    "endpoints": ["GET /health", "POST /ingest", "POST /check", "POST /release", "POST /enforce", "POST /flow"]
+                    "message": "Flow command received. Endpoints: GET /health, POST /ingest, POST /vector, POST /check, POST /release, POST /enforce, POST /flow",
+                    "endpoints": ["GET /health", "POST /ingest", "POST /vector", "POST /check", "POST /release", "POST /enforce", "POST /flow"]
                 })
                 .to_string();
                 http_ok(&body)
@@ -781,6 +946,9 @@ fn daemon_mode() {
     let start_time = Instant::now();
     let receipt_store = Arc::new(Mutex::new(ReceiptStore::new(1000)));
     let enforcer = Arc::new(Mutex::new(InvariantEnforcer::default()));
+    // ── QG.V0.3 VECTOR ENGINE (2026-08-14) ──
+    let vector_store = Arc::new(Mutex::new(VectorStore::new()));
+    let independence = Arc::new(Mutex::new(IndependenceMonitor::new(200)));
 
     // ── VAULT999 sealer (audit 2026-08-10, F5) ──
     // Receipts are sealed into the VAULT999 immutable hash chain (see F5:
@@ -887,12 +1055,14 @@ fn daemon_mode() {
                     Ok(s) => {
                         let store = receipt_store.clone();
                         let enf = enforcer.clone();
+                        let vs = vector_store.clone();
+                        let indep = independence.clone();
                         let start = start_time;
                         let pp = persist_path.clone();
                         let pm = persist_mutex.clone();
-                        let vs = vault_sealer.clone();
+                        let vsl = vault_sealer.clone();
                         std::thread::spawn(move || {
-                            handle_client(s, start, &store, &enf, &pp, &pm, &vs);
+                            handle_client(s, start, &store, &enf, &vs, &indep, &pp, &pm, &vsl);
                         });
                     }
                     Err(e) => {
