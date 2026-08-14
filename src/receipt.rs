@@ -63,6 +63,11 @@ impl StepType {
     pub fn is_verification(&self) -> bool {
         matches!(self, StepType::Verify)
     }
+
+    /// Returns true if this step type is a barrier/heartbeat step.
+    pub fn is_barrier(&self) -> bool {
+        matches!(self, StepType::Barrier)
+    }
 }
 
 impl fmt::Display for StepType {
@@ -274,6 +279,8 @@ pub struct FlowQuotient {
     pub verify_count: usize,
     /// Total verification cost in nanoseconds (including preceding)
     pub verify_cost_ns: u64,
+    /// Number of barrier/heartbeat steps in the window (not counted in FQ ratio)
+    pub barrier_count: usize,
     /// Flow Quotient = verify_count / execute_count (v2.1: count-based, inverted)
     /// None when verify_count == 0 (undefined — no verification to ratio against)
     pub quotient: Option<f64>,
@@ -302,6 +309,7 @@ impl FlowQuotient {
         let mut verify_cost = 0u64;
         let mut execute_count = 0usize;
         let mut verify_count = 0usize;
+        let mut barrier_count = 0usize;
 
         for r in receipts {
             if r.step_type.is_execution() {
@@ -311,6 +319,9 @@ impl FlowQuotient {
             if r.step_type.is_verification() {
                 verify_cost += r.cost_ns;
                 verify_count += 1;
+            }
+            if r.step_type.is_barrier() {
+                barrier_count += 1;
             }
             if let Some(preceding) = r.preceding_verify_cost_ns {
                 verify_cost = verify_cost.saturating_add(preceding);
@@ -369,6 +380,7 @@ impl FlowQuotient {
             execute_cost_ns: execute_cost,
             verify_count,
             verify_cost_ns: verify_cost,
+            barrier_count,
             quotient,
             verdict,
             window_size: receipts.len(),
@@ -523,7 +535,7 @@ impl FlowReceipt {
             preceding_verify_cost_ns: None,
             epistemic_label,
             floor_verdict: FloorVerdict::Pass,
-                        intent_reason: None,
+            intent_reason: None,
             expected_outcome: None,
             cooling_decision: CoolingDecision::None,
             tri_witness_votes: None,

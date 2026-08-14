@@ -373,6 +373,7 @@ impl KabarkanFqInstrument {
                 verify_count: 0,
                 execute_cost_ns: 0,
                 verify_cost_ns: 0,
+                barrier_count: 0,
                 window_size: 0,
                 apex_block: None,
             };
@@ -530,6 +531,7 @@ mod tests {
             quotient: Some(0.33),
             verdict: FlowVerdict::Stuck,
             window_size: 20,
+            barrier_count: 0,
             apex_block: None,
         };
         let previous = FlowQuotient {
@@ -540,6 +542,7 @@ mod tests {
             quotient: Some(0.8),
             verdict: FlowVerdict::Watching,
             window_size: 0,
+            barrier_count: 0,
             apex_block: None,
         };
         let alert = FqAlertEvent::new(&current, &previous, "test-session", 42);
@@ -557,6 +560,7 @@ mod tests {
             quotient: Some(5.0),
             verdict: FlowVerdict::Optimal,
             window_size: 20,
+            barrier_count: 0,
             apex_block: None,
         };
         let event = FqCoolingCorrelationEvent::new(&fq, 2, 1, 0, FqTrend::Rising, "test", 42);
@@ -575,6 +579,7 @@ mod tests {
             quotient: Some(0.4),
             verdict: FlowVerdict::Stuck,
             window_size: 20,
+            barrier_count: 0,
             apex_block: None,
         };
         let event = FqCoolingCorrelationEvent::new(&fq, 0, 0, 0, FqTrend::Falling, "test", 42);

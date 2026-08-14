@@ -394,13 +394,79 @@ fn handle_client(
                         })
                     })
                     .collect();
+                // Diagnosis-first reporting (2026-08-14): scalar FQ is deprecated as a
+                // sovereign-facing health indicator. Concentration is harder to game.
+                let total_steps = fq.execute_count + fq.verify_count;
+                let diagnosis = if total_steps == 0 {
+                    "UNMEASURED"
+                } else {
+                    let verify_pct = fq.verify_count as f64 / total_steps as f64 * 100.0;
+                    if verify_pct > 80.0 {
+                        "VERIFICATION DOMINANCE"
+                    } else if verify_pct < 20.0 {
+                        "EXECUTION DOMINANCE"
+                    } else {
+                        "BALANCED"
+                    }
+                };
+                // ── FQ VECTOR (2026-08-14): per-actor breakdown ──
+                // The scalar masks per-actor pathology (e.g. one actor stuck at 0.0
+                // while automated heartbeats inflate the global verify count).
+                // per_actor exposes the vector so diagnosis is actor-specific.
+                let per_actor: BTreeMap<String, serde_json::Value> = enf
+                    .actors
+                    .iter()
+                    .map(|(id, state)| {
+                        let total = state.execute_count + state.verify_count;
+                        let verify_pct = if total > 0 {
+                            state.verify_count as f64 / total as f64 * 100.0
+                        } else {
+                            0.0
+                        };
+                        let actor_dx = if total == 0 {
+                            "UNMEASURED"
+                        } else if verify_pct > 80.0 {
+                            "VERIFICATION DOMINANCE"
+                        } else if verify_pct < 20.0 && state.execute_count > 0 {
+                            "EXECUTION DOMINANCE"
+                        } else {
+                            "BALANCED"
+                        };
+                        (
+                            id.clone(),
+                            serde_json::json!({
+                                "execute": state.execute_count,
+                                "verify": state.verify_count,
+                                "quotient": state.quotient,
+                                "verdict": format!("{}", state.verdict),
+                                "diagnosis": actor_dx,
+                                "held": state.held,
+                                "throttled": state.throttled,
+                                "consecutive_exec_no_verify": state.consecutive_executes_without_verify,
+                            }),
+                        )
+                    })
+                    .collect();
+                let actors_tracked = per_actor.len();
+
                 let body = serde_json::json!({
-                    "status": "ok",
+                    "status": "ok-v3-vector",
                     "fq": {
                         "quotient": fq.quotient,
                         "verdict": format!("{}", fq.verdict),
                         "execute_count": fq.execute_count,
                         "verify_count": fq.verify_count,
+                        "barrier_count": fq.barrier_count,
+                        "diagnosis": diagnosis,
+                        "scalar_fq_note": "Deprecated as health indicator — use diagnosis + per_actor.",
+                        // ── FQ VECTOR ──
+                        "per_actor": per_actor,
+                        "metric_frame": {
+                            "window_size": 100,
+                            "sample_size": fq.window_size,
+                            "actors_tracked": actors_tracked,
+                            "formula_version": "qg.v0.2-vector",
+                        },
                     },
                     "provenance": {
                         "formula_version": "qg.v0.2",
@@ -636,8 +702,10 @@ Content-Length: {}
 Connection: close
 
 {}",
-                                    body.len(), body
-                                ).into_bytes()
+                                    body.len(),
+                                    body
+                                )
+                                .into_bytes()
                             }
                         }
                     }
@@ -650,8 +718,10 @@ Content-Length: {}
 Connection: close
 
 {}",
-                            body.len(), body
-                        ).into_bytes()
+                            body.len(),
+                            body
+                        )
+                        .into_bytes()
                     }
                 }
             } else if request.starts_with("POST /enforce") {
