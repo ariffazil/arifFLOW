@@ -66,7 +66,7 @@ export interface SessionState {
 
 // ── Flow Quotient (FQ) ─────────────────────────────────────────────────
 
-export type FQVerdict = 'UNKNOWN' | 'CAUTION' | 'OPTIMAL' | 'FLOWING' | 'STUCK' | 'BURNING' | 'UNMEASURED';
+export type FQVerdict = 'UNKNOWN' | 'CAUTION' | 'FOSSILIZED' | 'OPTIMAL' | 'FLOWING' | 'STUCK' | 'BURNING' | 'UNMEASURED';
 
 export interface FQPulse {
   /** Number of execution steps in window */
@@ -89,16 +89,21 @@ export interface FQPulse {
 }
 
 /**
- * FQ Range thresholds v2.1 (Arif F13 spec — 2026-08-05):
+ * FQ Range thresholds v2.2 (Arif F13 spec + Helix Codex Lock 2 — 2026-08-14):
  *   verify=0  → UNKNOWN    — No verification data. Missing, not healthy.
  *   verify<2  → CAUTION    — Single verification is coincidence, not pattern.
+ *   q > 3.0   → FOSSILIZED — verify:execute > 3:1 (contact, no motion). Calhoun sink.
  *   q >= 1.0  → OPTIMAL    — Verification leads execution.
  *   q >= 0.5  → FLOWING    — Healthy metabolism.
  *   q >= 0.1  → STUCK      — Verification lagging execution.
- *   q < 0.1   → BURNING    — Execution far outruns verification.
+ *   q < 0.1   → BURNING    — execute:verify > 10:1 (motion, no witness). Calhoun sink.
+ *
+ * Both poles are Calhoun sink (Helix Codex Lock 2):
+ *   verify:execute > 3:1 → FOSSILIZED (fossilisation pole)
+ *   execute:verify > 3:1 → BURNING (burn pole)
  *
  * Quotient = verify_count / execute_count (inverted from v2.0 exec/verify).
- * formula_hash: sha256:arifflow-fq-v2.1-2026-08-05
+ * formula_hash: sha256:arifflow-fq-v2.2-2026-08-14
  * formula_version: qg.v0.2
  */
 export function fqVerdict(quotient: number | null, executeCount: number, verifyCount: number): FQVerdict {
@@ -106,10 +111,11 @@ export function fqVerdict(quotient: number | null, executeCount: number, verifyC
   if (verifyCount === 0) return 'UNKNOWN';
   if (verifyCount < 2) return 'CAUTION';
   if (quotient === null) return 'UNKNOWN';
+  if (quotient > 3.0) return 'FOSSILIZED';   // Helix Codex Lock 2: fossilisation pole
   if (quotient >= 1.0) return 'OPTIMAL';
   if (quotient >= 0.5) return 'FLOWING';
   if (quotient >= 0.1) return 'STUCK';
-  return 'BURNING';
+  return 'BURNING';                            // Helix Codex Lock 2: burn pole
 }
 
 // ── State Store Stats ──────────────────────────────────────────────────

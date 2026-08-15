@@ -8,7 +8,7 @@ authors = ["Arif (F13 SOVEREIGN) <arifbfazil@gmail.com>"]
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-bincode = "3"
+bincode = "1.3"
 blake3 = "1"
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
