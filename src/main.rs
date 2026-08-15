@@ -1035,6 +1035,101 @@ fn daemon_mode() {
         }
     });
 
+    // ── Auto-vector-sync background thread (spec §9, STEPs 2-9) ──
+    // Periodically syncs live apex scalars from arifOS (:8088) / A-FORGE (:7071)
+    // into the vector store so dimensions maintain live reality contact without
+    // waiting solely for manual push.
+    let vs_sync = vector_store.clone();
+    let indep_sync = independence.clone();
+    let arifos_url = std::env::var("ARIFOS_URL").unwrap_or_else(|_| "http://127.0.0.1:8088".into());
+    let aforge_url = std::env::var("AFORGE_URL").unwrap_or_else(|_| "http://127.0.0.1:7071".into());
+    let sync_interval: u64 = std::env::var("ARIFLOW_VECTOR_SYNC_INTERVAL_S")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(15);
+    std::thread::spawn(move || {
+        let client = match reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[arifFlow] Failed to create HTTP client for vector sync: {}", e);
+                return;
+            }
+        };
+        loop {
+            std::thread::sleep(Duration::from_secs(sync_interval));
+            let mut synced = false;
+            let arifos_health_url = format!("{}/health", arifos_url.trim_end_matches('/'));
+            if let Ok(resp) = client.get(&arifos_health_url).send() {
+                if let Ok(json) = resp.json::<serde_json::Value>() {
+                    let mut vs = match vs_sync.lock() {
+                        Ok(g) => g,
+                        Err(p) => p.into_inner(),
+                    };
+                    let mut indep = match indep_sync.lock() {
+                        Ok(g) => g,
+                        Err(p) => p.into_inner(),
+                    };
+                    vs.tick();
+                    if let Some(g_val) = json.pointer("/apex_scalars/G/value").and_then(|v| v.as_f64()) {
+                        vs.ingest(Dimension::G, g_val, Epistemology::Witness, "forge_evaluate", "A-FORGE", true);
+                    }
+                    if let Some(cd_val) = json.pointer("/apex_scalars/C_dark/value").and_then(|v| v.as_f64()) {
+                        vs.ingest(Dimension::CDark, cd_val, Epistemology::Measure, "forge_evaluate", "A-FORGE", true);
+                    }
+                    if let Some(w3_val) = json.pointer("/apex_scalars/W3/value").and_then(|v| v.as_f64()) {
+                        vs.ingest(Dimension::W3, w3_val, Epistemology::Witness, "forge_witness", "A-FORGE", true);
+                    }
+                    if let Some(j_val) = json.pointer("/apex_scalars/QDF/value").and_then(|v| v.as_f64()) {
+                        vs.ingest(Dimension::J, j_val, Epistemology::Measure, "forge_apex_encode", "A-FORGE", true);
+                    }
+                    if let Some(ds_val) = json.pointer("/thermodynamic/entropy_delta").and_then(|v| v.as_f64()) {
+                        vs.ingest(Dimension::DS, ds_val, Epistemology::Measure, "entropy_sweep", "arifOS", true);
+                    }
+                    if let Some(omega_val) = json
+                        .pointer("/runtime_floors/F7")
+                        .or_else(|| json.pointer("/runtime_floors_status/F7/score"))
+                        .and_then(|v| v.as_f64())
+                    {
+                        vs.ingest(Dimension::Omega0, omega_val, Epistemology::Feel, "humility", "333-AGI", true);
+                    }
+                    indep.record(&vs);
+                    synced = true;
+                }
+            }
+
+            if !synced {
+                let aforge_health_url = format!("{}/health", aforge_url.trim_end_matches('/'));
+                if let Ok(resp) = client.get(&aforge_health_url).send() {
+                    if let Ok(json) = resp.json::<serde_json::Value>() {
+                        let mut vs = match vs_sync.lock() {
+                            Ok(g) => g,
+                            Err(p) => p.into_inner(),
+                        };
+                        let mut indep = match indep_sync.lock() {
+                            Ok(g) => g,
+                            Err(p) => p.into_inner(),
+                        };
+                        vs.tick();
+                        if let Some(g_val) = json.pointer("/apex_scalars/G/value").and_then(|v| v.as_f64()) {
+                            vs.ingest(Dimension::G, g_val, Epistemology::Witness, "forge_evaluate", "A-FORGE", true);
+                        }
+                        if let Some(cd_val) = json.pointer("/apex_scalars/C_dark/value").and_then(|v| v.as_f64()) {
+                            vs.ingest(Dimension::CDark, cd_val, Epistemology::Measure, "forge_evaluate", "A-FORGE", true);
+                        }
+                        if let Some(w3_val) = json.pointer("/apex_scalars/W3/value").and_then(|v| v.as_f64()) {
+                            vs.ingest(Dimension::W3, w3_val, Epistemology::Witness, "forge_witness", "A-FORGE", true);
+                        }
+                        indep.record(&vs);
+                    }
+                }
+            }
+        }
+    });
+
+
     match TcpListener::bind(&addr) {
         Ok(listener) => {
             eprintln!("[arifFlow] Daemon mode — listening on {}", addr);
