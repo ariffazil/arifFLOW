@@ -172,8 +172,13 @@ pub fn decay(h: f64, tau_cycles: u64, half_life: u64) -> f64 {
 }
 
 /// Freshness band from age vs half-life.
+///
+/// `Pending` is a pre-wiring state: the dimension is part of the ontology
+/// (spec §1) but its STEP hasn't shipped yet (spec §9). It is distinct from
+/// `Dead` (which means a previously-wired dim went stale past 6·τ₁/₂).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Freshness {
+    Pending,
     Fresh,
     Aging,
     Stale,
@@ -270,12 +275,45 @@ impl VectorStore {
         );
     }
 
+    /// Is this dimension wired (has an active producer)?
+    ///
+    /// Unwired means the dimension is in the spec but its STEP (per §9) hasn't
+    /// shipped yet — pending ARIF approval. It is NOT a pathology; it is a
+    /// honest declaration of what is and isn't built. See `constellation()`
+    /// for how unwired dims interact with the diagnosis.
+    pub fn is_wired(&self, dim: Dimension) -> bool {
+        self.dims.contains_key(&dim)
+    }
+
+    /// Number of wired dimensions (0..=7).
+    pub fn wired_count(&self) -> usize {
+        [
+            Dimension::Fq,
+            Dimension::G,
+            Dimension::J,
+            Dimension::W3,
+            Dimension::CDark,
+            Dimension::DS,
+            Dimension::Omega0,
+        ]
+        .iter()
+        .filter(|d| self.is_wired(**d))
+        .count()
+    }
+
     /// Effective health for a dimension, τ-discounted and FEEL-anchored.
     ///
-    /// Returns (h_eff, freshness_band, is_unmeasured).
+    /// Returns (h_eff, freshness_band, is_pathology).
+    ///
+    /// `is_pathology = true` means the dimension has a reading AND that reading
+    /// is in a pathological state (UNANCHORED, STALE, DEAD, or band < 0.5).
+    /// Unwired dimensions return `is_pathology = false` — they are not
+    /// pathologies; their absence is part of the phased rollout (spec §9).
     pub fn health(&self, dim: Dimension) -> (f64, Freshness, bool) {
         let Some(st) = self.dims.get(&dim) else {
-            return (0.0, Freshness::Dead, true);
+            // Unwired — pending ARIF approval per spec §9 STEPs.
+            // NOT a pathology. Constellation will see this via is_wired().
+            return (0.0, Freshness::Pending, false);
         };
         let hl = st.epistemology.half_life_cycles(self.feel_anchor_n);
         let tau = self.cycle.saturating_sub(st.last_update_cycle);
@@ -340,6 +378,11 @@ impl VectorStore {
     }
 
     /// Per-dimension vector state with band labels (spec §4.1).
+    ///
+    /// Unwired dimensions (no producer ever ingested) are emitted with
+    /// `band: "PENDING_WIRING"`, `wiring: "UNWIRED"`, `pathological: false`,
+    /// and null h/value/producer — they are pending ARIF approval per
+    /// spec §9 STEPs, not a system pathology.
     pub fn vector_state(&self) -> BTreeMap<String, serde_json::Value> {
         let mut out = BTreeMap::new();
         for dim in [
@@ -351,19 +394,32 @@ impl VectorStore {
             Dimension::DS,
             Dimension::Omega0,
         ] {
-            let (h, fb, unmeasured) = self.health(dim);
-            let (band, pathological) = if unmeasured {
-                ("UNMEASURED".to_string(), true)
-            } else {
-                let (b, p) = band_of(h);
-                (b.to_string(), p)
-            };
+            // Unwired (pre-STEP) → honest PENDING_WIRING declaration.
+            if !self.is_wired(dim) {
+                out.insert(
+                    dim.code().to_string(),
+                    serde_json::json!({
+                        "h": serde_json::Value::Null,
+                        "band": "PENDING_WIRING",
+                        "wiring": "UNWIRED",
+                        "pathological": false,
+                        "freshness": "Pending",
+                        "epistemic": serde_json::Value::Null,
+                        "value": serde_json::Value::Null,
+                        "producer": serde_json::Value::Null,
+                    }),
+                );
+                continue;
+            }
+            let (h, fb, _) = self.health(dim);
+            let (band, pathological) = band_of(h);
             let st = self.dims.get(&dim);
             out.insert(
                 dim.code().to_string(),
                 serde_json::json!({
                     "h": (h * 100.0).round() / 100.0,
                     "band": band,
+                    "wiring": "WIRED",
                     "pathological": pathological,
                     "freshness": format!("{:?}", fb),
                     "epistemic": st.map_or("UNMEASURED".to_string(), |s| s.epistemology.code().to_string()),
@@ -376,6 +432,9 @@ impl VectorStore {
     }
 
     /// Fused rank — weighted geometric mean, fail-closed (spec §4.2).
+    ///
+    /// Unwired dimensions are excluded from the geometric mean (they have no
+    /// reading to contribute). Fail-closed applies to wired dims only.
     pub fn rank(&self) -> f64 {
         let hs: Vec<f64> = [
             Dimension::Fq,
@@ -387,15 +446,17 @@ impl VectorStore {
             Dimension::Omega0,
         ]
         .iter()
+        .filter(|d| self.is_wired(**d))
         .map(|d| {
-            let (h, _, unmeasured) = self.health(*d);
-            if unmeasured {
-                0.0
-            } else {
-                h
-            }
+            let (h, _, _) = self.health(*d);
+            h
         })
         .collect();
+
+        if hs.is_empty() {
+            // Nothing wired → no rank to compute (return 0.0, not NaN).
+            return 0.0;
+        }
 
         // Any zero dimension → rank 0.0 (fail-closed).
         if hs.iter().any(|h| *h <= 0.0) {
@@ -405,7 +466,11 @@ impl VectorStore {
         (product / hs.len() as f64).exp()
     }
 
-    /// Primary pathology — argmin health (the diagnosis, spec §4.1).
+    /// Primary pathology — argmin health among WIRED-and-pathological dims
+    /// (the diagnosis, spec §4.1). Unwired dims are excluded; they are
+    /// pending ARIF approval (spec §9), not pathologies. If no wired dim
+    /// is pathological (h ≥ 0.5), returns None — there is no diagnosis
+    /// to make.
     pub fn primary_pathology(&self) -> Option<Dimension> {
         [
             Dimension::Fq,
@@ -417,23 +482,30 @@ impl VectorStore {
             Dimension::Omega0,
         ]
         .iter()
+        .filter(|d| self.is_wired(**d))
         .map(|d| {
-            let (h, _, unmeasured) = self.health(*d);
-            (*d, if unmeasured { 0.0 } else { h })
+            let (h, _, _) = self.health(*d);
+            (*d, h)
         })
+        .filter(|(_, h)| *h < 0.5)
         .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(d, _)| d)
     }
 
-    /// Constellation classifier (spec §4.3).
+    /// Constellation classifier (spec §4.3, extended for phased rollout).
+    ///
+    /// Unwired dimensions (pending ARIF approval per §9 STEPs) shift the
+    /// constellation to `PARTIAL_WIRING` — they are not pathologies. Once
+    /// all 7 dimensions are wired, the existing constellation logic applies.
     pub fn constellation(&self) -> String {
-        // Unanchored FEEL
+        // Unanchored FEEL — highest priority (existing logic, unchanged).
         if let Some(st) = self.dims.get(&Dimension::Omega0) {
             if st.epistemology == Epistemology::Feel && !self.omega_anchored() {
                 return "FEEL_UNANCHORED".into();
             }
         }
-        // Reality lag — any dimension STALE or DEAD
+
+        // Reality lag — any WIRED dimension STALE or DEAD.
         for d in [
             Dimension::Fq,
             Dimension::G,
@@ -443,15 +515,16 @@ impl VectorStore {
             Dimension::DS,
             Dimension::Omega0,
         ] {
-            let (_, fb, unmeasured) = self.health(d);
-            if unmeasured {
-                return "ONTOLOGY_BREACH".into();
+            if !self.is_wired(d) {
+                continue;
             }
+            let (_, fb, _) = self.health(d);
             if fb == Freshness::Stale || fb == Freshness::Dead {
                 return "REALITY_LAG".into();
             }
         }
-        // Pathological dimension detection
+
+        // Pathological dimension detection on WIRED dims only.
         let mut pathological: Vec<Dimension> = Vec::new();
         for d in [
             Dimension::Fq,
@@ -462,26 +535,43 @@ impl VectorStore {
             Dimension::DS,
             Dimension::Omega0,
         ] {
+            if !self.is_wired(d) {
+                continue;
+            }
             let (h, _, _) = self.health(d);
             if h < 0.5 {
                 pathological.push(d);
             }
         }
+
+        let unwired_count = 7 - self.wired_count();
+
+        // No pathologies among wired dims.
         if pathological.is_empty() {
+            if unwired_count > 0 {
+                // Phased rollout — system is healthy where measured, but
+                // some dimensions haven't shipped yet. Honest declaration.
+                return "PARTIAL_WIRING".into();
+            }
             return "FLOWING".into();
         }
-        // Single pathology → named constellation
-        if pathological.len() == 1 {
+
+        // Pathologies present among wired dims.
+        if pathological.len() == 1 && unwired_count == 0 {
+            // Single pathology, all wired → existing named constellation.
             return pathological[0].failure().into();
         }
-        // Multi-pathology → the most severe + PARADOX flag
-        if pathological.len() >= 2 {
-            let primary = self
-                .primary_pathology()
-                .map_or("UNKNOWN".to_string(), |d| d.failure().to_string());
-            return format!("PARADOX:{}", primary);
+
+        // Either multi-pathology, OR pathology + unwired dims.
+        // Prefix with PARTIAL_WIRING when unwired dims are present so the
+        // diagnosis is honest about incomplete coverage.
+        let primary = self
+            .primary_pathology()
+            .map_or("UNKNOWN".to_string(), |d| d.failure().to_string());
+        if unwired_count > 0 {
+            return format!("PARTIAL_WIRING:{}", primary);
         }
-        "UNKNOWN".into()
+        format!("PARADOX:{}", primary)
     }
 
     fn omega_anchored(&self) -> bool {
@@ -545,15 +635,17 @@ impl IndependenceMonitor {
             Dimension::DS,
             Dimension::Omega0,
         ] {
-            let (h, _, unmeasured) = vector.health(dim);
+            // Unwired dims don't contribute to independence math (absence is
+            // not a value). Only wired dims with readings are recorded.
+            if !vector.is_wired(dim) {
+                continue;
+            }
+            let (h, _, _) = vector.health(dim);
             let entry = self.history.entry(dim).or_default();
             if entry.len() >= self.max_window {
                 entry.remove(0);
             }
-            // Unmeasured → drop from independence math (absence is not a value)
-            if !unmeasured {
-                entry.push(h);
-            }
+            entry.push(h);
         }
     }
 
@@ -958,5 +1050,191 @@ mod tests {
         // Perfectly correlated dims → collapse detected
         let pairs = mon.collapse_pairs();
         assert!(!pairs.is_empty());
+    }
+
+    // ── PARTIAL_WIRING / PENDING_WIRING semantics ──────────────────────
+    //
+    // Spec §9 STEPs are individually approved by ARIF. Until a STEP ships,
+    // its dimension is unwired. Unwired dims must NOT be diagnosed as
+    // pathology — they are pending ARIF approval, not broken.
+
+    #[test]
+    fn test_is_wired_distinguishes_unwired_from_wired() {
+        let mut vs = VectorStore::new();
+        vs.tick();
+        // Only FQ wired.
+        vs.inject_fq(Some(1.0));
+        assert!(vs.is_wired(Dimension::Fq));
+        assert!(!vs.is_wired(Dimension::G));
+        assert!(!vs.is_wired(Dimension::Omega0));
+        assert_eq!(vs.wired_count(), 1);
+    }
+
+    #[test]
+    fn test_health_unwired_is_not_pathology() {
+        let vs = VectorStore::new();
+        let (h, fb, is_pathology) = vs.health(Dimension::G);
+        assert_eq!(h, 0.0);
+        assert_eq!(fb, Freshness::Pending);
+        assert!(
+            !is_pathology,
+            "unwired dim must NOT be flagged as pathology"
+        );
+    }
+
+    #[test]
+    fn test_vector_state_pending_wiring_for_unwired() {
+        let mut vs = VectorStore::new();
+        vs.tick();
+        vs.inject_fq(Some(1.0)); // FQ wired, others unwired
+        let state = vs.vector_state();
+        let fq = state.get("fq").unwrap();
+        let g = state.get("g").unwrap();
+        let j = state.get("j").unwrap();
+        let w3 = state.get("w3").unwrap();
+        let cd = state.get("c_dark").unwrap();
+        let ds = state.get("ds").unwrap();
+        let om = state.get("omega").unwrap();
+
+        // FQ is wired + healthy.
+        assert_eq!(fq["wiring"], "WIRED");
+        assert_eq!(fq["band"], "HEALTHY");
+        assert_eq!(fq["pathological"], false);
+
+        // 6 unwired dims — all PENDING_WIRING, all NOT pathological.
+        for dim_state in [g, j, w3, cd, ds, om] {
+            assert_eq!(dim_state["wiring"], "UNWIRED");
+            assert_eq!(dim_state["band"], "PENDING_WIRING");
+            assert_eq!(dim_state["freshness"], "Pending");
+            assert_eq!(dim_state["pathological"], false);
+            assert!(dim_state["h"].is_null());
+            assert!(dim_state["value"].is_null());
+            assert!(dim_state["producer"].is_null());
+            assert!(dim_state["epistemic"].is_null());
+        }
+    }
+
+    #[test]
+    fn test_constellation_partial_wiring_clean() {
+        // Only FQ wired, FQ healthy → PARTIAL_WIRING (not GOVERNANCE_COLLAPSE).
+        let mut vs = VectorStore::new();
+        vs.tick();
+        vs.inject_fq(Some(1.0));
+        assert_eq!(vs.constellation(), "PARTIAL_WIRING");
+    }
+
+    #[test]
+    fn test_constellation_partial_wiring_with_pathology() {
+        // Only FQ wired, FQ BURNING → PARTIAL_WIRING:SIMULATION (not ONTOLOGY_BREACH).
+        let mut vs = VectorStore::new();
+        vs.tick();
+        vs.inject_fq(Some(0.05)); // BURNING
+        let c = vs.constellation();
+        assert!(
+            c.starts_with("PARTIAL_WIRING:"),
+            "got {}",
+            c
+        );
+        assert!(c.contains("SIMULATION"), "got {}", c);
+    }
+
+    #[test]
+    fn test_constellation_all_unwired() {
+        // Nothing wired → PARTIAL_WIRING (not ONTOLOGY_BREACH).
+        let vs = VectorStore::new();
+        assert_eq!(vs.constellation(), "PARTIAL_WIRING");
+    }
+
+    #[test]
+    fn test_rank_skips_unwired_dims() {
+        // Only FQ wired at healthy value → rank should reflect what's wired,
+        // not collapse to 0 due to missing dims.
+        let mut vs = VectorStore::new();
+        vs.tick();
+        vs.inject_fq(Some(1.0));
+        let rank = vs.rank();
+        assert!(rank > 0.5, "rank was {}", rank);
+        assert!(rank <= 1.0);
+    }
+
+    #[test]
+    fn test_rank_zero_when_nothing_wired() {
+        let vs = VectorStore::new();
+        assert_eq!(vs.rank(), 0.0);
+    }
+
+    #[test]
+    fn test_rank_fail_closed_still_holds_when_unanchored_wired_dim() {
+        // Even with unwired dims excluded, an UNANCHORED FEEL still kills rank.
+        let mut vs = VectorStore::new();
+        vs.tick();
+        vs.inject_fq(Some(1.0));
+        vs.ingest(
+            Dimension::Omega0,
+            0.04,
+            Epistemology::Feel,
+            "humility",
+            "333-AGI",
+            false, // UNANCHORED
+        );
+        // Ω₀ unanchored → rank must collapse to 0.0 (fail-closed)
+        let rank = vs.rank();
+        assert_eq!(rank, 0.0);
+    }
+
+    #[test]
+    fn test_primary_pathology_skips_unwired() {
+        // Only FQ wired, FQ healthy. primary_pathology should be None
+        // (no pathology among wired dims), not G (which is just unwired).
+        let mut vs = VectorStore::new();
+        vs.tick();
+        vs.inject_fq(Some(1.0));
+        assert!(vs.primary_pathology().is_none());
+    }
+
+    #[test]
+    fn test_independence_monitor_skips_unwired() {
+        // Record 10 cycles. Only FQ wired. IndependenceMonitor should
+        // not record unwired dims (no spurious zero entries).
+        let mut mon = IndependenceMonitor::new(10);
+        let mut vs = VectorStore::new();
+        for _ in 0..10 {
+            vs.tick();
+            vs.inject_fq(Some(1.0));
+            mon.record(&vs);
+        }
+        // Only FQ should have history.
+        assert!(mon.history.get(&Dimension::Fq).is_some());
+        for d in [
+            Dimension::G,
+            Dimension::J,
+            Dimension::W3,
+            Dimension::CDark,
+            Dimension::DS,
+            Dimension::Omega0,
+        ] {
+            assert!(
+                mon.history.get(&d).is_none() || mon.history.get(&d).unwrap().is_empty(),
+                "unwired dim {:?} should not have history",
+                d
+            );
+        }
+    }
+
+    #[test]
+    fn test_partial_wiring_does_not_collude_with_full_wiring() {
+        // Regression: ensure full-vector wiring still produces the right
+        // constellation (no PARTIAL_WIRING false positive when all 7 wired).
+        let mut vs = VectorStore::new();
+        vs.tick();
+        vs.inject_fq(Some(1.0));
+        vs.ingest(Dimension::G, 0.9, Epistemology::Witness, "e", "A-FORGE", true);
+        vs.ingest(Dimension::J, 0.3, Epistemology::Measure, "a", "A-FORGE", true);
+        vs.ingest(Dimension::W3, 0.85, Epistemology::Witness, "w", "A-FORGE", true);
+        vs.ingest(Dimension::CDark, 0.2, Epistemology::Measure, "e", "A-FORGE", true);
+        vs.ingest(Dimension::DS, -0.05, Epistemology::Measure, "e", "arifFlow", true);
+        vs.ingest(Dimension::Omega0, 0.04, Epistemology::Feel, "h", "333-AGI", true);
+        assert_eq!(vs.wired_count(), 7);
+        assert_eq!(vs.constellation(), "FLOWING");
     }
 }
