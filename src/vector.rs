@@ -637,15 +637,22 @@ impl IndependenceMonitor {
         ] {
             // Unwired dims don't contribute to independence math (absence is
             // not a value). Only wired dims with readings are recorded.
+            //
+            // Record band-normalized RAW value, not decayed health.
+            // Correlating h_eff (shared tick + same half-life) manufactured
+            // ρ=1.0 across stale constants — a dashboard lie (2026-08-18).
             if !vector.is_wired(dim) {
                 continue;
             }
-            let (h, _, _) = vector.health(dim);
+            let Some(st) = vector.dims.get(&dim) else {
+                continue;
+            };
+            let sample = band_normalize(dim, st.value);
             let entry = self.history.entry(dim).or_default();
             if entry.len() >= self.max_window {
                 entry.remove(0);
             }
-            entry.push(h);
+            entry.push(sample);
         }
     }
 
@@ -697,7 +704,10 @@ fn pearson(a: &[f64], b: &[f64]) -> f64 {
         da += x * x;
         db += y * y;
     }
-    if da == 0.0 || db == 0.0 {
+    // Constant series: no variance → not a collapse. Exact == 0.0 is not
+    // enough — ten copies of 0.9f64 leave a residual that yields ρ=1.0
+    // on identical constants (INV-3 false fire, 2026-08-18).
+    if da < 1e-12 || db < 1e-12 {
         0.0
     } else {
         num / (da.sqrt() * db.sqrt())
@@ -1047,9 +1057,38 @@ mod tests {
             );
             mon.record(&vs);
         }
-        // Perfectly correlated dims → collapse detected
+        // Same constant readings: no variance → ρ=0, not a collapse.
         let pairs = mon.collapse_pairs();
-        assert!(!pairs.is_empty());
+        assert!(
+            pairs.is_empty(),
+            "constant readings must not fake INV-3 collapse: {:?}",
+            pairs
+        );
+
+        // Lockstep raw motion of G and W3 should still fire.
+        let mut mon2 = IndependenceMonitor::new(10);
+        let mut vs2 = VectorStore::new();
+        for i in 0..10 {
+            vs2.tick();
+            let v = 0.4 + (i as f64) * 0.05;
+            vs2.ingest(Dimension::G, v, Epistemology::Witness, "e", "A-FORGE", true);
+            vs2.ingest(Dimension::W3, v, Epistemology::Witness, "w", "A-FORGE", true);
+            vs2.ingest(Dimension::J, 0.3, Epistemology::Measure, "a", "A-FORGE", true);
+            vs2.ingest(Dimension::CDark, 0.2, Epistemology::Measure, "e", "A-FORGE", true);
+            vs2.ingest(Dimension::DS, -0.05, Epistemology::Measure, "e", "arifFlow", true);
+            vs2.ingest(Dimension::Omega0, 0.04, Epistemology::Feel, "h", "333-AGI", true);
+            vs2.inject_fq(Some(1.0));
+            mon2.record(&vs2);
+        }
+        let pairs2 = mon2.collapse_pairs();
+        assert!(
+            pairs2.iter().any(|(a, b, r)| {
+                matches!((*a, *b), (Dimension::G, Dimension::W3) | (Dimension::W3, Dimension::G))
+                    && r.abs() > 0.85
+            }),
+            "lockstep G/W3 raw motion should collapse: {:?}",
+            pairs2
+        );
     }
 
     // ── PARTIAL_WIRING / PENDING_WIRING semantics ──────────────────────
