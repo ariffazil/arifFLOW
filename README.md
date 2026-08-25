@@ -1,7 +1,7 @@
 <!-- SOT-MANIFEST
-federation_release: v2026.08.11
-last_verified: 2026-08-11T23:24:40Z
-live_commit: fe14d3f (feat(FINAL-4): flow closure — override receipt, fq canonical, WHY bridge)
+federation_release: v2026.08.25
+last_verified: 2026-08-25T12:14:00Z
+live_commit: 45293385dccf9d6fb702d8055a311cea8bfe0f35 (fix(vector): INV-3 must not fire on constant or decay-coupled h)
 organ: arifFlow
 role: METABOLISM organ — FQ pulse, receipt metabolism, attention checkpointing
 authority: METABOLIZE_ONLY — never judges, never executes
