@@ -100,6 +100,10 @@ TOOLS = [
                     "items": {"type": "string"},
                     "description": "Organs that witnessed this step (e.g. ['arifos', 'geox'])",
                 },
+                "harness_fingerprint": {
+                    "type": "string",
+                    "description": "ETCSOVG harness fingerprint (SHA256-first-8) linking this receipt to a specific harness config (arxiv 2605.23950)",
+                },
             },
             "required": ["actor_id", "session_id"],
             "additionalProperties": False,
@@ -187,6 +191,11 @@ def call_tool(name: str, args: dict) -> dict:
             "formula_hash": "sha256:arifflow-fq-v2.2-2026-08-14",
             "witness_organs": args.get("witness_organs"),
         }
+        # Inject harness fingerprint into payload if provided (ETCSOVG, arxiv 2605.23950)
+        if args.get("harness_fingerprint"):
+            if receipt["payload"] is None:
+                receipt["payload"] = {}
+            receipt["payload"]["harness_fingerprint"] = args["harness_fingerprint"]
         status, body = flow_post("/ingest", receipt)
         # [TAP] Trace tool call for Dataset B training — fires once per ingest
         try:
