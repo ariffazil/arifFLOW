@@ -8,7 +8,8 @@
 #
 # DITEMPA BUKAN DIBERI
 
-ARIFLOW_URL="${ARIFLOW_URL:-http://127.0.0.1:7073}"
+# KVM4 worker: organ lives on KVM8. Do not run a local daemon here.
+ARIFLOW_URL="${ARIFLOW_URL:-http://100.64.0.2:7073}"
 
 arifflow_check() {
     local actor_id="${1:-333-AGI}"
