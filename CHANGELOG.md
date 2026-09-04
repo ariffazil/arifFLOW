@@ -1,15 +1,23 @@
-# CHANGELOG — arifFlow
+# Changelog — arifFlow (Orchestration)
 
-> Date-stamped only. No semver. Iron Rule.
+All notable changes to the arifFlow organ.
 
-## v2026.07.25 — Phase 4.1: real arifOS HTTP bridge
+## [Unreleased]
 
-- `feat`: Phase 4.1 — real arifOS HTTP bridge (83d8ad2)
-- `chore`: 999_SEAL — Phase 3 verified, P0 closed, 44/44 tests, binary sealed, entropy sweep clean (5f5f457)
-- `chore`: housekeeping seal — all 3 repos committed, 44/44 tests, binary sealed (e5514cf)
-- `fix`: barrier timeout + F1 per-lane final — 44 tests passing (17c316c)
-- `feat`: arifFlow Phase 3 SEAL — barrier timeout + F1 per-lane (f6bd346)
+### Added
+- Axiom 14 — governed uncertainty (STATE_BELOW_WORDS E1–E18)
+- Eureka specification for state management
 
-## v2026.07.24 — Phase 3: Barrier timeout + F1 per-lane reversibility
+## [2026.08.30] — Federation Orchestration
 
-[Full history available via `git log`]
+### Added
+- Workflow orchestration pipeline
+- Cross-organ flow control
+- Health monitoring
+
+## [2026.07.13] — Initial Release
+
+### Added
+- arifFlow organ initialization
+- Pipeline management
+- Ingestion routing
