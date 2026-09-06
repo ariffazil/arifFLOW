@@ -23,5 +23,9 @@ pub use kabarkan_fq::{
     FqAlertEvent, FqAlertSeverity, FqCoolingCorrelationEvent, FqLaneEvent, FqSnapshotEvent,
     FqTrend, KabarkanFqInstrument,
 };
-pub use tri_witness::{TriWitness, TriWitnessVerdict, WitnessChannel, WitnessMergeResult};
+pub use tri_witness::{
+    AgentCandidate, ConsensusResolution, TriWitness, TriWitnessVerdict, WitnessChannel,
+    WitnessMergeResult, resolve_consensus_with_tiebreaker,
+};
 pub use vault999::Vault999Sealer;
+

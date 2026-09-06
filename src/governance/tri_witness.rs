@@ -210,6 +210,130 @@ impl WitnessMergeResult {
             merged: verdict == TriWitnessVerdict::Consensus || verdict == TriWitnessVerdict::Weak,
         }
     }
+
+    /// Resolve consensus with risk-aware tiebreaker (Fix 1).
+    pub fn resolve_with_tiebreaker(
+        &self,
+        risk_class: &crate::receipt::RiskClass,
+        candidates: &[AgentCandidate],
+    ) -> ConsensusResolution {
+        resolve_consensus_with_tiebreaker(self.w3_score, self.verdict, risk_class, candidates)
+    }
+}
+
+/// Candidate agent with its current Flow Quotient (FQ).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentCandidate {
+    pub agent_id: String,
+    pub fq: f64,
+}
+
+impl AgentCandidate {
+    pub fn new(agent_id: impl Into<String>, fq: f64) -> Self {
+        Self {
+            agent_id: agent_id.into(),
+            fq,
+        }
+    }
+
+    /// Distance from ideal Flow Quotient (1.0).
+    /// Lower distance indicates balance between execution and verification.
+    pub fn fq_distance_from_ideal(&self) -> f64 {
+        (self.fq - 1.0).abs()
+    }
+}
+
+/// Outcome of consensus resolution under risk-aware tiebreaker policy.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConsensusResolution {
+    pub w3_score: f64,
+    pub verdict: TriWitnessVerdict,
+    pub tiebreaker_applied: bool,
+    pub selected_agent: Option<String>,
+    pub hold_enforced: bool,
+    pub reason: String,
+}
+
+/// Auto-tiebreaker resolution (Fix 1):
+/// If W³ < 0.80 and Task_Risk == NON_CRITICAL (i.e. not T3Irreversible),
+/// auto-select the agent with Flow Quotient (FQ) nearest to 1.0 as tie-breaker
+/// instead of stalling on HOLD.
+/// Reserve 888_HOLD exclusively for irreversible mutations (T3).
+pub fn resolve_consensus_with_tiebreaker(
+    w3_score: f64,
+    verdict: TriWitnessVerdict,
+    risk_class: &crate::receipt::RiskClass,
+    candidates: &[AgentCandidate],
+) -> ConsensusResolution {
+    let is_critical = matches!(risk_class, crate::receipt::RiskClass::T3Irreversible);
+
+    // Strong consensus (W³ >= 0.80) and consensus verdict
+    if w3_score >= 0.80 && verdict.is_consensus() {
+        return ConsensusResolution {
+            w3_score,
+            verdict,
+            tiebreaker_applied: false,
+            selected_agent: candidates.first().map(|c| c.agent_id.clone()),
+            hold_enforced: false,
+            reason: format!("Strong W³ consensus ({:.3} >= 0.80)", w3_score),
+        };
+    }
+
+    // Critical mutation (T3 / Irreversible) requires strict W³ >= 0.80; else 888_HOLD
+    if is_critical {
+        let hold = w3_score < 0.80 || verdict.requires_hold();
+        return ConsensusResolution {
+            w3_score,
+            verdict,
+            tiebreaker_applied: false,
+            selected_agent: if hold { None } else { candidates.first().map(|c| c.agent_id.clone()) },
+            hold_enforced: hold,
+            reason: if hold {
+                format!(
+                    "888_HOLD: W³={:.3} < 0.80 on critical irreversible mutation ({})",
+                    w3_score,
+                    risk_class.code()
+                )
+            } else {
+                format!("Critical mutation cleared W³={:.3} >= 0.80", w3_score)
+            },
+        };
+    }
+
+    // NON-CRITICAL task: if W³ < 0.80, apply auto-tiebreaker using FQ nearest to 1.0
+    if !candidates.is_empty() {
+        let mut best = &candidates[0];
+        let mut min_dist = best.fq_distance_from_ideal();
+
+        for cand in &candidates[1..] {
+            let dist = cand.fq_distance_from_ideal();
+            if dist < min_dist {
+                min_dist = dist;
+                best = cand;
+            }
+        }
+
+        ConsensusResolution {
+            w3_score,
+            verdict,
+            tiebreaker_applied: true,
+            selected_agent: Some(best.agent_id.clone()),
+            hold_enforced: false,
+            reason: format!(
+                "Auto-tiebreaker selected '{}' (|FQ {:.3} - 1.0| = {:.3}) under non-critical risk ({}) with W³={:.3}",
+                best.agent_id, best.fq, min_dist, risk_class.code(), w3_score
+            ),
+        }
+    } else {
+        ConsensusResolution {
+            w3_score,
+            verdict,
+            tiebreaker_applied: false,
+            selected_agent: None,
+            hold_enforced: verdict.requires_hold(),
+            reason: "W³ < 0.80 but no agent candidates provided for tiebreaker".into(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -329,4 +453,71 @@ mod tests {
         assert!(!TriWitnessVerdict::Consensus.requires_hold());
         assert!(!TriWitnessVerdict::Weak.requires_hold());
     }
+
+    #[test]
+    fn test_tiebreaker_non_critical_w3_below_80() {
+        use crate::receipt::RiskClass;
+
+        let candidates = vec![
+            AgentCandidate::new("agent-a", 0.50), // dist = 0.50
+            AgentCandidate::new("agent-b", 1.05), // dist = 0.05 (nearest to 1.0)
+            AgentCandidate::new("agent-c", 1.80), // dist = 0.80
+        ];
+
+        // Non-critical task (T1Mutate) with W³ = 0.72 (< 0.80)
+        let res = resolve_consensus_with_tiebreaker(
+            0.72,
+            TriWitnessVerdict::Weak,
+            &RiskClass::T1Mutate,
+            &candidates,
+        );
+
+        assert!(res.tiebreaker_applied, "Tiebreaker should be applied when W³ < 0.80 on non-critical task");
+        assert!(!res.hold_enforced, "HOLD should NOT be enforced for non-critical task with tiebreaker");
+        assert_eq!(res.selected_agent.as_deref(), Some("agent-b"), "Should select agent with FQ nearest to 1.0");
+    }
+
+    #[test]
+    fn test_tiebreaker_reserved_hold_for_critical_t3() {
+        use crate::receipt::RiskClass;
+
+        let candidates = vec![
+            AgentCandidate::new("agent-b", 1.02),
+        ];
+
+        // Critical irreversible mutation (T3Irreversible) with W³ = 0.72 (< 0.80)
+        let res = resolve_consensus_with_tiebreaker(
+            0.72,
+            TriWitnessVerdict::Weak,
+            &RiskClass::T3Irreversible,
+            &candidates,
+        );
+
+        assert!(!res.tiebreaker_applied, "Tiebreaker should NOT bypass critical mutation requirement");
+        assert!(res.hold_enforced, "888_HOLD MUST be enforced on critical mutation with W³ < 0.80");
+        assert_eq!(res.selected_agent, None, "No agent should be auto-selected under 888_HOLD");
+        assert!(res.reason.starts_with("888_HOLD"), "Reason must clearly cite 888_HOLD");
+    }
+
+    #[test]
+    fn test_consensus_cleared_when_w3_ge_80() {
+        use crate::receipt::RiskClass;
+
+        let candidates = vec![
+            AgentCandidate::new("primary-agent", 1.0),
+        ];
+
+        // Critical task with high consensus W³ = 0.92 (>= 0.80)
+        let res = resolve_consensus_with_tiebreaker(
+            0.92,
+            TriWitnessVerdict::Consensus,
+            &RiskClass::T3Irreversible,
+            &candidates,
+        );
+
+        assert!(!res.tiebreaker_applied);
+        assert!(!res.hold_enforced);
+        assert_eq!(res.selected_agent.as_deref(), Some("primary-agent"));
+    }
 }
+
