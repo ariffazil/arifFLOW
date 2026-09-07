@@ -33,7 +33,7 @@ and observed runtime. This section is the honest reconciliation.
 ### What arifFlow IS NOT at runtime (observed)
 - BSP scheduler is compiled but not invoked from daemon (lives in `stdin_protocol_loop` only)
 - Cross-organ coordination bridges (arifOS :8088, A-FORGE :7071) are compiled but not called
-- VAULT999 sealing is not wired to runtime ingest path (receipts go to local JSONL)
+- VAULT999 sealing IS wired to runtime ingest (vault999.rs invoked in /ingest; arifflow_sealed.jsonl hash-chained, chain_position 415+ — stale claim corrected 2026-09-07 FI-008 audit)
 - Merkle checkpointing is computed in scheduler path only (dead code at daemon runtime)
 
 ### What arifFlow WAS DESIGNED TO BE (aspirational)
