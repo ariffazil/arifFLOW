@@ -1,0 +1,49 @@
+# arifFlow Entity Classification
+# Maps actor_id → entity class for FQ governance weighting
+# Doctrine: E6 (Actors Are Not Equal), E4 (Not All Receipts Are Reality)
+#
+# Classes:
+#   human_agent       — consequence-bearing interactive agent (YES influence FQ)
+#   interactive_session — one-shot sessions (CONDITIONAL influence FQ)
+#   daemon            — background daemons (INDIRECT — should NOT influence FQ)
+#   infrastructure    — infrastructure services (NO influence FQ)
+#   synthetic         — synthetic generators (NO influence FQ)
+#
+# FQ Governance Rule:
+#   Only human_agent and interactive_session should determine FQ verdict.
+#   daemon/infrastructure/synthetic receipts are telemetry, not governance.
+
+# --- Human Agents (consequence-bearing, interactive) ---
+human_agent:
+  - qwen-code
+  - fi-003-qwen-code
+  - kimi-code/FI-008
+  - claude-code
+  - opencode
+  - grok
+  - hermes-asi
+  - hermes-prime
+  - 333-AGI
+
+# --- Interactive Sessions (sometimes consequence-bearing) ---
+interactive_session:
+  - codex
+  - codex-startup
+  - FI-003
+  - fi-003-anonymous
+
+# --- Background Daemons (indirect consequence, no FQ influence) ---
+daemon:
+  - aed-v1
+  - orchestrator-v1
+  - grok-build
+
+# --- Infrastructure Services (no consequence) ---
+infrastructure:
+  - hermes-cron
+  - a-forge
+
+# --- Synthetic Generators (no reality, pure noise) ---
+synthetic:
+  - p0-metabolize
+  - reexamine
