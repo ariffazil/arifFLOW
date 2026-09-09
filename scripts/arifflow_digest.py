@@ -61,6 +61,38 @@ def get_health():
         return None
 
 
+NATS_BIN = "/usr/local/bin/nats"
+NATS_SERVER = "nats://127.0.0.1:4222"
+ORGAN_STREAM = "arifos-organs"
+
+
+def get_organ_heartbeats():
+    """Read last heartbeat per organ from JetStream arifos-organs.
+
+    2026-09-09 witness-membrane: first real reader for the heartbeat stream
+    (4 consumers existed, 0 deliveries ever). Existing river only — the
+    digest — no new surface (LAW 8). Honest UNKNOWN on any failure;
+    never fabricate status (Void Guard).
+    """
+    import re
+    import subprocess
+
+    statuses = {}
+    for organ in ("arifos", "aforge", "geox", "wealth", "well"):
+        try:
+            out = subprocess.run(
+                [NATS_BIN, "--server", NATS_SERVER, "stream", "get",
+                 ORGAN_STREAM, "-S", "arifos.organ." + organ],
+                capture_output=True, text=True, timeout=10,
+            )
+            text = out.stdout or ""
+            m = re.search(r'"status"\s*:\s*"([a-zA-Z_]+)"', text)
+            statuses[organ] = m.group(1) if (out.returncode == 0 and m) else "UNKNOWN"
+        except Exception:
+            statuses[organ] = "UNKNOWN"
+    return statuses
+
+
 def format_digest():
     """Generate the governance digest for Arif."""
     now = datetime.now(timezone.utc)
@@ -173,6 +205,21 @@ def format_digest():
                 "priority": 4,
             }
         )
+
+    # Organ heartbeats — arifos-organs stream reader (first real consumer, 2026-09-09)
+    hb = get_organ_heartbeats()
+    distress = [o for o, s in hb.items() if s.upper() not in ("HEALTHY", "OK", "UNKNOWN", "ENABLED")]
+    events.append(
+        {
+            "type": "ORGAN_HEARTBEATS",
+            "summary": "Organs: " + " ".join(f"{o}={s}" for o, s in hb.items()),
+            "details": {
+                "Distress": ",".join(distress) if distress else "none",
+                "Reader": "arifos-organs JetStream (2026-09-09 wiring)",
+            },
+            "priority": 5,
+        }
+    )
 
     # No events = nothing happened = stay silent
     if not events:

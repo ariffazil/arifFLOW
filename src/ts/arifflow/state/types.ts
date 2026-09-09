@@ -129,3 +129,59 @@ export interface StateStats {
   fq_distribution: Record<FQVerdict, number>;
   last_session_at?: string;
 }
+
+// ── Identity Continuity — Constitutional Primitive (Ratified 2026-09-08) ──
+// Doctrine: /root/AAA/instructions/identity-continuity.md
+// ICL-1.1: NO SINGLE WITNESS CARRIES AUTHORITY.
+// ICL-1.5: Identity quorum = ∛(W_bio × W_admin × W_const) ≥ 0.50.
+
+export type WitnessKind =
+  | 'W1_face'        // Biometric: face signature (InsightFace buffalo_l)
+  | 'W2_voice'       // Biometric: voice signature
+  | 'W3_name'        // Administrative: handle binding
+  | 'W4_history'     // Administrative: VAULT999 + arif_memory L1-L6
+  | 'W5_relations'   // Administrative: relations graph
+  | 'W6_scar_ledger'; // Constitutional: failure continuity
+
+export type IdentitySupportLevel =
+  | 'NONE'
+  | 'REFERENCE'
+  | 'BINDING_T1'
+  | 'BINDING_T2'
+  | 'BINDING_T3';
+
+export interface IdentityWitnessSet {
+  W1_face: number;          // 0.0-1.0, default 0 (not enrolled)
+  W2_voice: number;         // 0.0-1.0, default 0
+  W3_name: number;          // 0.0-1.0, default 1.0 (admin)
+  W4_history: number;       // 0.0-1.0, default 1.0 (admin)
+  W5_relations: number;     // 0.0-1.0, default 0.85
+  W6_scar_ledger: number;   // 0.0-1.0, default 0
+}
+
+export interface IdentityContinuityReceipt {
+  actor_handle: string;
+  intent: string;
+  named_actor: boolean;
+  identity_card_ref?: string;
+  witness_set: IdentityWitnessSet;
+  biometric_strength: number;       // √(W1 × W2)
+  admin_strength: number;           // ∛(W3 × W4 × W5)
+  constitutional_strength: number;   // W6
+  geometric_mean: number;            // ∛(W_bio × W_admin × W_const)
+  quorum_passed: boolean;            // ≥ 0.50 AND single_witness_authority === false
+  single_witness_authority: boolean; // always false — ICL-1.1
+  verdict: 'MATCH' | 'PARTIAL' | 'NONE';
+  rationale?: string;
+  timestamp: string;
+  receipt_hash: string;
+}
+
+/** Update SessionState to track identity continuity per session. */
+export interface IdentityContinuityState {
+  last_check?: IdentityContinuityReceipt;
+  /** Per-actor handle bound to this session. */
+  bound_actor_handles: string[];
+  /** Pending biometric enrollments. */
+  pending_enrollments: string[];
+}
