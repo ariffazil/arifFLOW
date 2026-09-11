@@ -11,7 +11,6 @@ Silent when nothing happened (no noise).
 
 import json
 import os
-import sys
 from datetime import datetime, timezone, timedelta
 
 VAULT_PATH = "/root/arifOS/VAULT999/arifflow_sealed.jsonl"
@@ -227,7 +226,7 @@ def format_digest():
 
     # Format digest
     lines = []
-    lines.append(f"🍓 **arifFLOW Governance Digest**")
+    lines.append("🍓 **arifFLOW Governance Digest**")
     lines.append(f"_{now.strftime('%a %d %b %H:%M UTC')}_\n")
 
     # Sort by priority

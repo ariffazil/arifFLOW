@@ -6,7 +6,7 @@ Verifies default fail-closed behavior and ARIFLOW_FAIL_OPEN override.
 import os
 import sys
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 # Ensure the module is importable
 sys.path.insert(0, os.path.dirname(__file__))
