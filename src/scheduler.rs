@@ -16,7 +16,7 @@ use crate::channel::{Channel, ChannelId, ChannelMode, Message};
 use crate::governance::cooling::{Convergence, CoolingEntry, CoolingLedger, DriftSeverity};
 use crate::governance::kabarkan::{KabarkanEvent, KabarkanTracer};
 use crate::governance::tri_witness::{TriWitness, WitnessMergeResult};
-use crate::merkle::{chain_roots, MerkleRoot, MerkleTree};
+use crate::merkle::{MerkleRoot, MerkleTree, chain_roots};
 use crate::receipt::{
     EpistemicLabel, FlowQuotient, FlowReceipt, FlowVerdict, ReceiptStore, StepType,
 };
@@ -375,7 +375,7 @@ impl SuperStepScheduler {
         // Track governance steps for AFQ: create a receipt for F1 checks
         let f1_receipt = FlowReceipt::new_first(
             &self.actor_id,
-            &self.lease_id.to_string(),
+            self.lease_id.to_string(),
             StepType::Verify,
             EpistemicLabel::Observation,
             100, // cost_ns placeholder
@@ -453,7 +453,7 @@ impl SuperStepScheduler {
         // Create an execution receipt for this step
         let execute_receipt = FlowReceipt::new_first(
             &self.actor_id,
-            &self.lease_id.to_string(),
+            self.lease_id.to_string(),
             StepType::Execute,
             EpistemicLabel::Observation,
             elapsed.as_nanos() as u64,
@@ -664,10 +664,10 @@ impl SuperStepScheduler {
                     }
                     let outputs = node.run(inputs, self.lease_id)?;
                     for (ch_id, data) in outputs {
-                        if let Some(ch) = self.channels.get_mut(ch_id.0.as_str()) {
-                            if ch.write(data).is_ok() {
-                                all_deltas.entry(ch_id.0.clone()).or_insert_with(Vec::new);
-                            }
+                        if let Some(ch) = self.channels.get_mut(ch_id.0.as_str())
+                            && ch.write(data).is_ok()
+                        {
+                            all_deltas.entry(ch_id.0.clone()).or_insert_with(Vec::new);
                         }
                     }
                 }
@@ -693,10 +693,10 @@ impl SuperStepScheduler {
                     let outputs = node.run(inputs, self.lease_id)?;
                     // Write outputs immediately so next node in pipeline can read them
                     for (ch_id, data) in outputs {
-                        if let Some(ch) = self.channels.get_mut(ch_id.0.as_str()) {
-                            if ch.write(data).is_ok() {
-                                all_deltas.entry(ch_id.0.clone()).or_insert_with(Vec::new);
-                            }
+                        if let Some(ch) = self.channels.get_mut(ch_id.0.as_str())
+                            && ch.write(data).is_ok()
+                        {
+                            all_deltas.entry(ch_id.0.clone()).or_insert_with(Vec::new);
                         }
                     }
                     // Record pipeline stage cooling
@@ -721,7 +721,7 @@ impl SuperStepScheduler {
                         let has_input = node.subscriptions().iter().any(|sub| {
                             self.channels
                                 .get(sub.0.as_str())
-                                .map(|ch| ch.len() > 0)
+                                .map(|ch| !ch.is_empty())
                                 .unwrap_or(false)
                         });
                         if !has_input {
@@ -739,10 +739,10 @@ impl SuperStepScheduler {
                         }
                         let outputs = node.run(inputs, self.lease_id)?;
                         for (ch_id, data) in outputs {
-                            if let Some(ch) = self.channels.get_mut(ch_id.0.as_str()) {
-                                if ch.write(data).is_ok() {
-                                    all_deltas.entry(ch_id.0.clone()).or_insert_with(Vec::new);
-                                }
+                            if let Some(ch) = self.channels.get_mut(ch_id.0.as_str())
+                                && ch.write(data).is_ok()
+                            {
+                                all_deltas.entry(ch_id.0.clone()).or_insert_with(Vec::new);
                             }
                         }
                         activated[i] = true;

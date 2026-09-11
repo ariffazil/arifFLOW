@@ -128,9 +128,10 @@ impl fmt::Display for EpistemicLabel {
 /// | T3Irreversible | 1.0 | Irreversible, credential rotation, F13-gated |
 ///
 /// Forged 2026-08-14 — FQ vector operationalization.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum RiskClass {
     /// T0: Read, probe, observe — minimal risk. FQ floor: 0.1
+    #[default]
     T0Observe,
     /// T1: Edit, test, commit, lint — moderate risk. FQ floor: 0.3
     T1Mutate,
@@ -138,12 +139,6 @@ pub enum RiskClass {
     T2Deploy,
     /// T3: Irreversible, credential rotation, production — critical risk. FQ floor: 1.0
     T3Irreversible,
-}
-
-impl Default for RiskClass {
-    fn default() -> Self {
-        Self::T0Observe
-    }
 }
 
 impl RiskClass {
@@ -1581,7 +1576,7 @@ impl AFQMetric {
             execution_steps as f64 / governance_steps as f64
         };
         Self {
-            flow_quotient: quotient.clone(),
+            flow_quotient: quotient,
             execution_steps,
             governance_steps,
             execute_count: execution_steps,

@@ -15,10 +15,10 @@
 // execution invariants (A1-A6) enforced in scheduler.rs.
 
 use crate::governance::cooling::{Convergence, CoolingEntry, CoolingLedger, DriftSeverity};
-use crate::receipt::{FlowQuotient, FlowReceipt, FlowVerdict, ReceiptStore, RiskClass, StepType};
+use crate::receipt::{FlowQuotient, FlowReceipt, FlowVerdict, ReceiptStore, RiskClass};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 // ── Flow-Plane Invariants ────────────────────────────────────────────────
 
@@ -483,9 +483,11 @@ impl InvariantEnforcer {
             // Helix Codex Lock 2: FOSSILISATION pole
             // verify:execute > 3:1 → contact exists, nothing moves → HOLD
             // Both poles are Calhoun sink: fossilisation AND burning.
-            if let Some(q) = state.quotient {
-                if q > self.thresholds.fossilisation_threshold && state.execute_count > 0 {
-                    checks.push(InvariantCheck::new(
+            if let Some(q) = state.quotient
+                && q > self.thresholds.fossilisation_threshold
+                && state.execute_count > 0
+            {
+                checks.push(InvariantCheck::new(
                         FlowInvariant::F3_ObserveNeverInterpret,
                         InvariantStatus::Hold,
                         format!(
@@ -497,7 +499,6 @@ impl InvariantEnforcer {
                             q, state.execute_count, state.verify_count
                         ),
                     ));
-                }
             }
 
             // Consecutive executes without verify → THROTTLE → HOLD
@@ -572,35 +573,35 @@ impl InvariantEnforcer {
                     let rest = &check.reason[actor_start + 7..];
                     if let Some(actor_end) = rest.find('\'') {
                         let actor_id = &rest[..actor_end];
-                        if let Some(state) = self.actors.get_mut(actor_id) {
-                            if check.status == InvariantStatus::Hold {
-                                state.held = true;
-                                state.throttled = true;
-                                self.hold_count += 1;
+                        if let Some(state) = self.actors.get_mut(actor_id)
+                            && check.status == InvariantStatus::Hold
+                        {
+                            state.held = true;
+                            state.throttled = true;
+                            self.hold_count += 1;
 
-                                // Record cooling entry for HOLD
-                                self.cooling_ledger.record(CoolingEntry::new(
-                                    self.cycle_count,
-                                    format!("HOLD: {}", check.reason),
-                                    format!("Actor {} held by invariant enforcement", actor_id),
-                                    Convergence::Diverging,
-                                    DriftSeverity::Critical,
-                                    "arifFlow/invariants",
-                                ));
-                            }
+                            // Record cooling entry for HOLD
+                            self.cooling_ledger.record(CoolingEntry::new(
+                                self.cycle_count,
+                                format!("HOLD: {}", check.reason),
+                                format!("Actor {} held by invariant enforcement", actor_id),
+                                Convergence::Diverging,
+                                DriftSeverity::Critical,
+                                "arifFlow/invariants",
+                            ));
                         }
                     }
                 }
             }
-            if check.status == InvariantStatus::Warn {
-                if let Some(actor_start) = check.reason.find("Actor '") {
-                    let rest = &check.reason[actor_start + 7..];
-                    if let Some(actor_end) = rest.find('\'') {
-                        let actor_id = &rest[..actor_end];
-                        if let Some(state) = self.actors.get_mut(actor_id) {
-                            state.throttled = true;
-                            self.throttle_count += 1;
-                        }
+            if check.status == InvariantStatus::Warn
+                && let Some(actor_start) = check.reason.find("Actor '")
+            {
+                let rest = &check.reason[actor_start + 7..];
+                if let Some(actor_end) = rest.find('\'') {
+                    let actor_id = &rest[..actor_end];
+                    if let Some(state) = self.actors.get_mut(actor_id) {
+                        state.throttled = true;
+                        self.throttle_count += 1;
                     }
                 }
             }
@@ -784,7 +785,7 @@ mod tests {
         let mut enforcer = InvariantEnforcer::default();
 
         // Simulate a stuck actor: 5 executes, 0 verifies
-        for i in 0..6 {
+        for _i in 0..6 {
             let r = FlowReceipt::new_first(
                 "bad-actor",
                 "s1",

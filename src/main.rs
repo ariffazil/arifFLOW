@@ -1,3 +1,12 @@
+#![allow(
+    deprecated,
+    dead_code,
+    unused_imports,
+    unused_assignments,
+    unused_variables,
+    clippy::too_many_arguments,
+    clippy::lines_filter_map_ok
+)]
 // arifFlow — binary entry point for the governed parallel execution engine
 //
 // Two modes:
@@ -13,8 +22,8 @@
 // DITEMPA BUKAN DIBERI — arifOS = law, arifFlow = flow, A-FORGE = hands
 
 use arifflow::channel::ChannelMode;
-use arifflow::governance::invariants::{EnforcerAction, FqThresholds, InvariantEnforcer};
 use arifflow::governance::Vault999Sealer;
+use arifflow::governance::invariants::InvariantEnforcer;
 use arifflow::receipt::{FlowReceipt, ReceiptStore};
 use arifflow::scheduler::{FlowNode, SuperStepScheduler, TopologyKind, VerdictClass};
 use arifflow::vector::{Dimension, Epistemology, IndependenceMonitor, VectorStore};
@@ -562,10 +571,9 @@ fn handle_client(
                                         .create(true)
                                         .append(true)
                                         .open(persist_path)
+                                        && let Ok(line) = serde_json::to_string(&receipt)
                                     {
-                                        if let Ok(line) = serde_json::to_string(&receipt) {
-                                            let _ = writeln!(file, "{}", line);
-                                        }
+                                        let _ = writeln!(file, "{}", line);
                                     }
                                     // FIX 4 (audit 2026-08-10): chain-validation log line.
                                     eprintln!(
@@ -997,7 +1005,7 @@ fn daemon_mode() {
                 }
             }
         }
-        if store.len() > 0 {
+        if !store.is_empty() {
             eprintln!(
                 "[arifFlow] Loaded {} receipts from {} (most recent)",
                 store.len(),
@@ -1018,20 +1026,22 @@ fn daemon_mode() {
         "[arifFlow] Auto-enforcement timer: {}s interval",
         enf_interval
     );
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(enf_interval));
-        let mut enf = match enforcer_clone.lock() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(),
-        };
-        let report = enf.enforce();
-        // FIX 3 (audit 2026-08-10): single-line cycle log on every enforce.
-        eprintln!("[arifFlow] enforce cycle #{} complete", enf.cycle_count);
-        if report.blocking_count > 0 || report.warn_count > 0 {
-            eprintln!(
-                "[arifFlow] auto-enforce: status={:?} blocking={} warns={}",
-                report.overall_status, report.blocking_count, report.warn_count
-            );
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(enf_interval));
+            let mut enf = match enforcer_clone.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            let report = enf.enforce();
+            // FIX 3 (audit 2026-08-10): single-line cycle log on every enforce.
+            eprintln!("[arifFlow] enforce cycle #{} complete", enf.cycle_count);
+            if report.blocking_count > 0 || report.warn_count > 0 {
+                eprintln!(
+                    "[arifFlow] auto-enforce: status={:?} blocking={} warns={}",
+                    report.overall_status, report.blocking_count, report.warn_count
+                );
+            }
         }
     });
 
@@ -1054,7 +1064,10 @@ fn daemon_mode() {
         {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[arifFlow] Failed to create HTTP client for vector sync: {}", e);
+                eprintln!(
+                    "[arifFlow] Failed to create HTTP client for vector sync: {}",
+                    e
+                );
                 return;
             }
         };
@@ -1062,8 +1075,106 @@ fn daemon_mode() {
             std::thread::sleep(Duration::from_secs(sync_interval));
             let mut synced = false;
             let arifos_health_url = format!("{}/health", arifos_url.trim_end_matches('/'));
-            if let Ok(resp) = client.get(&arifos_health_url).send() {
-                if let Ok(json) = resp.json::<serde_json::Value>() {
+            if let Ok(resp) = client.get(&arifos_health_url).send()
+                && let Ok(json) = resp.json::<serde_json::Value>()
+            {
+                let mut vs = match vs_sync.lock() {
+                    Ok(g) => g,
+                    Err(p) => p.into_inner(),
+                };
+                let mut indep = match indep_sync.lock() {
+                    Ok(g) => g,
+                    Err(p) => p.into_inner(),
+                };
+                vs.tick();
+                if let Some(g_val) = json
+                    .pointer("/apex_scalars/G/value")
+                    .and_then(|v| v.as_f64())
+                {
+                    vs.ingest(
+                        Dimension::G,
+                        g_val,
+                        Epistemology::Witness,
+                        "forge_evaluate",
+                        "A-FORGE",
+                        true,
+                    );
+                }
+                if let Some(cd_val) = json
+                    .pointer("/apex_scalars/C_dark/value")
+                    .and_then(|v| v.as_f64())
+                {
+                    vs.ingest(
+                        Dimension::CDark,
+                        cd_val,
+                        Epistemology::Measure,
+                        "forge_evaluate",
+                        "A-FORGE",
+                        true,
+                    );
+                }
+                if let Some(w3_val) = json
+                    .pointer("/apex_scalars/W3/value")
+                    .and_then(|v| v.as_f64())
+                {
+                    vs.ingest(
+                        Dimension::W3,
+                        w3_val,
+                        Epistemology::Witness,
+                        "forge_witness",
+                        "A-FORGE",
+                        true,
+                    );
+                }
+                if let Some(j_val) = json
+                    .pointer("/apex_scalars/QDF/value")
+                    .and_then(|v| v.as_f64())
+                {
+                    vs.ingest(
+                        Dimension::J,
+                        j_val,
+                        Epistemology::Measure,
+                        "forge_apex_encode",
+                        "A-FORGE",
+                        true,
+                    );
+                }
+                if let Some(ds_val) = json
+                    .pointer("/thermodynamic/entropy_delta")
+                    .and_then(|v| v.as_f64())
+                {
+                    vs.ingest(
+                        Dimension::DS,
+                        ds_val,
+                        Epistemology::Measure,
+                        "entropy_sweep",
+                        "arifOS",
+                        true,
+                    );
+                }
+                if let Some(omega_val) = json
+                    .pointer("/runtime_floors/F7")
+                    .or_else(|| json.pointer("/runtime_floors_status/F7/score"))
+                    .and_then(|v| v.as_f64())
+                {
+                    vs.ingest(
+                        Dimension::Omega0,
+                        omega_val,
+                        Epistemology::Feel,
+                        "humility",
+                        "333-AGI",
+                        true,
+                    );
+                }
+                indep.record(&vs);
+                synced = true;
+            }
+
+            if !synced {
+                let aforge_health_url = format!("{}/health", aforge_url.trim_end_matches('/'));
+                if let Ok(resp) = client.get(&aforge_health_url).send()
+                    && let Ok(json) = resp.json::<serde_json::Value>()
+                {
                     let mut vs = match vs_sync.lock() {
                         Ok(g) => g,
                         Err(p) => p.into_inner(),
@@ -1073,68 +1184,59 @@ fn daemon_mode() {
                         Err(p) => p.into_inner(),
                     };
                     vs.tick();
-                    if let Some(g_val) = json.pointer("/apex_scalars/G/value").and_then(|v| v.as_f64()) {
-                        vs.ingest(Dimension::G, g_val, Epistemology::Witness, "forge_evaluate", "A-FORGE", true);
-                    }
-                    if let Some(cd_val) = json.pointer("/apex_scalars/C_dark/value").and_then(|v| v.as_f64()) {
-                        vs.ingest(Dimension::CDark, cd_val, Epistemology::Measure, "forge_evaluate", "A-FORGE", true);
-                    }
-                    if let Some(w3_val) = json.pointer("/apex_scalars/W3/value").and_then(|v| v.as_f64()) {
-                        vs.ingest(Dimension::W3, w3_val, Epistemology::Witness, "forge_witness", "A-FORGE", true);
-                    }
-                    if let Some(j_val) = json.pointer("/apex_scalars/QDF/value").and_then(|v| v.as_f64()) {
-                        vs.ingest(Dimension::J, j_val, Epistemology::Measure, "forge_apex_encode", "A-FORGE", true);
-                    }
-                    if let Some(ds_val) = json.pointer("/thermodynamic/entropy_delta").and_then(|v| v.as_f64()) {
-                        vs.ingest(Dimension::DS, ds_val, Epistemology::Measure, "entropy_sweep", "arifOS", true);
-                    }
-                    if let Some(omega_val) = json
-                        .pointer("/runtime_floors/F7")
-                        .or_else(|| json.pointer("/runtime_floors_status/F7/score"))
+                    if let Some(g_val) = json
+                        .pointer("/apex_scalars/G/value")
                         .and_then(|v| v.as_f64())
                     {
-                        vs.ingest(Dimension::Omega0, omega_val, Epistemology::Feel, "humility", "333-AGI", true);
+                        vs.ingest(
+                            Dimension::G,
+                            g_val,
+                            Epistemology::Witness,
+                            "forge_evaluate",
+                            "A-FORGE",
+                            true,
+                        );
+                    }
+                    if let Some(cd_val) = json
+                        .pointer("/apex_scalars/C_dark/value")
+                        .and_then(|v| v.as_f64())
+                    {
+                        vs.ingest(
+                            Dimension::CDark,
+                            cd_val,
+                            Epistemology::Measure,
+                            "forge_evaluate",
+                            "A-FORGE",
+                            true,
+                        );
+                    }
+                    if let Some(w3_val) = json
+                        .pointer("/apex_scalars/W3/value")
+                        .and_then(|v| v.as_f64())
+                    {
+                        vs.ingest(
+                            Dimension::W3,
+                            w3_val,
+                            Epistemology::Witness,
+                            "forge_witness",
+                            "A-FORGE",
+                            true,
+                        );
                     }
                     indep.record(&vs);
-                    synced = true;
-                }
-            }
-
-            if !synced {
-                let aforge_health_url = format!("{}/health", aforge_url.trim_end_matches('/'));
-                if let Ok(resp) = client.get(&aforge_health_url).send() {
-                    if let Ok(json) = resp.json::<serde_json::Value>() {
-                        let mut vs = match vs_sync.lock() {
-                            Ok(g) => g,
-                            Err(p) => p.into_inner(),
-                        };
-                        let mut indep = match indep_sync.lock() {
-                            Ok(g) => g,
-                            Err(p) => p.into_inner(),
-                        };
-                        vs.tick();
-                        if let Some(g_val) = json.pointer("/apex_scalars/G/value").and_then(|v| v.as_f64()) {
-                            vs.ingest(Dimension::G, g_val, Epistemology::Witness, "forge_evaluate", "A-FORGE", true);
-                        }
-                        if let Some(cd_val) = json.pointer("/apex_scalars/C_dark/value").and_then(|v| v.as_f64()) {
-                            vs.ingest(Dimension::CDark, cd_val, Epistemology::Measure, "forge_evaluate", "A-FORGE", true);
-                        }
-                        if let Some(w3_val) = json.pointer("/apex_scalars/W3/value").and_then(|v| v.as_f64()) {
-                            vs.ingest(Dimension::W3, w3_val, Epistemology::Witness, "forge_witness", "A-FORGE", true);
-                        }
-                        indep.record(&vs);
-                    }
                 }
             }
         }
     });
 
-
     match TcpListener::bind(&addr) {
         Ok(listener) => {
             eprintln!("[arifFlow] Daemon mode — listening on {}", addr);
             eprintln!("[arifFlow] Health:  curl http://127.0.0.1:{}/health", port);
-            eprintln!("[arifFlow] Check:  curl -X POST http://127.0.0.1:{}/check -d '{{\"actor_id\":\"test\"}}'", port);
+            eprintln!(
+                "[arifFlow] Check:  curl -X POST http://127.0.0.1:{}/check -d '{{\"actor_id\":\"test\"}}'",
+                port
+            );
             eprintln!(
                 "[arifFlow] Ingest: curl -X POST http://127.0.0.1:{}/ingest -d '{{...}}'",
                 port

@@ -44,7 +44,7 @@ impl PipelineTopology {
     }
 
     pub fn should_review(&self) -> bool {
-        self.iteration > 0 && self.iteration % self.config.review_every_n == 0
+        self.iteration > 0 && self.iteration.is_multiple_of(self.config.review_every_n)
     }
 
     pub fn advance_iteration(&mut self) {

@@ -11,7 +11,7 @@
 
 use crate::merkle::MerkleRoot;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -95,12 +95,18 @@ fn call_arifos_tool(tool: &str, args: &Value) -> Result<Value, String> {
     resp_json
         .get("result")
         .ok_or_else(|| "arifOS response missing 'result' field".into())
-        .map(|r| r.clone())
+        .cloned()
 }
 
 // ── Bridge implementation ───────────────────────────────────────────
 
 pub struct ArifOSGovernanceBridge;
+
+impl Default for ArifOSGovernanceBridge {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ArifOSGovernanceBridge {
     pub fn new() -> Self {
@@ -150,7 +156,7 @@ impl ArifOSGovernanceBridge {
             actor_id: actor_id.to_string(),
             constitutional_chain_id: chain_id,
             scope: vec![authority],
-            expires_at_ns: now_ns + 3600_000_000_000, // 1 hour default
+            expires_at_ns: now_ns + 3_600_000_000_000, // 1 hour default
         })
     }
 
@@ -201,11 +207,7 @@ impl ArifOSGovernanceBridge {
                 _ => "HOLD",
             }
         } else if let Some(hold) = result.get("hold_required").and_then(|v| v.as_bool()) {
-            if hold {
-                "HOLD"
-            } else {
-                "SEAL"
-            }
+            if hold { "HOLD" } else { "SEAL" }
         } else {
             // If arif_judge responds but no clear verdict, default HOLD
             "HOLD"

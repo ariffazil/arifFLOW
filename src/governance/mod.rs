@@ -28,4 +28,3 @@ pub use tri_witness::{
     WitnessMergeResult, resolve_consensus_with_tiebreaker,
 };
 pub use vault999::Vault999Sealer;
-

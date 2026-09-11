@@ -99,7 +99,7 @@ impl MerkleTree {
         }
         let mut current: Vec<MerkleRoot> = leaves.to_vec();
         while current.len() > 1 {
-            let mut next = Vec::with_capacity((current.len() + 1) / 2);
+            let mut next = Vec::with_capacity(current.len().div_ceil(2));
             for chunk in current.chunks(2) {
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(b"ariflow_merkle_node");

@@ -150,7 +150,7 @@ pub fn band_normalize(dim: Dimension, raw: f64) -> f64 {
         Dimension::Omega0 => {
             if raw <= 0.0 || raw > 0.10 {
                 0.0
-            } else if raw >= 0.03 && raw <= 0.05 {
+            } else if (0.03..=0.05).contains(&raw) {
                 1.0
             } else if raw < 0.03 {
                 raw / 0.03
@@ -499,10 +499,11 @@ impl VectorStore {
     /// all 7 dimensions are wired, the existing constellation logic applies.
     pub fn constellation(&self) -> String {
         // Unanchored FEEL — highest priority (existing logic, unchanged).
-        if let Some(st) = self.dims.get(&Dimension::Omega0) {
-            if st.epistemology == Epistemology::Feel && !self.omega_anchored() {
-                return "FEEL_UNANCHORED".into();
-            }
+        if let Some(st) = self.dims.get(&Dimension::Omega0)
+            && st.epistemology == Epistemology::Feel
+            && !self.omega_anchored()
+        {
+            return "FEEL_UNANCHORED".into();
         }
 
         // Reality lag — any WIRED dimension STALE or DEAD.
@@ -590,7 +591,7 @@ impl VectorStore {
             })
             .map(|(_, s)| s.last_update_cycle)
             .max()
-            .map_or(false, |anchor_cycle| {
+            .is_some_and(|anchor_cycle| {
                 self.cycle.saturating_sub(anchor_cycle) <= self.feel_anchor_n
             })
     }
@@ -1072,19 +1073,56 @@ mod tests {
             vs2.tick();
             let v = 0.4 + (i as f64) * 0.05;
             vs2.ingest(Dimension::G, v, Epistemology::Witness, "e", "A-FORGE", true);
-            vs2.ingest(Dimension::W3, v, Epistemology::Witness, "w", "A-FORGE", true);
-            vs2.ingest(Dimension::J, 0.3, Epistemology::Measure, "a", "A-FORGE", true);
-            vs2.ingest(Dimension::CDark, 0.2, Epistemology::Measure, "e", "A-FORGE", true);
-            vs2.ingest(Dimension::DS, -0.05, Epistemology::Measure, "e", "arifFlow", true);
-            vs2.ingest(Dimension::Omega0, 0.04, Epistemology::Feel, "h", "333-AGI", true);
+            vs2.ingest(
+                Dimension::W3,
+                v,
+                Epistemology::Witness,
+                "w",
+                "A-FORGE",
+                true,
+            );
+            vs2.ingest(
+                Dimension::J,
+                0.3,
+                Epistemology::Measure,
+                "a",
+                "A-FORGE",
+                true,
+            );
+            vs2.ingest(
+                Dimension::CDark,
+                0.2,
+                Epistemology::Measure,
+                "e",
+                "A-FORGE",
+                true,
+            );
+            vs2.ingest(
+                Dimension::DS,
+                -0.05,
+                Epistemology::Measure,
+                "e",
+                "arifFlow",
+                true,
+            );
+            vs2.ingest(
+                Dimension::Omega0,
+                0.04,
+                Epistemology::Feel,
+                "h",
+                "333-AGI",
+                true,
+            );
             vs2.inject_fq(Some(1.0));
             mon2.record(&vs2);
         }
         let pairs2 = mon2.collapse_pairs();
         assert!(
             pairs2.iter().any(|(a, b, r)| {
-                matches!((*a, *b), (Dimension::G, Dimension::W3) | (Dimension::W3, Dimension::G))
-                    && r.abs() > 0.85
+                matches!(
+                    (*a, *b),
+                    (Dimension::G, Dimension::W3) | (Dimension::W3, Dimension::G)
+                ) && r.abs() > 0.85
             }),
             "lockstep G/W3 raw motion should collapse: {:?}",
             pairs2
@@ -1169,11 +1207,7 @@ mod tests {
         vs.tick();
         vs.inject_fq(Some(0.05)); // BURNING
         let c = vs.constellation();
-        assert!(
-            c.starts_with("PARTIAL_WIRING:"),
-            "got {}",
-            c
-        );
+        assert!(c.starts_with("PARTIAL_WIRING:"), "got {}", c);
         assert!(c.contains("SIMULATION"), "got {}", c);
     }
 
@@ -1267,12 +1301,54 @@ mod tests {
         let mut vs = VectorStore::new();
         vs.tick();
         vs.inject_fq(Some(1.0));
-        vs.ingest(Dimension::G, 0.9, Epistemology::Witness, "e", "A-FORGE", true);
-        vs.ingest(Dimension::J, 0.3, Epistemology::Measure, "a", "A-FORGE", true);
-        vs.ingest(Dimension::W3, 0.85, Epistemology::Witness, "w", "A-FORGE", true);
-        vs.ingest(Dimension::CDark, 0.2, Epistemology::Measure, "e", "A-FORGE", true);
-        vs.ingest(Dimension::DS, -0.05, Epistemology::Measure, "e", "arifFlow", true);
-        vs.ingest(Dimension::Omega0, 0.04, Epistemology::Feel, "h", "333-AGI", true);
+        vs.ingest(
+            Dimension::G,
+            0.9,
+            Epistemology::Witness,
+            "e",
+            "A-FORGE",
+            true,
+        );
+        vs.ingest(
+            Dimension::J,
+            0.3,
+            Epistemology::Measure,
+            "a",
+            "A-FORGE",
+            true,
+        );
+        vs.ingest(
+            Dimension::W3,
+            0.85,
+            Epistemology::Witness,
+            "w",
+            "A-FORGE",
+            true,
+        );
+        vs.ingest(
+            Dimension::CDark,
+            0.2,
+            Epistemology::Measure,
+            "e",
+            "A-FORGE",
+            true,
+        );
+        vs.ingest(
+            Dimension::DS,
+            -0.05,
+            Epistemology::Measure,
+            "e",
+            "arifFlow",
+            true,
+        );
+        vs.ingest(
+            Dimension::Omega0,
+            0.04,
+            Epistemology::Feel,
+            "h",
+            "333-AGI",
+            true,
+        );
         assert_eq!(vs.wired_count(), 7);
         assert_eq!(vs.constellation(), "FLOWING");
     }

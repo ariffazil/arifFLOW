@@ -391,7 +391,7 @@ impl KabarkanFqInstrument {
         }
 
         // ── Periodic full snapshot ──
-        if self.sample_counter % self.snapshot_interval == 0 {
+        if self.sample_counter.is_multiple_of(self.snapshot_interval) {
             let snapshot =
                 FqSnapshotEvent::new(&current_fq, self.previous_fq, &self.session_id, step_number);
             let snap_json = serde_json::to_value(&snapshot).unwrap_or_default();
@@ -564,9 +564,11 @@ mod tests {
             apex_block: None,
         };
         let event = FqCoolingCorrelationEvent::new(&fq, 2, 1, 0, FqTrend::Rising, "test", 42);
-        assert!(event
-            .correlation_signal
-            .contains("FQ_RISING_DURING_COOLING"));
+        assert!(
+            event
+                .correlation_signal
+                .contains("FQ_RISING_DURING_COOLING")
+        );
     }
 
     #[test]
@@ -583,9 +585,11 @@ mod tests {
             apex_block: None,
         };
         let event = FqCoolingCorrelationEvent::new(&fq, 0, 0, 0, FqTrend::Falling, "test", 42);
-        assert!(event
-            .correlation_signal
-            .contains("FQ_FALLING_DURING_EXECUTION"));
+        assert!(
+            event
+                .correlation_signal
+                .contains("FQ_FALLING_DURING_EXECUTION")
+        );
     }
 
     #[test]

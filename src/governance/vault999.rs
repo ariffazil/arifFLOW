@@ -37,6 +37,12 @@ pub struct Vault999Sealer {
     prev_hash: [u8; 32],
 }
 
+impl Default for Vault999Sealer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Vault999Sealer {
     pub fn new() -> Self {
         Self {
@@ -53,9 +59,9 @@ impl Vault999Sealer {
         // This makes every seal cryptographically dependent on its predecessor.
         // Tampering with any prior seal invalidates all subsequent hashes.
         let mut hasher = Sha3_256::new();
-        hasher.update(&prev);
-        hasher.update(&position.to_be_bytes());
-        hasher.update(&checkpoint_hash);
+        hasher.update(prev);
+        hasher.update(position.to_be_bytes());
+        hasher.update(checkpoint_hash);
         let chain_entry: [u8; 32] = hasher.finalize().into();
 
         self.chain_position += 1;
@@ -132,9 +138,9 @@ mod tests {
 
         // Verify r2's prev_hash matches r1's chain_entry_hash
         let mut hasher = Sha3_256::new();
-        hasher.update(&r2.prev_hash);
-        hasher.update(&r2.chain_position.to_be_bytes());
-        hasher.update(&[2u8; 32]); // original checkpoint data
+        hasher.update(r2.prev_hash);
+        hasher.update(r2.chain_position.to_be_bytes());
+        hasher.update([2u8; 32]); // original checkpoint data
         let recomputed: [u8; 32] = hasher.finalize().into();
 
         assert_eq!(recomputed, r2.chain_entry_hash);

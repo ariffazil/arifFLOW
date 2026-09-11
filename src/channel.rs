@@ -129,10 +129,10 @@ impl<T: Serialize + Clone> Channel<T> {
         if self.closed {
             return Err(ChannelError::Closed(self.id.clone()));
         }
-        if let ChannelMode::Bounded(cap) = self.mode {
-            if self.buffer.len() >= cap {
-                return Err(ChannelError::Full(self.id.clone(), cap));
-            }
+        if let ChannelMode::Bounded(cap) = self.mode
+            && self.buffer.len() >= cap
+        {
+            return Err(ChannelError::Full(self.id.clone(), cap));
         }
         let epoch = self.write_count;
         self.write_count += 1;

@@ -32,6 +32,12 @@ pub struct AForgeExecutorBridge {
     execute_fn: Option<extern "C" fn(*const c_char) -> *mut c_char>,
 }
 
+impl Default for AForgeExecutorBridge {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AForgeExecutorBridge {
     pub fn new() -> Self {
         Self { execute_fn: None }

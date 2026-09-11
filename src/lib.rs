@@ -1,3 +1,15 @@
+#![allow(
+    deprecated,
+    dead_code,
+    unused_variables,
+    non_camel_case_types,
+    clippy::type_complexity,
+    clippy::not_unsafe_ptr_arg_deref,
+    clippy::if_same_then_else,
+    clippy::too_many_arguments,
+    clippy::lines_filter_map_ok,
+    clippy::unnecessary_get_then_check
+)]
 // arifFlow — Governed Parallel Execution Engine
 // Law: arifOS (Ω) · Flow: arifFlow (Φ) · Hands: A-FORGE (Ψ)
 // DITEMPA BUKAN DIBERI

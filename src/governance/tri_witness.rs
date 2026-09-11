@@ -286,7 +286,11 @@ pub fn resolve_consensus_with_tiebreaker(
             w3_score,
             verdict,
             tiebreaker_applied: false,
-            selected_agent: if hold { None } else { candidates.first().map(|c| c.agent_id.clone()) },
+            selected_agent: if hold {
+                None
+            } else {
+                candidates.first().map(|c| c.agent_id.clone())
+            },
             hold_enforced: hold,
             reason: if hold {
                 format!(
@@ -321,7 +325,11 @@ pub fn resolve_consensus_with_tiebreaker(
             hold_enforced: false,
             reason: format!(
                 "Auto-tiebreaker selected '{}' (|FQ {:.3} - 1.0| = {:.3}) under non-critical risk ({}) with W³={:.3}",
-                best.agent_id, best.fq, min_dist, risk_class.code(), w3_score
+                best.agent_id,
+                best.fq,
+                min_dist,
+                risk_class.code(),
+                w3_score
             ),
         }
     } else {
@@ -380,7 +388,7 @@ mod tests {
         );
         let score = tw.w3_score();
         assert!(
-            score >= 0.50 && score < 0.75,
+            (0.50..0.75).contains(&score),
             "Weak should be [0.50, 0.75), got {:.3}",
             score
         );
@@ -472,18 +480,26 @@ mod tests {
             &candidates,
         );
 
-        assert!(res.tiebreaker_applied, "Tiebreaker should be applied when W³ < 0.80 on non-critical task");
-        assert!(!res.hold_enforced, "HOLD should NOT be enforced for non-critical task with tiebreaker");
-        assert_eq!(res.selected_agent.as_deref(), Some("agent-b"), "Should select agent with FQ nearest to 1.0");
+        assert!(
+            res.tiebreaker_applied,
+            "Tiebreaker should be applied when W³ < 0.80 on non-critical task"
+        );
+        assert!(
+            !res.hold_enforced,
+            "HOLD should NOT be enforced for non-critical task with tiebreaker"
+        );
+        assert_eq!(
+            res.selected_agent.as_deref(),
+            Some("agent-b"),
+            "Should select agent with FQ nearest to 1.0"
+        );
     }
 
     #[test]
     fn test_tiebreaker_reserved_hold_for_critical_t3() {
         use crate::receipt::RiskClass;
 
-        let candidates = vec![
-            AgentCandidate::new("agent-b", 1.02),
-        ];
+        let candidates = vec![AgentCandidate::new("agent-b", 1.02)];
 
         // Critical irreversible mutation (T3Irreversible) with W³ = 0.72 (< 0.80)
         let res = resolve_consensus_with_tiebreaker(
@@ -493,19 +509,29 @@ mod tests {
             &candidates,
         );
 
-        assert!(!res.tiebreaker_applied, "Tiebreaker should NOT bypass critical mutation requirement");
-        assert!(res.hold_enforced, "888_HOLD MUST be enforced on critical mutation with W³ < 0.80");
-        assert_eq!(res.selected_agent, None, "No agent should be auto-selected under 888_HOLD");
-        assert!(res.reason.starts_with("888_HOLD"), "Reason must clearly cite 888_HOLD");
+        assert!(
+            !res.tiebreaker_applied,
+            "Tiebreaker should NOT bypass critical mutation requirement"
+        );
+        assert!(
+            res.hold_enforced,
+            "888_HOLD MUST be enforced on critical mutation with W³ < 0.80"
+        );
+        assert_eq!(
+            res.selected_agent, None,
+            "No agent should be auto-selected under 888_HOLD"
+        );
+        assert!(
+            res.reason.starts_with("888_HOLD"),
+            "Reason must clearly cite 888_HOLD"
+        );
     }
 
     #[test]
     fn test_consensus_cleared_when_w3_ge_80() {
         use crate::receipt::RiskClass;
 
-        let candidates = vec![
-            AgentCandidate::new("primary-agent", 1.0),
-        ];
+        let candidates = vec![AgentCandidate::new("primary-agent", 1.0)];
 
         // Critical task with high consensus W³ = 0.92 (>= 0.80)
         let res = resolve_consensus_with_tiebreaker(
@@ -520,4 +546,3 @@ mod tests {
         assert_eq!(res.selected_agent.as_deref(), Some("primary-agent"));
     }
 }
-
