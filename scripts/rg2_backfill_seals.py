@@ -92,17 +92,14 @@ def main():
                 fout.write(json.dumps(seal) + "\n")
                 continue
 
-            # Compute body_hash deterministically.
-            # Note: We re-hash using the same algorithm as Rust's FlowReceipt::hash().
-            # For backfill purposes, we use a stable placeholder hash derived from the
-            # receipt_id; the real body_hash can be recomputed when RG-2 reads the
-            # sealed file alongside the body store.
-            #
-            # For RG-2 reconstruction, the body_hash field must match what the
-            # resolver uses. The resolver accepts receipt_id OR body_hash. We write
-            # body_hash here as a deterministic reference that matches the receipt_id
-            # so the resolver can use either.
-            body_hash = seal.get("body_hash") or body.get("receipt_id")  # fallback
+            # body_hash: carried through ONLY when the seal entry itself has
+            # one (post-enrichment seal format). For legacy entries the true
+            # body hash is the Rust-side SHA3-256 over the serialized receipt
+            # — NOT computable in Python before JCS parity lands (three-names
+            # rule, spec/RG2_JCS_HASH_CONTRACT_v1.md, forge P4-JCS). We write
+            # null rather than a fake receipt_id fallback; the resolver joins
+            # by receipt_id regardless.
+            body_hash = seal.get("body_hash")  # None for legacy entries — honest
             parent_hashes = body.get("parent_receipt_ids", [])
             genesis_anchor = body.get("genesis_anchor")
             routed_organ = body.get("routed_organ")
