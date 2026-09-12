@@ -358,8 +358,7 @@ impl ControlledCycle {
     pub fn start_round(&mut self, fq_before: Option<f64>) -> Result<u32, CycleError> {
         if self.complete {
             return Err(CycleError::AlreadyComplete(
-                self.exit_condition
-                    .unwrap_or(CycleExitCondition::Cancelled),
+                self.exit_condition.unwrap_or(CycleExitCondition::Cancelled),
             ));
         }
 
@@ -378,8 +377,7 @@ impl ControlledCycle {
     ) -> Result<(), CycleError> {
         if self.complete {
             return Err(CycleError::AlreadyComplete(
-                self.exit_condition
-                    .unwrap_or(CycleExitCondition::Cancelled),
+                self.exit_condition.unwrap_or(CycleExitCondition::Cancelled),
             ));
         }
 
@@ -732,12 +730,8 @@ mod tests {
         assert!(summary.needs_escalation());
         // MaxRoundsExceeded → Judge888 (hold for evaluation), not SovereignF13.
         // Fold-1: 888 evaluates; F13 only authorizes irreversible transitions.
-        assert_eq!(
-            summary.escalation_target,
-            EscalationTarget::Judge888
-        );
+        assert_eq!(summary.escalation_target, EscalationTarget::Judge888);
         assert!(summary.requires_888_hold());
-
     }
 
     #[test]
@@ -747,10 +741,7 @@ mod tests {
         cycle.cancel();
 
         assert!(cycle.is_complete());
-        assert_eq!(
-            cycle.exit_condition(),
-            Some(CycleExitCondition::Cancelled)
-        );
+        assert_eq!(cycle.exit_condition(), Some(CycleExitCondition::Cancelled));
     }
 
     #[test]
@@ -787,7 +778,9 @@ mod tests {
 
         // Huge cost but budget is 0 (unlimited)
         let r = cycle.start_round(Some(1.0)).unwrap();
-        cycle.end_round(r, u64::MAX / 2, Some(1.005), false).unwrap();
+        cycle
+            .end_round(r, u64::MAX / 2, Some(1.005), false)
+            .unwrap();
 
         // Should NOT be budget-exhausted (budget=0 means unlimited)
         assert!(!cycle.is_complete());
@@ -833,7 +826,6 @@ mod tests {
         // SovereignF13 does NOT produce an 888_HOLD.
         assert!(!EscalationTarget::SovereignF13.requires_888_hold());
     }
-
 
     #[test]
     fn test_budget_exhaustion_routes_to_budget_owner() {
@@ -922,7 +914,9 @@ mod tests {
         let mut cycle = ControlledCycle::new(config);
 
         for expected in 0..3u32 {
-            let r = cycle.start_round(Some(1.0 + expected as f64 * 0.1)).unwrap();
+            let r = cycle
+                .start_round(Some(1.0 + expected as f64 * 0.1))
+                .unwrap();
             assert_eq!(r, expected);
             cycle
                 .end_round(r, 100, Some(1.0 + (expected + 1) as f64 * 0.1), false)
@@ -974,7 +968,8 @@ mod tests {
 
         for i in 0..3u32 {
             let r = cycle.start_round(Some(1.0 + i as f64)).unwrap();
-            cycle.end_round(r, 100 * (i + 1) as u64, Some(1.0 + i as f64), false)
+            cycle
+                .end_round(r, 100 * (i + 1) as u64, Some(1.0 + i as f64), false)
                 .unwrap();
         }
 
@@ -1043,7 +1038,10 @@ mod tests {
         assert_eq!(EscalationTarget::None.to_string(), "NONE");
         assert_eq!(EscalationTarget::Operator.to_string(), "OPERATOR");
         assert_eq!(EscalationTarget::BudgetOwner.to_string(), "BUDGET_OWNER");
-        assert_eq!(EscalationTarget::EvidenceOwner.to_string(), "EVIDENCE_OWNER");
+        assert_eq!(
+            EscalationTarget::EvidenceOwner.to_string(),
+            "EVIDENCE_OWNER"
+        );
         assert_eq!(
             EscalationTarget::IndependentVerifier.to_string(),
             "INDEPENDENT_VERIFIER"
@@ -1094,4 +1092,3 @@ mod tests {
         }
     }
 }
-

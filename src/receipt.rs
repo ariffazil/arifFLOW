@@ -1662,7 +1662,11 @@ mod tests {
 
     #[test]
     fn test_parent_receipt_ids_with_parents_bulk() {
-        let hashes = vec!["hash_a".to_string(), "hash_b".to_string(), "hash_c".to_string()];
+        let hashes = vec![
+            "hash_a".to_string(),
+            "hash_b".to_string(),
+            "hash_c".to_string(),
+        ];
         let receipt = FlowReceipt::new_first(
             "agent",
             "s1",
@@ -1719,19 +1723,34 @@ mod tests {
 
         // Fan-out: 3 parallel lanes
         let a = FlowReceipt::new_chained(
-            &input, "agent-a", "s1", StepType::Execute,
-            EpistemicLabel::Observation, 50,
-        ).with_topology("fan-out:research", 0);
+            &input,
+            "agent-a",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            50,
+        )
+        .with_topology("fan-out:research", 0);
 
         let b = FlowReceipt::new_chained(
-            &input, "agent-b", "s1", StepType::Execute,
-            EpistemicLabel::Observation, 75,
-        ).with_topology("fan-out:research", 1);
+            &input,
+            "agent-b",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            75,
+        )
+        .with_topology("fan-out:research", 1);
 
         let c = FlowReceipt::new_chained(
-            &input, "agent-c", "s1", StepType::Execute,
-            EpistemicLabel::Observation, 60,
-        ).with_topology("fan-out:research", 2);
+            &input,
+            "agent-c",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            60,
+        )
+        .with_topology("fan-out:research", 2);
 
         // Merge point: 3 parents from the fan-out lanes
         let merge = FlowReceipt::new_first(
@@ -1777,7 +1796,11 @@ mod tests {
     #[test]
     fn test_genesis_anchor_none_by_default() {
         let r = FlowReceipt::new_first(
-            "agent", "s1", StepType::Execute, EpistemicLabel::Observation, 100,
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
         );
         assert!(r.genesis_anchor.is_none());
     }
@@ -1785,7 +1808,11 @@ mod tests {
     #[test]
     fn test_genesis_anchor_builder() {
         let r = FlowReceipt::new_first(
-            "agent", "s1", StepType::Execute, EpistemicLabel::Observation, 100,
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
         )
         .with_genesis_anchor("RCP-000");
         assert_eq!(r.genesis_anchor.as_deref(), Some("RCP-000"));
@@ -1794,7 +1821,11 @@ mod tests {
     #[test]
     fn test_genesis_anchor_serializes_optional() {
         let r = FlowReceipt::new_first(
-            "agent", "s1", StepType::Execute, EpistemicLabel::Observation, 100,
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
         );
         let json = serde_json::to_string(&r).unwrap();
         assert!(!json.contains("genesis_anchor"));
@@ -1825,7 +1856,11 @@ mod tests {
     fn test_genesis_receipt_pattern() {
         // Genesis Receipt: root of the Reality Graph
         let genesis = FlowReceipt::new_first(
-            "arifOS", "genesis-session", StepType::Seal, EpistemicLabel::Seal, 0,
+            "arifOS",
+            "genesis-session",
+            StepType::Seal,
+            EpistemicLabel::Seal,
+            0,
         )
         .with_genesis_anchor("RCP-000")
         .with_floor_verdict(FloorVerdict::Pass);
@@ -1836,8 +1871,12 @@ mod tests {
 
         // First action chains from genesis
         let first_action = FlowReceipt::new_chained(
-            &genesis, "333-AGI", "genesis-session",
-            StepType::Execute, EpistemicLabel::Observation, 500,
+            &genesis,
+            "333-AGI",
+            "genesis-session",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            500,
         )
         .with_routed_organ("geox")
         .with_parent(genesis.hash());
@@ -1859,26 +1898,42 @@ mod tests {
     fn test_genesis_bridge_full_lineage() {
         // Genesis → Observe → Interpret → Verify
         let genesis = FlowReceipt::new_first(
-            "arifOS", "bridge-test", StepType::Seal, EpistemicLabel::Seal, 0,
+            "arifOS",
+            "bridge-test",
+            StepType::Seal,
+            EpistemicLabel::Seal,
+            0,
         )
         .with_genesis_anchor("RCP-000");
 
         let observe = FlowReceipt::new_chained(
-            &genesis, "333-AGI", "bridge-test",
-            StepType::Execute, EpistemicLabel::Observation, 100,
+            &genesis,
+            "333-AGI",
+            "bridge-test",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
         )
         .with_routed_organ("GEOX")
         .with_parent(genesis.hash());
 
         let interpret = FlowReceipt::new_chained(
-            &observe, "333-AGI", "bridge-test",
-            StepType::Execute, EpistemicLabel::Interpretation, 200,
+            &observe,
+            "333-AGI",
+            "bridge-test",
+            StepType::Execute,
+            EpistemicLabel::Interpretation,
+            200,
         )
         .with_parent(observe.hash());
 
         let verify = FlowReceipt::new_chained(
-            &interpret, "555-ASI", "bridge-test",
-            StepType::Verify, EpistemicLabel::Derivation, 150,
+            &interpret,
+            "555-ASI",
+            "bridge-test",
+            StepType::Verify,
+            EpistemicLabel::Derivation,
+            150,
         )
         .with_parent(interpret.hash());
 
