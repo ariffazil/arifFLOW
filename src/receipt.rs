@@ -514,6 +514,17 @@ pub struct FlowReceipt {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parent_receipt_ids: Vec<String>,
 
+    // ── Genesis Bridge (RG-3, 2026-09-12) ──
+    /// Constitutional anchor reference. When set, this receipt bridges the
+    /// Historical Lineage (receipt DAG) to the Constitutional Origin (RCP-000,
+    /// /000, F13 canon). The Genesis Receipt is the root of the Reality Graph
+    /// — it has `parent_receipt_ids = []` and `genesis_anchor = Some(...)`.
+    ///
+    /// Without this field: "what happened?"
+    /// With this field: "what happened AND why it has authority to exist."
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genesis_anchor: Option<String>,
+
     // ── Cost ──
     /// Wall-clock duration of this step in nanoseconds
     pub cost_ns: u64,
@@ -591,6 +602,7 @@ impl FlowReceipt {
             step_number: 0,
             routed_organ: None,
             parent_receipt_ids: Vec::new(),
+            genesis_anchor: None,
             cost_ns,
             preceding_verify_cost_ns: None,
             epistemic_label,
@@ -635,6 +647,7 @@ impl FlowReceipt {
             step_number: previous.step_number + 1,
             routed_organ: None,
             parent_receipt_ids: Vec::new(),
+            genesis_anchor: None,
             cost_ns,
             preceding_verify_cost_ns: None,
             epistemic_label,
@@ -740,6 +753,16 @@ impl FlowReceipt {
     /// Set all DAG parent edges at once.
     pub fn with_parents(mut self, hashes: Vec<String>) -> Self {
         self.parent_receipt_ids = hashes;
+        self
+    }
+
+    /// Set the genesis anchor — bridges this receipt to a constitutional origin.
+    /// Use on the first receipt in a session/graph to establish the Genesis Bridge:
+    /// constitutional ancestry ↔ historical ancestry.
+    ///
+    /// Example: `.with_genesis_anchor("RCP-000")` or `.with_genesis_anchor("/000")`
+    pub fn with_genesis_anchor(mut self, anchor: impl Into<String>) -> Self {
+        self.genesis_anchor = Some(anchor.into());
         self
     }
 }
@@ -1747,6 +1770,126 @@ mod tests {
         let deserialized: FlowReceipt = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.routed_organ.as_deref(), Some("geox"));
         assert_eq!(deserialized.parent_receipt_ids, vec!["prev_hash_123"]);
+    }
+
+    // ── Genesis Bridge tests (RG-3, 2026-09-12) ──────────────────────────
+
+    #[test]
+    fn test_genesis_anchor_none_by_default() {
+        let r = FlowReceipt::new_first(
+            "agent", "s1", StepType::Execute, EpistemicLabel::Observation, 100,
+        );
+        assert!(r.genesis_anchor.is_none());
+    }
+
+    #[test]
+    fn test_genesis_anchor_builder() {
+        let r = FlowReceipt::new_first(
+            "agent", "s1", StepType::Execute, EpistemicLabel::Observation, 100,
+        )
+        .with_genesis_anchor("RCP-000");
+        assert_eq!(r.genesis_anchor.as_deref(), Some("RCP-000"));
+    }
+
+    #[test]
+    fn test_genesis_anchor_serializes_optional() {
+        let r = FlowReceipt::new_first(
+            "agent", "s1", StepType::Execute, EpistemicLabel::Observation, 100,
+        );
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("genesis_anchor"));
+
+        let anchored = r.with_genesis_anchor("/000");
+        let json2 = serde_json::to_string(&anchored).unwrap();
+        assert!(json2.contains("genesis_anchor"));
+        assert!(json2.contains("/000"));
+    }
+
+    #[test]
+    fn test_genesis_anchor_backward_compat() {
+        let json = r#"{
+            "receipt_id": "00000000-0000-0000-0000-000000000001",
+            "previous_receipt_hash": null,
+            "created_at": "2026-09-12T00:00:00Z",
+            "actor_id": "agent", "session_id": "s1",
+            "step_type": "Execute", "cost_ns": 100,
+            "epistemic_label": "Observation", "floor_verdict": "Pass",
+            "cooling_decision": "None", "step_number": 0,
+            "risk_class": "T0Observe"
+        }"#;
+        let r: FlowReceipt = serde_json::from_str(json).unwrap();
+        assert!(r.genesis_anchor.is_none());
+    }
+
+    #[test]
+    fn test_genesis_receipt_pattern() {
+        // Genesis Receipt: root of the Reality Graph
+        let genesis = FlowReceipt::new_first(
+            "arifOS", "genesis-session", StepType::Seal, EpistemicLabel::Seal, 0,
+        )
+        .with_genesis_anchor("RCP-000")
+        .with_floor_verdict(FloorVerdict::Pass);
+
+        assert!(genesis.parent_receipt_ids.is_empty());
+        assert!(genesis.previous_receipt_hash.is_none());
+        assert_eq!(genesis.genesis_anchor.as_deref(), Some("RCP-000"));
+
+        // First action chains from genesis
+        let first_action = FlowReceipt::new_chained(
+            &genesis, "333-AGI", "genesis-session",
+            StepType::Execute, EpistemicLabel::Observation, 500,
+        )
+        .with_routed_organ("geox")
+        .with_parent(genesis.hash());
+
+        assert_eq!(first_action.parent_receipt_ids.len(), 1);
+        assert!(first_action.genesis_anchor.is_none());
+
+        // Serialize genesis — genesis_anchor appears
+        let json = serde_json::to_string(&genesis).unwrap();
+        assert!(json.contains("genesis_anchor"));
+        assert!(json.contains("RCP-000"));
+
+        // Serialize first action — genesis_anchor absent
+        let json2 = serde_json::to_string(&first_action).unwrap();
+        assert!(!json2.contains("genesis_anchor"));
+    }
+
+    #[test]
+    fn test_genesis_bridge_full_lineage() {
+        // Genesis → Observe → Interpret → Verify
+        let genesis = FlowReceipt::new_first(
+            "arifOS", "bridge-test", StepType::Seal, EpistemicLabel::Seal, 0,
+        )
+        .with_genesis_anchor("RCP-000");
+
+        let observe = FlowReceipt::new_chained(
+            &genesis, "333-AGI", "bridge-test",
+            StepType::Execute, EpistemicLabel::Observation, 100,
+        )
+        .with_routed_organ("GEOX")
+        .with_parent(genesis.hash());
+
+        let interpret = FlowReceipt::new_chained(
+            &observe, "333-AGI", "bridge-test",
+            StepType::Execute, EpistemicLabel::Interpretation, 200,
+        )
+        .with_parent(observe.hash());
+
+        let verify = FlowReceipt::new_chained(
+            &interpret, "555-ASI", "bridge-test",
+            StepType::Verify, EpistemicLabel::Derivation, 150,
+        )
+        .with_parent(interpret.hash());
+
+        // Lineage reconstructable: verify → interpret → observe → genesis → RCP-000
+        assert!(verify.parent_receipt_ids.contains(&interpret.hash()));
+        assert!(interpret.parent_receipt_ids.contains(&observe.hash()));
+        assert!(observe.parent_receipt_ids.contains(&genesis.hash()));
+        assert_eq!(genesis.genesis_anchor.as_deref(), Some("RCP-000"));
+        assert!(observe.genesis_anchor.is_none());
+        assert!(interpret.genesis_anchor.is_none());
+        assert!(verify.genesis_anchor.is_none());
     }
 }
 
