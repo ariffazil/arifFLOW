@@ -614,12 +614,23 @@ fn handle_client(
                                 };
                                 match sealer.seal(checkpoint) {
                                     Ok(seal_receipt) => {
+                                        // RG-2 lineage-aware seal entry:
+                                        // Carry the receipt body hash, parent edges,
+                                        // and genesis anchor into the sealed record.
+                                        // This allows LineageResolver to reconstruct
+                                        // lineage from sealed evidence alone, without
+                                        // needing the original receipt body.
+                                        let body_hash = hex::encode(checkpoint);
                                         let line = serde_json::json!({
                                             "vault_entry_id": seal_receipt.vault_entry_id,
                                             "chain_position": seal_receipt.chain_position,
                                             "prev_hash": hex::encode(seal_receipt.prev_hash),
                                             "chain_entry_hash": hex::encode(seal_receipt.chain_entry_hash),
                                             "receipt_id": receipt.receipt_id,
+                                            "body_hash": body_hash,
+                                            "parent_receipt_hashes": receipt.parent_receipt_ids,
+                                            "genesis_anchor": receipt.genesis_anchor,
+                                            "routed_organ": receipt.routed_organ,
                                         })
                                         .to_string();
                                         match OpenOptions::new()
