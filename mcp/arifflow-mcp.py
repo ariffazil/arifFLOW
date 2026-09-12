@@ -132,6 +132,15 @@ TOOLS = [
                     "type": "string",
                     "description": "ETCSOVG harness fingerprint (SHA256-first-8) linking this receipt to a specific harness config (arxiv 2605.23950)",
                 },
+                "routed_organ": {
+                    "type": "string",
+                    "description": "Which organ did arif_route classify this step to (e.g. 'geox', 'wealth', 'well'). Makes routing auditable.",
+                },
+                "parent_receipt_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "DAG parent receipt hashes for fan-out merge points. Enables multi-parent edges in composed topologies.",
+                },
             },
             "required": ["actor_id", "session_id"],
             "additionalProperties": False,
@@ -279,6 +288,11 @@ def call_tool(name: str, args: dict) -> dict:
             "formula_hash": "sha256:arifflow-fq-v2.2-2026-08-14",
             "witness_organs": args.get("witness_organs"),
         }
+        # Graph edge fields (2026-09-12) — only include when set/non-empty
+        if args.get("routed_organ"):
+            receipt["routed_organ"] = args["routed_organ"]
+        if args.get("parent_receipt_ids"):
+            receipt["parent_receipt_ids"] = args["parent_receipt_ids"]
         # Inject harness fingerprint into payload if provided (ETCSOVG, arxiv 2605.23950)
         if args.get("harness_fingerprint"):
             if receipt["payload"] is None:

@@ -31,6 +31,7 @@ pub enum TopologyKind {
     FanOut,
     Pipeline,
     Cascade,
+    ControlledCycle,
 }
 
 impl TopologyKind {
@@ -39,6 +40,7 @@ impl TopologyKind {
             TopologyKind::FanOut => "fan_out",
             TopologyKind::Pipeline => "pipeline",
             TopologyKind::Cascade => "cascade",
+            TopologyKind::ControlledCycle => "controlled_cycle",
         }
     }
 
@@ -48,6 +50,7 @@ impl TopologyKind {
             TopologyKind::FanOut => ExecutionMode::Parallel,
             TopologyKind::Pipeline => ExecutionMode::Sequential,
             TopologyKind::Cascade => ExecutionMode::ThresholdChain,
+            TopologyKind::ControlledCycle => ExecutionMode::ConvergentLoop,
         }
     }
 }
@@ -61,6 +64,8 @@ pub enum ExecutionMode {
     Sequential,
     /// Nodes execute only when input exceeds threshold, cascading (Cascade)
     ThresholdChain,
+    /// WORK→VERIFY→[PASS|FAIL] convergent loop (ControlledCycle)
+    ConvergentLoop,
 }
 
 /// Verdict from arifOS 888-JUDGE
@@ -747,6 +752,36 @@ impl SuperStepScheduler {
                         }
                         activated[i] = true;
                         any_activated = true;
+                    }
+                }
+                Ok(all_deltas)
+            }
+            ExecutionMode::ConvergentLoop => {
+                // ControlledCycle: run all nodes once (one WORK→VERIFY pass).
+                // The looping logic lives in ControlledCycle engine, not here.
+                // Each call to execute_by_topology is one round.
+                let mut all_deltas = BTreeMap::new();
+                for node in nodes.iter() {
+                    if held_nodes.contains(&node.id().to_string()) {
+                        continue;
+                    }
+                    let mut inputs = BTreeMap::new();
+                    for sub in node.subscriptions() {
+                        let ch = self
+                            .channels
+                            .get(sub.0.as_str())
+                            .ok_or_else(|| SchedulerError::ChannelNotFound(sub.0.clone()))?;
+                        if let Ok(msgs) = ch.read_all() {
+                            inputs.insert(sub.clone(), msgs.into_iter().cloned().collect());
+                        }
+                    }
+                    let outputs = node.run(inputs, self.lease_id)?;
+                    for (ch_id, data) in outputs {
+                        if let Some(ch) = self.channels.get_mut(ch_id.0.as_str())
+                            && ch.write(data).is_ok()
+                        {
+                            all_deltas.entry(ch_id.0.clone()).or_insert_with(Vec::new);
+                        }
                     }
                 }
                 Ok(all_deltas)

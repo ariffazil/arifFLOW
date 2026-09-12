@@ -501,6 +501,19 @@ pub struct FlowReceipt {
     /// Monotonic step number within this session
     pub step_number: u64,
 
+    // ── Graph Edges (2026-09-12) ──
+    /// Graph engineering Step 4 (Inspectable Routing): which organ did arif_route
+    /// classify this receipt to? Makes routing decisions auditable on-chain.
+    /// None when routing hasn't occurred or isn't applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routed_organ: Option<String>,
+    /// Graph engineering Step 3 (Edges as Data Contracts): DAG parent edges.
+    /// Enables fan-out merge points where a receipt has multiple parents.
+    /// `previous_receipt_hash` remains the single-chain anchor (backward compat).
+    /// `parent_receipt_ids` provides multi-parent DAG support for composed topologies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parent_receipt_ids: Vec<String>,
+
     // ── Cost ──
     /// Wall-clock duration of this step in nanoseconds
     pub cost_ns: u64,
@@ -576,6 +589,8 @@ impl FlowReceipt {
             topology_id: None,
             lane_id: None,
             step_number: 0,
+            routed_organ: None,
+            parent_receipt_ids: Vec::new(),
             cost_ns,
             preceding_verify_cost_ns: None,
             epistemic_label,
@@ -618,6 +633,8 @@ impl FlowReceipt {
             topology_id: None,
             lane_id: None,
             step_number: previous.step_number + 1,
+            routed_organ: None,
+            parent_receipt_ids: Vec::new(),
             cost_ns,
             preceding_verify_cost_ns: None,
             epistemic_label,
@@ -704,6 +721,25 @@ impl FlowReceipt {
     /// Set the session token builder-style.
     pub fn with_token(mut self, token: impl Into<String>) -> Self {
         self.session_token = Some(token.into());
+        self
+    }
+
+    /// Set the routed organ builder-style (Inspectable Routing — Pattern 6).
+    pub fn with_routed_organ(mut self, organ: impl Into<String>) -> Self {
+        self.routed_organ = Some(organ.into());
+        self
+    }
+
+    /// Add a DAG parent edge (Edges as Data Contracts — Pattern 3).
+    /// Use for fan-out merge points where a receipt has multiple parents.
+    pub fn with_parent(mut self, receipt_hash: impl Into<String>) -> Self {
+        self.parent_receipt_ids.push(receipt_hash.into());
+        self
+    }
+
+    /// Set all DAG parent edges at once.
+    pub fn with_parents(mut self, hashes: Vec<String>) -> Self {
+        self.parent_receipt_ids = hashes;
         self
     }
 }
@@ -1497,6 +1533,220 @@ mod tests {
         );
         store.push(r2).unwrap();
         assert!(store.verify_chain().is_ok());
+    }
+
+    // ── Graph Edge tests (2026-09-12) ────────────────────────────────────────
+
+    #[test]
+    fn test_routed_organ_builder() {
+        let receipt = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Route,
+            EpistemicLabel::Specification,
+            100,
+        )
+        .with_routed_organ("geox");
+
+        assert_eq!(receipt.routed_organ.as_deref(), Some("geox"));
+    }
+
+    #[test]
+    fn test_routed_organ_none_by_default() {
+        let receipt = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
+        );
+        assert!(receipt.routed_organ.is_none());
+    }
+
+    #[test]
+    fn test_routed_organ_serializes_optional() {
+        let receipt = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
+        );
+        let json = serde_json::to_string(&receipt).unwrap();
+        // When None, skip_serializing_if prevents it from appearing
+        assert!(!json.contains("routed_organ"));
+
+        let routed = receipt.with_routed_organ("wealth");
+        let json2 = serde_json::to_string(&routed).unwrap();
+        assert!(json2.contains("routed_organ"));
+        assert!(json2.contains("wealth"));
+    }
+
+    #[test]
+    fn test_routed_organ_backward_compat_deserialize() {
+        // Old receipts without routed_organ must deserialize cleanly
+        let json = r#"{
+            "receipt_id": "00000000-0000-0000-0000-000000000001",
+            "previous_receipt_hash": null,
+            "created_at": "2026-09-12T00:00:00Z",
+            "actor_id": "agent",
+            "session_id": "s1",
+            "step_type": "Execute",
+            "cost_ns": 100,
+            "epistemic_label": "Observation",
+            "floor_verdict": "Pass",
+            "cooling_decision": "None",
+            "step_number": 0,
+            "risk_class": "T0Observe"
+        }"#;
+        let receipt: FlowReceipt = serde_json::from_str(json).unwrap();
+        assert!(receipt.routed_organ.is_none());
+        assert!(receipt.parent_receipt_ids.is_empty());
+    }
+
+    #[test]
+    fn test_parent_receipt_ids_builder() {
+        let r1 = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
+        );
+        let r2 = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            200,
+        );
+
+        // Merge point: receipt with two parents
+        let merge = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Merge,
+            EpistemicLabel::Derivation,
+            50,
+        )
+        .with_parent(r1.hash())
+        .with_parent(r2.hash());
+
+        assert_eq!(merge.parent_receipt_ids.len(), 2);
+        assert_eq!(merge.parent_receipt_ids[0], r1.hash());
+        assert_eq!(merge.parent_receipt_ids[1], r2.hash());
+    }
+
+    #[test]
+    fn test_parent_receipt_ids_with_parents_bulk() {
+        let hashes = vec!["hash_a".to_string(), "hash_b".to_string(), "hash_c".to_string()];
+        let receipt = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Merge,
+            EpistemicLabel::Derivation,
+            50,
+        )
+        .with_parents(hashes.clone());
+
+        assert_eq!(receipt.parent_receipt_ids, hashes);
+    }
+
+    #[test]
+    fn test_parent_receipt_ids_empty_by_default() {
+        let receipt = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
+        );
+        assert!(receipt.parent_receipt_ids.is_empty());
+    }
+
+    #[test]
+    fn test_parent_receipt_ids_serializes_optional() {
+        let receipt = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
+        );
+        let json = serde_json::to_string(&receipt).unwrap();
+        // When empty vec, skip_serializing_if prevents it from appearing
+        assert!(!json.contains("parent_receipt_ids"));
+
+        let with_parents = receipt.with_parent("abc123");
+        let json2 = serde_json::to_string(&with_parents).unwrap();
+        assert!(json2.contains("parent_receipt_ids"));
+        assert!(json2.contains("abc123"));
+    }
+
+    #[test]
+    fn test_dag_fanout_merge_pattern() {
+        // Simulate: Input → [A, B, C] → Merge → Output
+        let input = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
+        );
+
+        // Fan-out: 3 parallel lanes
+        let a = FlowReceipt::new_chained(
+            &input, "agent-a", "s1", StepType::Execute,
+            EpistemicLabel::Observation, 50,
+        ).with_topology("fan-out:research", 0);
+
+        let b = FlowReceipt::new_chained(
+            &input, "agent-b", "s1", StepType::Execute,
+            EpistemicLabel::Observation, 75,
+        ).with_topology("fan-out:research", 1);
+
+        let c = FlowReceipt::new_chained(
+            &input, "agent-c", "s1", StepType::Execute,
+            EpistemicLabel::Observation, 60,
+        ).with_topology("fan-out:research", 2);
+
+        // Merge point: 3 parents from the fan-out lanes
+        let merge = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Merge,
+            EpistemicLabel::Derivation,
+            30,
+        )
+        .with_parents(vec![a.hash(), b.hash(), c.hash()])
+        .with_topology("fan-out:research", 0);
+
+        assert_eq!(merge.parent_receipt_ids.len(), 3);
+        assert_eq!(merge.topology_id.as_deref(), Some("fan-out:research"));
+    }
+
+    #[test]
+    fn test_receipt_with_both_new_fields() {
+        let receipt = FlowReceipt::new_first(
+            "agent",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
+        )
+        .with_routed_organ("geox")
+        .with_parent("prev_hash_123");
+
+        let json = serde_json::to_string(&receipt).unwrap();
+        assert!(json.contains("routed_organ"));
+        assert!(json.contains("geox"));
+        assert!(json.contains("parent_receipt_ids"));
+        assert!(json.contains("prev_hash_123"));
+
+        // Roundtrip
+        let deserialized: FlowReceipt = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.routed_organ.as_deref(), Some("geox"));
+        assert_eq!(deserialized.parent_receipt_ids, vec!["prev_hash_123"]);
     }
 }
 

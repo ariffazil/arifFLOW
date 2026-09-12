@@ -1,11 +1,26 @@
-// Topology module — 3 fixed governed topologies
+// Topology module — 4 fixed governed topologies
 //
 // Invariant A4 (Verifiable-Reduction): All merge functions are
 // deterministic and auditable by F3 TRI-WITNESS.
+//
+// Topology count justification (F4: "Too many paths = untestable governance"):
+//   1. Pipeline     — sequential stages with review loop
+//   2. Fan-Out      — parallel dispatch with deterministic merge
+//   3. Cascade      — multi-agent escalation with F3 witness
+//   4. ControlledCycle — convergent WORK→VERIFY→[PASS|FAIL] loops
+//      Justified because: only missing base shape from 12-pattern taxonomy,
+//      every convergent workflow needs it, governable via budget+convergence.
 
 pub mod cascade;
+pub mod controlled_cycle;
 pub mod fan_out;
 pub mod pipeline;
+
+// Re-export key types from controlled_cycle for convenience
+pub use controlled_cycle::{
+    ControlledCycle, ControlledCycleConfig, ConvergenceState, CycleError, CycleExitCondition,
+    CycleRound, CycleSummary, EscalationTarget,
+};
 
 use thiserror::Error;
 
