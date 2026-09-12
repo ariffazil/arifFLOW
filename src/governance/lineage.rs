@@ -1823,6 +1823,56 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live RG-1/A8 MCP pair witness — env-driven: WITNESS_MODE=hash|verify, MCP_ROOT_ID, MCP_CHILD_ID; F13-ACKed production test surface"]
+    fn live_mcp_pair_witness() {
+        let store = JsonlReceiptStore::new(
+            "/var/lib/arifflow/receipts.jsonl",
+            "/root/arifOS/VAULT999/arifflow_sealed.jsonl",
+        );
+        let mode = std::env::var("WITNESS_MODE").unwrap_or_default();
+        let root_id = std::env::var("MCP_ROOT_ID").expect("MCP_ROOT_ID set");
+        match mode.as_str() {
+            "hash" => {
+                let r = store
+                    .get_receipt(&root_id)
+                    .expect("store readable")
+                    .expect("root receipt present in store");
+                println!("BODY_HASH={}", r.hash());
+            }
+            "verify" => {
+                let child_id = std::env::var("MCP_CHILD_ID").expect("MCP_CHILD_ID set");
+                assert_eq!(
+                    store.verify_receipt_seal_binding(&root_id).unwrap(),
+                    SealBindingStatus::Bound,
+                    "root must be seal-bound"
+                );
+                assert_eq!(
+                    store.verify_receipt_seal_binding(&child_id).unwrap(),
+                    SealBindingStatus::Bound,
+                    "child must be seal-bound"
+                );
+                let resolver = LineageResolver::new(store);
+                let proof = resolver.reconstruct(&child_id);
+                assert_eq!(
+                    proof.status,
+                    LineageStatus::Valid,
+                    "lineage must reconstruct: unresolved={:?} unsealed={:?}",
+                    proof.unresolved_parents,
+                    proof.unsealed_receipts
+                );
+                assert!(!proof.root_body_hashes.is_empty());
+                println!(
+                    "PAIR_WITNESS=VALID roots={:?} nodes={} proof_hash={}",
+                    proof.root_body_hashes,
+                    proof.ordered_nodes.len(),
+                    &proof.proof_hash[..16]
+                );
+            }
+            _ => panic!("WITNESS_MODE must be 'hash' or 'verify'"),
+        }
+    }
+
+    #[test]
     fn test_does_not_treat_genesis_anchor_as_authority() {
         // The genesis_anchor field is metadata, not authorization.
         // A receipt with a genesis_anchor does NOT auto-authorize its descendants.
