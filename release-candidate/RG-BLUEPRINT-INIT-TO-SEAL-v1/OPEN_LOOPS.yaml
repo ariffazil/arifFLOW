@@ -1,0 +1,127 @@
+schema: arifos.open-loops/v1
+work_id: RG-BLUEPRINT-INIT-TO-SEAL-v1
+generated_at: "2026-09-12T10:41:00Z"
+
+# GLOBAL INVARIANT: Unknown remains UNKNOWN. No loop closed by narrative.
+# All items below represent real gaps observed in this session.
+
+open_loops:
+
+  - id: OL-001
+    severity: HIGH
+    category: TEST_NOT_RUN
+    description: "cargo test cannot run in sandbox environment (read-only filesystem)"
+    evidence: "cargo check returned: 'error: failed to open: target/debug/.cargo-build-lock, Read-only file system (os error 30)'"
+    affected_claims:
+      - "P2 Fold-1 fix compiles"
+      - "14 lineage.rs tests pass"
+      - "16 controlled_cycle.rs tests pass (including updated Fold-1 tests)"
+    escalation_target: OPERATOR
+    resolution: "Run on VPS/Hermes: cd /root/arifFlow && cargo test 2>&1"
+    blocking: [HOLD-001, S1_SEAL_WITNESS]
+
+  - id: OL-002
+    severity: HIGH
+    category: UNCOMMITTED_DELTA
+    description: "P1 lineage.rs + mod.rs delta uncommitted — working tree DIRTY for arifFlow"
+    evidence: "git status shows M src/governance/mod.rs and ?? src/governance/lineage.rs after commit 0030110"
+    affected_claims:
+      - "arifFlow working tree is clean"
+      - "Release commit identity matches runtime"
+    escalation_target: OPERATOR
+    resolution: |
+      Hermes (on VPS):
+      cd /root/arifFlow
+      git add src/governance/lineage.rs src/governance/mod.rs src/topology/controlled_cycle.rs
+      git commit -m 'feat(rg2+fold1): ReceiptStore + LineageResolver + JUDGE_888/SOVEREIGN_F13 split — FORGE-RG-BLUEPRINT-INIT-TO-SEAL-v1'
+    blocking: [HOLD-002, clean_working_tree]
+
+  - id: OL-003
+    severity: HIGH
+    category: JCS_ABSENT
+    description: "JCS (RFC8785) canonicalization not implemented in Rust, TypeScript, or Python"
+    evidence: "grep for jcs/RFC8785/json-canon returned empty across all three language paths"
+    affected_claims:
+      - "cross_language_canonical_bytes_match"
+      - "cross_language_sha3_256_matches"
+      - "lineage_mutation_changes_hash (cross-lang)"
+      - "seal_checkpoint_matches_receipt_hash (cross-lang)"
+    escalation_target: ORGAN_OWNER
+    resolution: |
+      Implement in priority order:
+      1. src/governance/jcs.rs (Rust — SHA3-256 of serde_json::to_value → sorted → serialize)
+      2. src/ts/arifflow/receipt/jcs.ts (TS — json-canonicalize npm package)
+      3. src/py/arifflow/receipt/jcs.py (Python — jcs or json-canon pip package)
+      Then run against HASH_FIXTURES.json to verify parity.
+    blocking: [HOLD-003, P4_jcs_implementation]
+
+  - id: OL-004
+    severity: MEDIUM
+    category: SEAL_BINDING_UNVERIFIED
+    description: "VAULT999 seal binding not verified — receipt body hash vs seal checkpoint hash"
+    evidence: "vault999.jsonl and arifflow_sealed.jsonl confirmed to exist. Binding requires running code."
+    affected_claims:
+      - "seal_checkpoint_matches_receipt_hash"
+      - "tampered_lineage_fails_binding"
+    escalation_target: OPERATOR
+    resolution: |
+      Run: python3 /root/arifOS/tools/vault999_auditor_export.py (check if it does binding verification)
+      Or: Run arifFlow JsonlReceiptStore against arifflow_sealed.jsonl with verify_receipt_seal_binding()
+    blocking: [HOLD-004, SEAL_BINDING_PROOF.json]
+
+  - id: OL-005
+    severity: MEDIUM
+    category: GENESIS_BRIDGE_PENDING_F13
+    description: "Genesis Bridge activation requires separate F13 human authorization"
+    evidence: "genesis_anchor=None in all operational receipts (CORRECT per mandate). Bridge spec is staged."
+    affected_claims:
+      - "Constitutional ancestry exists (RG-3)"
+    escalation_target: SOVEREIGN_F13
+    resolution: |
+      Arif: Issue separate F13 authorization for genesis_bridge_activation
+      when RG-2 is fully verified (HOLD-001 + HOLD-002 resolved).
+      Do not activate before RG-2 VALID proof exists.
+    blocking: [HOLD-005, RG-3_activation]
+    note: "This loop is intentional. Genesis Bridge MUST wait for RG-2 VALID."
+
+  - id: OL-006
+    severity: MEDIUM
+    category: ROADMAP_NOT_COMMITTED
+    description: "RG-2 through RG-7 roadmap exists as blueprint + proposal but not as candidate specs in repo"
+    evidence: "PROPOSAL.yaml and this evidence package exist only in release-candidate/ directory"
+    affected_claims:
+      - "Roadmap RG-1 to RG-7 exists as candidate spec in repositories"
+    escalation_target: OPERATOR
+    resolution: |
+      Hermes: commit release-candidate/RG-BLUEPRINT-INIT-TO-SEAL-v1/ to arifFlow repo
+      as part of the P1 commit (or separately tagged as 'evidence: FORGE-RG-BLUEPRINT-INIT-TO-SEAL-v1')
+    blocking: [HOLD-006, definition_of_done]
+
+  - id: OL-007
+    severity: LOW
+    category: FLOWRECEIPT_V2_DEFERRED
+    description: "FlowReceipt v2 full envelope (schema, graph_id, receipt_kind, authority, outcome, consequence, integrity, classification) not yet implemented"
+    evidence: "OBS: only schema/graph_id/receipt_kind/payload_hash absent from current struct. Full envelope deferred."
+    escalation_target: ORGAN_OWNER
+    resolution: "P3 — next forge round after P1+P2 tests verified"
+    blocking: [P3_flowreceipt_v2, cross_lang_hash_full_envelope]
+
+  - id: OL-008
+    severity: LOW
+    category: RCP_000_EXISTENCE_UNKNOWN
+    description: "Whether RCP-000-CONSTITUTION-ANCHOR is a registered receipt in VAULT999 is UNKNOWN"
+    evidence: "VAULT999/SEALED_EVENTS.jsonl not read in this session"
+    escalation_target: EVIDENCE_OWNER
+    resolution: "grep 'RCP-000' /root/arifOS/VAULT999/SEALED_EVENTS.jsonl"
+    blocking: [RG-3_bridge_spec]
+
+summary:
+  total_open: 8
+  HIGH: 3 (OL-001, OL-002, OL-003)
+  MEDIUM: 3 (OL-004, OL-005, OL-006)
+  LOW: 2 (OL-007, OL-008)
+  blocking_for_s1_seal: [OL-001, OL-002]
+  blocking_for_s2_verified: [OL-003, OL-004]
+  blocking_for_s3_judge_pass: [OL-006]
+  blocking_for_rg3: [OL-005, OL-008]
+  intentional_holds: [OL-005]

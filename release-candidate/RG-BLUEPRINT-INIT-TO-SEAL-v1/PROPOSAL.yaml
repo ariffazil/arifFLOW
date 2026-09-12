@@ -1,0 +1,201 @@
+schema: arifos.proposal/v1
+proposal_id: PROP-RG-BLUEPRINT-INIT-TO-SEAL-v1-01
+work_order: RG-BLUEPRINT-INIT-TO-SEAL-v1
+generated_at: "2026-09-12T10:34:00Z"
+actor: antigravity-fi008
+
+# ── SCOPE ──────────────────────────────────────────────────────────────────────
+#
+# Four bounded changes. Each is independently reversible.
+# Sequenced by dependency: P1 must commit before P3 can reference it.
+#
+# ── PROPOSAL P1: Commit lineage.rs + mod.rs dirty delta ──────────────────────
+
+P1:
+  claim: |
+    arifFlow commit 0030110's dirty delta (lineage.rs + mod.rs re-export)
+    becomes a clean commit with a named forge receipt, producing a clean
+    working tree for arifFlow.
+  current_state: |
+    source_commit: 0030110
+    working_tree: DIRTY
+    lineage.rs: 1373 lines, CODE_PRESENT, NOT committed
+    mod.rs: +lineage module + SealReceipt re-export, NOT committed
+  change_scope:
+    files:
+      - src/governance/lineage.rs
+      - src/governance/mod.rs
+    interfaces: []
+    data_migrations: []
+  not_in_scope:
+    - deploy
+    - production_seal
+    - F13_ratification
+    - genesis_bridge_activation
+    - memory_promotion
+  risks:
+    - compatibility: mod.rs re-exports SealReceipt — verify Vault999Sealer callers still compile
+    - hash_divergence: none (no hash logic change)
+    - lineage_corruption: none (read-only trait)
+  rollback:
+    method: git revert <new-commit-hash>
+    side_effects: lineage.rs removed from index, mod.rs reverts
+  acceptance_tests:
+    - working_tree_is_clean_after_commit
+    - lineage_module_compiles_without_error
+    - mod_rs_re_exports_are_accessible
+  escalation:
+    judge: JUDGE_888
+    sovereign: SOVEREIGN_F13
+
+# ── PROPOSAL P2: EscalationTarget Fold-1 fix ─────────────────────────────────
+
+P2:
+  claim: |
+    `EscalationTarget::Sovereign888` is split into two distinct variants:
+    - `Judge888` — for hold, evidence review, judgment actions (888-APEX)
+    - `SovereignF13` — for irreversible or canonical transitions (F13 only)
+    DivergenceDetected maps to Judge888 (hold and evaluate), not SovereignF13.
+    A new escalation path for SovereignF13 is reserved for genesis bridge
+    activation, memory promotion, and production seal — all HOLD in current mandate.
+  current_state: |
+    EscalationTarget::Sovereign888 conflates JUDGE_888 and SOVEREIGN_F13
+    requires_888_hold() returns true for Sovereign888
+    DivergenceDetected -> Sovereign888
+    No variant represents F13 human-only authority
+  change_scope:
+    files:
+      - src/topology/controlled_cycle.rs
+    interfaces:
+      - EscalationTarget enum: add SovereignF13, rename Sovereign888 -> Judge888
+    data_migrations: []
+  not_in_scope:
+    - any F13 action
+    - production seal
+    - genesis bridge activation
+  risks:
+    - compatibility: callers of Sovereign888 must update match arms
+    - pattern_exhaustiveness: Rust will catch any non-exhaustive match at compile time
+  rollback:
+    method: git revert <commit>
+    side_effects: reverts to single Sovereign888 conflated variant
+  acceptance_tests:
+    - judge888_cannot_ratify_f13 (type system enforces)
+    - divergence_exits_to_judge888_not_sovereign_f13
+    - sovereign_f13_variant_exists_and_is_distinct
+    - requires_888_hold_false_for_sovereign_f13
+    - cycle_test_suite_still_passes_after_rename
+  escalation:
+    judge: JUDGE_888
+    sovereign: SOVEREIGN_F13
+
+# ── PROPOSAL P3: FlowReceipt v2 candidate fields ─────────────────────────────
+
+P3:
+  claim: |
+    FlowReceipt gains a `schema` version string, `graph_id`, `receipt_kind`,
+    and an `integrity` block containing `payload_hash` (SHA3-256) as a
+    serialized field. These are the minimal v2 fields needed for cross-language
+    hash contracts and receipt_kind routing.
+    Full v2 envelope (authority, outcome, consequence, classification) is
+    deferred — marked CANDIDATE, not activated.
+  current_state: |
+    FlowReceipt: v1-with-graph-edges
+    Missing: schema, graph_id, receipt_kind, payload_hash as serialized field
+    Hash exists as method (receipt.hash()) but not as sealed field
+  change_scope:
+    files:
+      - src/receipt.rs
+    interfaces:
+      - Add: schema: Option<String>  (default: "arifflow.receipt/v1")
+      - Add: graph_id: Option<String>
+      - Add: receipt_kind: Option<ReceiptKind>
+      - Add: payload_hash: Option<String>  (SHA3-256 of canonical JSON)
+    data_migrations:
+      - Existing receipts deserialize cleanly: all new fields are Option<T>
+      - Old receipts without these fields remain valid (backward compat)
+  not_in_scope:
+    - full authority block
+    - full outcome block
+    - full consequence block
+    - full classification block
+    - JCS implementation (see P4)
+    - deploy
+    - production seal
+  risks:
+    - compatibility: serde skip_serializing_if="Option::is_none" prevents breaking old receipts
+    - hash_divergence: payload_hash field is serialized AFTER it is computed — field must be
+      excluded from its own hash computation (chicken-and-egg). Solution: hash = SHA3-256 of
+      receipt body WITH payload_hash=null, then set payload_hash = that hash.
+  rollback:
+    method: git revert <commit>
+    side_effects: removes schema/graph_id/receipt_kind/payload_hash fields; old receipts unaffected
+  acceptance_tests:
+    - old_receipt_deserializes_without_schema_field
+    - new_receipt_carries_schema_version
+    - receipt_kind_enum_covers_all_blueprint_variants
+    - payload_hash_excludes_itself_from_computation
+    - round_trip_serialize_deserialize_matches
+  escalation:
+    judge: JUDGE_888
+    sovereign: SOVEREIGN_F13
+
+# ── PROPOSAL P4: JCS golden fixture spec ─────────────────────────────────────
+
+P4:
+  claim: |
+    A golden fixture set is defined and committed for cross-language canonical
+    hash verification. Ten fixtures cover the blueprint-mandated cases.
+    JCS implementation is stubbed in Rust (using serde_json ordered output as
+    a proxy until a proper RFC8785 crate is integrated), TypeScript (using
+    json-canonicalize), and Python (using jcs or jsoncanon).
+    Fixtures are the canonical truth — language implementations are verified
+    against them, not against each other.
+  current_state: |
+    JCS: ABSENT in all three languages
+    SHA3-256: present in Rust only
+    Cross-language fixture set: does not exist
+  change_scope:
+    files:
+      - release-candidate/RG-BLUEPRINT-INIT-TO-SEAL-v1/HASH_FIXTURES.json
+      - src/ts/arifflow/receipt/jcs.ts (new: JCS canonical bytes)
+      - src/py/arifflow/receipt/jcs.py (new: JCS canonical bytes)
+      - src/governance/jcs.rs (new: Rust JCS proxy)
+    interfaces:
+      - hash_receipt_jcs(receipt: &FlowReceipt) -> String  (Rust)
+      - hashReceiptJCS(receipt: FlowReceiptV1): string  (TS)
+      - hash_receipt_jcs(receipt: dict) -> str  (Python)
+    data_migrations: []
+  not_in_scope:
+    - production hash migration
+    - resealing existing VAULT999 entries
+  risks:
+    - hash_divergence: serde_json does not guarantee RFC8785 key ordering for all types
+      MITIGATION: use client_payload_hash / rust_receipt_hash / seal_checkpoint_hash
+      as three NAMED hashes until fixtures confirm parity
+    - unicode_edge_cases: JCS requires specific Unicode normalization
+  rollback:
+    method: git revert <commit>
+    side_effects: removes JCS files; HASH_FIXTURES.json removed
+  acceptance_tests:
+    - cross_language_canonical_bytes_match (10 fixtures)
+    - cross_language_sha3_256_matches (10 fixtures)
+    - lineage_mutation_changes_hash
+    - unicode_fixture_matches_across_languages
+  escalation:
+    judge: JUDGE_888
+    sovereign: SOVEREIGN_F13
+
+# ── NOT IN SCOPE ───────────────────────────────────────────────────────────────
+not_in_scope:
+  - production deploy (any repo)
+  - production VAULT999 append
+  - Genesis Bridge activation (RG-3): F13_REQUIRED, PENDING
+  - Memory promotion
+  - F13 ratification
+  - Canon changes
+  - Full FlowReceipt v2 envelope (authority/outcome/consequence/classification blocks)
+  - RG-4 governance nodes (deferred — requires P1-P4 complete first)
+  - RG-5 scar policies (deferred)
+  - RG-6 consequence graph (deferred)
+  - RG-7 FQ_G (deferred — gates on RG-1 through RG-6)

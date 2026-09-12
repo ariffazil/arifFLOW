@@ -1,0 +1,296 @@
+{
+  "_schema": "arifflow-jcs-golden-fixtures/v1",
+  "_generated": "2026-09-12T10:38:00Z",
+  "_mandate": "RG-BLUEPRINT-INIT-TO-SEAL-v1",
+  "_note": "These are SPECIFICATION fixtures. Cross-language hash parity must be verified by running the JCS implementation in each language against these inputs and comparing canonical_bytes_utf8 and sha3_256_hex. Until verified: use client_payload_hash / rust_receipt_hash / seal_checkpoint_hash as three NAMED hashes — do NOT compare as equal.",
+  "_status": "CANDIDATE — hash_parity: UNVERIFIED (JCS not yet implemented in any language)",
+
+  "canonicalization_spec": {
+    "standard": "RFC8785",
+    "encoding": "UTF-8",
+    "json_profile": "I-JSON",
+    "object_key_order": "JCS (lexicographic by unicode code point)",
+    "whitespace": "none",
+    "optional_fields": "omit_when_absent",
+    "null_policy": "explicit_only_when_semantic",
+    "array_order": "preserved",
+    "hash_algorithm": "SHA3-256"
+  },
+
+  "fixtures": [
+    {
+      "fixture_id": "F-001",
+      "name": "minimal_root_receipt",
+      "description": "Minimum viable root receipt — no parents, no optional fields",
+      "input": {
+        "receipt_id": "00000000-0000-0000-0000-000000000001",
+        "created_at": "2026-09-12T10:00:00.000000000Z",
+        "actor_id": "test-agent",
+        "session_id": "sess-001",
+        "step_type": "OBSERVE",
+        "step_number": 1,
+        "cost_ns": 1000000,
+        "epistemic_label": "OBS",
+        "floor_verdict": "PASS",
+        "cooling_decision": "PASS"
+      },
+      "jcs_canonical_bytes_utf8": "PENDING_JCS_IMPLEMENTATION",
+      "sha3_256_hex": "PENDING_JCS_IMPLEMENTATION",
+      "language_results": {
+        "rust": "PENDING",
+        "typescript": "PENDING",
+        "python": "PENDING"
+      },
+      "parity": "UNVERIFIED"
+    },
+    {
+      "fixture_id": "F-002",
+      "name": "single_parent_receipt",
+      "description": "Receipt with one parent_receipt_ids entry (body hash of F-001)",
+      "input": {
+        "receipt_id": "00000000-0000-0000-0000-000000000002",
+        "created_at": "2026-09-12T10:00:01.000000000Z",
+        "actor_id": "test-agent",
+        "session_id": "sess-001",
+        "step_type": "INTERPRET",
+        "step_number": 2,
+        "cost_ns": 2000000,
+        "epistemic_label": "DER",
+        "floor_verdict": "PASS",
+        "cooling_decision": "PASS",
+        "routed_organ": "arifos",
+        "parent_receipt_ids": ["PENDING_F001_HASH"]
+      },
+      "jcs_canonical_bytes_utf8": "PENDING_JCS_IMPLEMENTATION",
+      "sha3_256_hex": "PENDING_JCS_IMPLEMENTATION",
+      "language_results": {
+        "rust": "PENDING",
+        "typescript": "PENDING",
+        "python": "PENDING"
+      },
+      "parity": "UNVERIFIED"
+    },
+    {
+      "fixture_id": "F-003",
+      "name": "multi_parent_receipt",
+      "description": "Receipt with two parent_receipt_ids entries (diamond merge)",
+      "input": {
+        "receipt_id": "00000000-0000-0000-0000-000000000003",
+        "created_at": "2026-09-12T10:00:02.000000000Z",
+        "actor_id": "test-agent",
+        "session_id": "sess-001",
+        "step_type": "VERIFY",
+        "step_number": 3,
+        "cost_ns": 3000000,
+        "epistemic_label": "OBS",
+        "floor_verdict": "PASS",
+        "cooling_decision": "PASS",
+        "parent_receipt_ids": ["PENDING_F001_HASH", "PENDING_F002_HASH"]
+      },
+      "jcs_canonical_bytes_utf8": "PENDING_JCS_IMPLEMENTATION",
+      "sha3_256_hex": "PENDING_JCS_IMPLEMENTATION",
+      "language_results": {
+        "rust": "PENDING",
+        "typescript": "PENDING",
+        "python": "PENDING"
+      },
+      "parity": "UNVERIFIED"
+    },
+    {
+      "fixture_id": "F-004",
+      "name": "unicode_receipt",
+      "description": "Receipt with Unicode in actor_id and intent_reason — verifies JCS Unicode normalization",
+      "input": {
+        "receipt_id": "00000000-0000-0000-0000-000000000004",
+        "created_at": "2026-09-12T10:00:03.000000000Z",
+        "actor_id": "arif-fazil-\u0041\u0072\u0069\u0066",
+        "session_id": "sess-unicode",
+        "step_type": "OBSERVE",
+        "step_number": 1,
+        "cost_ns": 1000,
+        "epistemic_label": "OBS",
+        "floor_verdict": "PASS",
+        "cooling_decision": "PASS",
+        "intent_reason": "DITEMPA BUKAN DIBERI \u2014 \u0041\u0072\u0069\u0066 \u004f\u0077\u006e\u0073 F13"
+      },
+      "jcs_canonical_bytes_utf8": "PENDING_JCS_IMPLEMENTATION",
+      "sha3_256_hex": "PENDING_JCS_IMPLEMENTATION",
+      "language_results": {
+        "rust": "PENDING",
+        "typescript": "PENDING",
+        "python": "PENDING"
+      },
+      "parity": "UNVERIFIED"
+    },
+    {
+      "fixture_id": "F-005",
+      "name": "absent_optional_fields",
+      "description": "Receipt with all optional fields absent — verifies omit_when_absent rule",
+      "input": {
+        "receipt_id": "00000000-0000-0000-0000-000000000005",
+        "created_at": "2026-09-12T10:00:04.000000000Z",
+        "actor_id": "test-agent",
+        "session_id": "sess-001",
+        "step_type": "OBSERVE",
+        "step_number": 1,
+        "cost_ns": 500,
+        "epistemic_label": "UNKNOWN",
+        "floor_verdict": "HOLD",
+        "cooling_decision": "PASS"
+      },
+      "note": "previous_receipt_hash, routed_organ, parent_receipt_ids, genesis_anchor, session_token, topology_id, lane_id, intent_reason, expected_outcome, tri_witness_votes, merkle_root, merkle_inclusion_proof — all absent",
+      "jcs_canonical_bytes_utf8": "PENDING_JCS_IMPLEMENTATION",
+      "sha3_256_hex": "PENDING_JCS_IMPLEMENTATION",
+      "language_results": {
+        "rust": "PENDING",
+        "typescript": "PENDING",
+        "python": "PENDING"
+      },
+      "parity": "UNVERIFIED"
+    },
+    {
+      "fixture_id": "F-006",
+      "name": "explicit_null_where_allowed",
+      "description": "Receipt with explicit null for previous_receipt_hash (semantic null — start of chain)",
+      "input": {
+        "receipt_id": "00000000-0000-0000-0000-000000000006",
+        "created_at": "2026-09-12T10:00:05.000000000Z",
+        "actor_id": "test-agent",
+        "session_id": "sess-001",
+        "step_type": "OBSERVE",
+        "step_number": 1,
+        "cost_ns": 500,
+        "epistemic_label": "OBS",
+        "floor_verdict": "PASS",
+        "cooling_decision": "PASS",
+        "previous_receipt_hash": null
+      },
+      "note": "null_policy: explicit_only_when_semantic — previous_receipt_hash=null means 'start of chain', not 'absent'. Different from omit.",
+      "jcs_canonical_bytes_utf8": "PENDING_JCS_IMPLEMENTATION",
+      "sha3_256_hex": "PENDING_JCS_IMPLEMENTATION",
+      "language_results": {
+        "rust": "PENDING",
+        "typescript": "PENDING",
+        "python": "PENDING"
+      },
+      "parity": "UNVERIFIED"
+    },
+    {
+      "fixture_id": "F-007",
+      "name": "ordered_arrays",
+      "description": "Receipt with multiple parent_receipt_ids — verifies array_order: preserved rule",
+      "input": {
+        "receipt_id": "00000000-0000-0000-0000-000000000007",
+        "created_at": "2026-09-12T10:00:06.000000000Z",
+        "actor_id": "test-agent",
+        "session_id": "sess-001",
+        "step_type": "VERIFY",
+        "step_number": 5,
+        "cost_ns": 5000,
+        "epistemic_label": "OBS",
+        "floor_verdict": "PASS",
+        "cooling_decision": "PASS",
+        "parent_receipt_ids": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        ]
+      },
+      "note": "Array order MUST be preserved. Canonical bytes for [a,b,c] ≠ [c,b,a].",
+      "jcs_canonical_bytes_utf8": "PENDING_JCS_IMPLEMENTATION",
+      "sha3_256_hex": "PENDING_JCS_IMPLEMENTATION",
+      "language_results": {
+        "rust": "PENDING",
+        "typescript": "PENDING",
+        "python": "PENDING"
+      },
+      "parity": "UNVERIFIED"
+    },
+    {
+      "fixture_id": "F-008",
+      "name": "high_precision_timestamp",
+      "description": "Nanosecond precision timestamp — verifies time serialization consistency",
+      "input": {
+        "receipt_id": "00000000-0000-0000-0000-000000000008",
+        "created_at": "2026-09-12T10:00:00.123456789Z",
+        "actor_id": "test-agent",
+        "session_id": "sess-001",
+        "step_type": "OBSERVE",
+        "step_number": 1,
+        "cost_ns": 123456789,
+        "epistemic_label": "OBS",
+        "floor_verdict": "PASS",
+        "cooling_decision": "PASS"
+      },
+      "note": "All languages must serialize timestamp identically. RFC3339 with nanoseconds.",
+      "jcs_canonical_bytes_utf8": "PENDING_JCS_IMPLEMENTATION",
+      "sha3_256_hex": "PENDING_JCS_IMPLEMENTATION",
+      "language_results": {
+        "rust": "PENDING",
+        "typescript": "PENDING",
+        "python": "PENDING"
+      },
+      "parity": "UNVERIFIED"
+    },
+    {
+      "fixture_id": "F-009",
+      "name": "large_numeric_edge_case",
+      "description": "u64 max cost_ns and large step_number — verifies JCS number format for large integers",
+      "input": {
+        "receipt_id": "00000000-0000-0000-0000-000000000009",
+        "created_at": "2026-09-12T10:00:00.000000000Z",
+        "actor_id": "test-agent",
+        "session_id": "sess-001",
+        "step_type": "OBSERVE",
+        "step_number": 9007199254740992,
+        "cost_ns": 9999999999999,
+        "epistemic_label": "OBS",
+        "floor_verdict": "PASS",
+        "cooling_decision": "PASS"
+      },
+      "note": "JCS requires IEEE 754 double-precision safe integer range. Values above 2^53-1 require careful handling.",
+      "jcs_canonical_bytes_utf8": "PENDING_JCS_IMPLEMENTATION",
+      "sha3_256_hex": "PENDING_JCS_IMPLEMENTATION",
+      "language_results": {
+        "rust": "PENDING",
+        "typescript": "PENDING",
+        "python": "PENDING"
+      },
+      "parity": "UNVERIFIED"
+    },
+    {
+      "fixture_id": "F-010",
+      "name": "classification_redacted_receipt",
+      "description": "Receipt with classification marker — verifies that traversal can produce opaque/redacted output",
+      "input": {
+        "receipt_id": "00000000-0000-0000-0000-000000000010",
+        "created_at": "2026-09-12T10:00:00.000000000Z",
+        "actor_id": "vault999-agent",
+        "session_id": "sess-vault",
+        "step_type": "SEAL",
+        "step_number": 99,
+        "cost_ns": 0,
+        "epistemic_label": "OBS",
+        "floor_verdict": "PASS",
+        "cooling_decision": "PASS",
+        "routed_organ": "vault999"
+      },
+      "note": "The hash is computed over the full body. Traversal of restricted lineage returns OPAQUE stub — not the payload. Hash computation itself is not redacted.",
+      "jcs_canonical_bytes_utf8": "PENDING_JCS_IMPLEMENTATION",
+      "sha3_256_hex": "PENDING_JCS_IMPLEMENTATION",
+      "language_results": {
+        "rust": "PENDING",
+        "typescript": "PENDING",
+        "python": "PENDING"
+      },
+      "parity": "UNVERIFIED"
+    }
+  ],
+
+  "acceptance": {
+    "criteria": "TypeScript, Python, and Rust produce identical canonical_bytes_utf8 and SHA3-256 for each fixture",
+    "current_status": "BLOCKED — JCS not yet implemented in any language",
+    "next_action": "Implement src/governance/jcs.rs (Rust), src/ts/arifflow/receipt/jcs.ts, src/py/arifflow/receipt/jcs.py, then run cross-language verification against these fixtures",
+    "comparison_rule": "Until fixtures verified: client_payload_hash / rust_receipt_hash / seal_checkpoint_hash are THREE NAMED HASHES. Do not treat as equal."
+  }
+}

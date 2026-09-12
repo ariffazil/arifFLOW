@@ -62,7 +62,7 @@ impl Default for ControlledCycleConfig {
             convergence_threshold: 0.05,
             dry_rounds_limit: 2,
             budget_ns: 300_000_000_000, // 5 minutes
-            default_escalation_target: EscalationTarget::Sovereign888,
+            default_escalation_target: EscalationTarget::Judge888,
         }
     }
 }
@@ -143,38 +143,60 @@ impl std::fmt::Display for CycleExitCondition {
 /// Only canonical mutation gaps require the sovereign.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EscalationTarget {
-    /// No escalation needed — cycle succeeded
+    /// No escalation needed — cycle succeeded.
     None,
-    /// Operator-level cancellation or manual intervention
+    /// Operator-level cancellation or manual intervention.
     Operator,
-    /// Budget owner — cost extension changes authority/risk
+    /// Budget owner — cost extension changes authority/risk.
     BudgetOwner,
-    /// Evidence owner — truth remains unresolved
+    /// Evidence owner — truth remains unresolved.
     EvidenceOwner,
-    /// Independent verifier — needs third-party audit
+    /// Independent verifier — needs third-party audit.
     IndependentVerifier,
-    /// Organ owner — the organ that owns the topology
+    /// Organ owner — the organ that owns the topology.
     OrganOwner,
-    /// Sovereign 888 — canonical mutation or authority gap
-    Sovereign888,
+    /// 888-APEX judge — hold, evaluate, route evidence.
+    /// Use when a cycle diverges, stalls, or exceeds rounds and requires
+    /// 888-level hold + judgment before continuation.
+    /// JUDGE_888 selects next action; it does NOT authorize irreversible transitions.
+    Judge888,
+    /// F13 Sovereign — human-only gate for irreversible or canonical transitions.
+    /// FORBIDDEN under current mandate (HOLD: genesis bridge, production seal,
+    /// memory promotion, canon ratification).
+    /// JUDGE_888 may escalate to SovereignF13 but CANNOT impersonate it.
+    /// Enum exists to make Fold-1 enforceable at the type level.
+    SovereignF13,
 }
 
 impl EscalationTarget {
     /// Returns the default escalation target for a given exit condition.
+    ///
+    /// Fold-1 law: JUDGE_888 ≠ SOVEREIGN_F13.
+    /// - DivergenceDetected → Judge888 (hold + evaluate; 888 may then escalate to F13)
+    /// - SovereignF13 is never a default exit target; it requires explicit F13 action.
     pub fn for_exit(exit: CycleExitCondition) -> Self {
         match exit {
             CycleExitCondition::Passed => Self::None,
             CycleExitCondition::Cancelled => Self::Operator,
             CycleExitCondition::BudgetExhausted => Self::BudgetOwner,
-            CycleExitCondition::MaxRoundsExceeded => Self::OrganOwner,
+            CycleExitCondition::MaxRoundsExceeded => Self::Judge888,
             CycleExitCondition::ConvergenceStalled => Self::EvidenceOwner,
-            CycleExitCondition::DivergenceDetected => Self::Sovereign888,
+            CycleExitCondition::DivergenceDetected => Self::Judge888,
         }
     }
 
-    /// Returns true if this escalation target maps to 888_HOLD.
+    /// Returns true if this escalation maps to an 888_HOLD action.
+    ///
+    /// SovereignF13 does NOT produce an 888_HOLD — it requires a separate,
+    /// explicit human authorization. Conflating these was the Fold-1 violation.
     pub fn requires_888_hold(&self) -> bool {
-        matches!(self, Self::Sovereign888)
+        matches!(self, Self::Judge888)
+    }
+
+    /// Returns true if this escalation requires direct human (F13) authorization.
+    /// Under current mandate, callers must HOLD and not attempt F13 action.
+    pub fn requires_sovereign_f13(&self) -> bool {
+        matches!(self, Self::SovereignF13)
     }
 }
 
@@ -187,7 +209,8 @@ impl std::fmt::Display for EscalationTarget {
             Self::EvidenceOwner => write!(f, "EVIDENCE_OWNER"),
             Self::IndependentVerifier => write!(f, "INDEPENDENT_VERIFIER"),
             Self::OrganOwner => write!(f, "ORGAN_OWNER"),
-            Self::Sovereign888 => write!(f, "SOVEREIGN_888"),
+            Self::Judge888 => write!(f, "JUDGE_888"),
+            Self::SovereignF13 => write!(f, "SOVEREIGN_F13"),
         }
     }
 }
@@ -527,7 +550,7 @@ mod tests {
             convergence_threshold: 0.05,
             dry_rounds_limit: 2,
             budget_ns: 1_000_000_000, // 1 second
-            default_escalation_target: EscalationTarget::Sovereign888,
+            default_escalation_target: EscalationTarget::Judge888,
         }
     }
 
@@ -707,12 +730,14 @@ mod tests {
         let summary = cycle.summary();
         assert!(!summary.succeeded());
         assert!(summary.needs_escalation());
-        // MaxRoundsExceeded → OrganOwner, not Sovereign888
+        // MaxRoundsExceeded → Judge888 (hold for evaluation), not SovereignF13.
+        // Fold-1: 888 evaluates; F13 only authorizes irreversible transitions.
         assert_eq!(
             summary.escalation_target,
-            EscalationTarget::OrganOwner
+            EscalationTarget::Judge888
         );
-        assert!(!summary.requires_888_hold());
+        assert!(summary.requires_888_hold());
+
     }
 
     #[test]
@@ -801,9 +826,14 @@ mod tests {
 
         let s = cycle.summary();
         assert_eq!(s.exit_condition, CycleExitCondition::DivergenceDetected);
-        assert_eq!(s.escalation_target, EscalationTarget::Sovereign888);
+        // Fold-1: DivergenceDetected → Judge888 (hold + evaluate).
+        // Sovereign888 was split. F13 is never a cycle default exit target.
+        assert_eq!(s.escalation_target, EscalationTarget::Judge888);
         assert!(s.requires_888_hold());
+        // SovereignF13 does NOT produce an 888_HOLD.
+        assert!(!EscalationTarget::SovereignF13.requires_888_hold());
     }
+
 
     #[test]
     fn test_budget_exhaustion_routes_to_budget_owner() {
@@ -1019,10 +1049,9 @@ mod tests {
             "INDEPENDENT_VERIFIER"
         );
         assert_eq!(EscalationTarget::OrganOwner.to_string(), "ORGAN_OWNER");
-        assert_eq!(
-            EscalationTarget::Sovereign888.to_string(),
-            "SOVEREIGN_888"
-        );
+        // Fold-1: two distinct display strings for the two distinct authority levels.
+        assert_eq!(EscalationTarget::Judge888.to_string(), "JUDGE_888");
+        assert_eq!(EscalationTarget::SovereignF13.to_string(), "SOVEREIGN_F13");
     }
 
     #[test]
@@ -1033,6 +1062,36 @@ mod tests {
         assert!(!EscalationTarget::EvidenceOwner.requires_888_hold());
         assert!(!EscalationTarget::IndependentVerifier.requires_888_hold());
         assert!(!EscalationTarget::OrganOwner.requires_888_hold());
-        assert!(EscalationTarget::Sovereign888.requires_888_hold());
+        // Judge888 produces 888_HOLD; SovereignF13 does NOT.
+        // Fold-1: conflating these was the constitutional violation.
+        assert!(EscalationTarget::Judge888.requires_888_hold());
+        assert!(!EscalationTarget::SovereignF13.requires_888_hold());
+    }
+
+    #[test]
+    fn test_judge888_cannot_ratify_f13() {
+        // Type-level proof of Fold-1: Judge888 and SovereignF13 are distinct.
+        // No runtime action maps Judge888 to SovereignF13 behavior.
+        assert_ne!(EscalationTarget::Judge888, EscalationTarget::SovereignF13);
+        assert!(EscalationTarget::Judge888.requires_888_hold());
+        assert!(EscalationTarget::SovereignF13.requires_sovereign_f13());
+        // Sovereign F13 escalation path is reserved — not reachable via for_exit().
+        // All CycleExitCondition defaults must not produce SovereignF13.
+        for exit in [
+            CycleExitCondition::Passed,
+            CycleExitCondition::Cancelled,
+            CycleExitCondition::BudgetExhausted,
+            CycleExitCondition::MaxRoundsExceeded,
+            CycleExitCondition::ConvergenceStalled,
+            CycleExitCondition::DivergenceDetected,
+        ] {
+            assert_ne!(
+                EscalationTarget::for_exit(exit),
+                EscalationTarget::SovereignF13,
+                "CycleExitCondition {:?} must not auto-escalate to SovereignF13",
+                exit
+            );
+        }
     }
 }
+

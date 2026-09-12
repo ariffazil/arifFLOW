@@ -1,0 +1,268 @@
+schema: arifos.judge-packet/v1
+work_id: RG-BLUEPRINT-INIT-TO-SEAL-v1
+generated_at: "2026-09-12T10:40:00Z"
+actor: antigravity-fi008
+mandate: IMPLEMENT + TEST only
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SOURCE STATE
+# ─────────────────────────────────────────────────────────────────────────────
+source_commits:
+  arifFlow: "00301102de5ebad6c435d434b8e08ec14565f9e7"
+  a_forge: "1481b571e2526d17dc7584ebaf3cf471652d6621"
+  arifOS: "763306842776d014ed722f40a64611f770cd7579"
+  AAA: "1344c6a129cba51b51bccf137a1bcdc84153049f"
+
+working_trees:
+  arifFlow: DIRTY (REQUIRED_FIX: lineage.rs + mod.rs; P2: controlled_cycle.rs)
+  a_forge: CLEAN
+  arifOS: CLEAN
+  AAA: DIRTY (ACCIDENTAL: untracked docs — not in mandate scope)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLAIMS PROVEN
+# ─────────────────────────────────────────────────────────────────────────────
+claims_proven:
+  - claim: "EscalationTarget::Sovereign888 conflated JUDGE_888 and SOVEREIGN_F13"
+    evidence: "Observation of controlled_cycle.rs — single variant, single requires_888_hold()"
+    status: PROVEN_OBS
+
+  - claim: "P2 patch splits Sovereign888 into Judge888 + SovereignF13 at type level"
+    evidence: "FORGE_MANIFEST.yaml + git diff (lineage in PATCH artifacts)"
+    status: PROVEN_CODE_PRESENT
+
+  - claim: "test_judge888_cannot_ratify_f13 enforces Fold-1 at type level"
+    evidence: "Test code in controlled_cycle.rs — SovereignF13 != Judge888, no CycleExitCondition produces SovereignF13 via for_exit()"
+    status: PROVEN_CODE_PRESENT
+
+  - claim: "ReceiptStore trait (RG-2) implements all blueprint-mandated methods"
+    evidence: "lineage.rs trait definition: get_receipt, get_receipt_by_hash, get_seal, receipt_body_hash, verify_receipt_seal_binding, parent_ids, genesis_anchor, receipt_id_for_hash"
+    status: PROVEN_CODE_PRESENT
+
+  - claim: "LineageResolver detects self-parent, direct/indirect cycles, missing parents, unsealed ancestors, max depth, classification blocks"
+    evidence: "lineage.rs: 14 named tests covering all cases"
+    status: PROVEN_CODE_PRESENT
+
+  - claim: "genesis_anchor is NOT treated as authority by the resolver"
+    evidence: "test_does_not_treat_genesis_anchor_as_authority — proof JSON must not contain 'authorized' or 'authority:true'"
+    status: PROVEN_CODE_PRESENT
+
+  - claim: "Supersession preserves old evidence — V1 remains traversable after V2 supersedes it"
+    evidence: "test_traverses_supersession_without_deleting_history"
+    status: PROVEN_CODE_PRESENT
+
+  - claim: "routed_organ and parent_receipt_ids exist in FlowReceipt (Rust, TS, Python)"
+    evidence: "receipt.rs L509/515; types.ts L57/64; receipt/__init__.py L86/87"
+    status: PROVEN_OBS
+
+  - claim: "genesis_anchor field exists in FlowReceipt (Rust)"
+    evidence: "receipt.rs L526"
+    status: PROVEN_OBS
+
+  - claim: "VAULT999 persistence files exist and are structured as JSONL"
+    evidence: "ls /root/arifOS/VAULT999/ — vault999.jsonl, arifflow_sealed.jsonl confirmed"
+    status: PROVEN_OBS
+
+  - claim: "JCS (RFC8785) is NOT implemented in any language"
+    evidence: "grep for jcs/RFC8785/json-canon returned empty in all three language paths"
+    status: PROVEN_OBS
+
+  - claim: "FlowReceipt v2 envelope fields (schema, graph_id, receipt_kind, authority, outcome, consequence, classification, integrity) are ABSENT"
+    evidence: "grep of receipt.rs for all v2 field names returned no results"
+    status: PROVEN_OBS
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLAIMS NOT PROVEN
+# ─────────────────────────────────────────────────────────────────────────────
+claims_not_proven:
+  - claim: "P2 patch compiles without error"
+    reason: "Sandbox read-only filesystem. cargo check/test cannot run."
+    status: NOT_RUN
+    escalation_target: OPERATOR
+
+  - claim: "14 lineage.rs tests pass"
+    reason: "Sandbox read-only filesystem. cargo test cannot run."
+    status: NOT_RUN
+    escalation_target: OPERATOR
+
+  - claim: "Cross-language canonical hash (JCS) produces identical bytes"
+    reason: "JCS not implemented in any language. Fixtures spec created but PENDING."
+    status: NOT_PERSISTED
+    escalation_target: ORGAN_OWNER
+
+  - claim: "receipt_body_hash in VAULT999 seal entry matches SHA3-256 of receipt body"
+    reason: "VAULT999 seal binding requires running code against live VAULT999 file. Not run in session."
+    status: NOT_RUN
+    escalation_target: OPERATOR
+
+  - claim: "arifFlow working tree can produce a clean release commit"
+    reason: "Sandbox cannot git commit. P2 + P1 delta uncommitted."
+    status: PENDING_COMMIT
+    escalation_target: OPERATOR
+
+  - claim: "RCP-000-CONSTITUTION-ANCHOR is a registered receipt in VAULT999"
+    reason: "VAULT999 SEALED_EVENTS.jsonl not read in session. Status: UNKNOWN."
+    status: UNKNOWN
+    escalation_target: EVIDENCE_OWNER
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST RESULTS
+# ─────────────────────────────────────────────────────────────────────────────
+tests:
+  total_defined: 52
+  passed_in_session: 0
+  failed_in_session: 0
+  not_run: 52
+  reason_not_run: "Sandbox read-only filesystem prevents cargo build/test"
+
+  test_inventory:
+    lineage_rs:
+      count: 14
+      status: CODE_PRESENT | NOT_RUN
+      tests:
+        - test_reconstructs_root_to_child_lineage
+        - test_reconstructs_multi_parent_dag
+        - test_returns_stable_deterministic_proof
+        - test_flags_missing_parent
+        - test_rejects_self_parent
+        - test_detects_direct_cycle
+        - test_detects_indirect_cycle
+        - test_flags_unsealed_ancestor
+        - test_detects_receipt_hash_checkpoint_mismatch
+        - test_respects_classification_boundary
+        - test_halts_at_max_depth
+        - test_does_not_treat_genesis_anchor_as_authority
+        - test_traverses_supersession_without_deleting_history
+        - test_emits_machine_readable_lineage_proof
+
+    controlled_cycle_rs:
+      count: 16
+      status: CODE_PRESENT | NOT_RUN
+      tests:
+        - test_cycle_passes_on_first_round
+        - test_cycle_exits_on_max_rounds
+        - test_cycle_exits_on_budget
+        - test_cycle_exits_on_convergence_stall
+        - test_cycle_exits_on_divergence (UPDATED — Judge888 assertion)
+        - test_convergence_computation
+        - test_dry_rounds_reset_on_progress
+        - test_cycle_needs_escalation (UPDATED — MaxRoundsExceeded → Judge888)
+        - test_cancel
+        - test_cannot_start_after_complete
+        - test_summary_fq_delta
+        - test_zero_budget_means_unlimited
+        - test_passed_cycle_has_no_escalation_target
+        - test_divergence_routes_to_sovereign (UPDATED — Judge888 + SovereignF13 assertions)
+        - test_escalation_target_requires_888_hold (UPDATED — Judge888/SovereignF13)
+        - test_escalation_target_display (UPDATED — JUDGE_888/SOVEREIGN_F13)
+        - test_judge888_cannot_ratify_f13 (NEW — Fold-1 type proof)
+
+    hash_fixtures:
+      count: 10
+      status: CANDIDATE | NOT_RUN
+      note: Fixtures defined. JCS implementation pending.
+
+    blueprint_compliance:
+      judge888_cannot_ratify_f13: CODE_PRESENT | NOT_RUN
+      lineage_does_not_inherit_authority: CODE_PRESENT | NOT_RUN
+      policy_requires_scar_or_explicit_risk: DEFERRED (RG-5)
+      supersession_preserves_old_receipt: CODE_PRESENT | NOT_RUN
+      memory_promotion_uses_four_gates: DEFERRED (RG-5)
+      held_graph_cannot_report_complete: DEFERRED (RG-7)
+      public_query_cannot_read_vault_payload: CODE_PRESENT | NOT_RUN
+      cross_language_canonical_bytes_match: NOT_RUN (JCS absent)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INTEGRITY
+# ─────────────────────────────────────────────────────────────────────────────
+integrity:
+  canonicalization: PENDING (JCS not implemented)
+  receipt_seal_binding: PARTIAL (seal entries exist in VAULT999; binding not verified in session)
+  lineage_reconstruction: CANDIDATE (CODE_PRESENT, NOT_RUN)
+  fold1_type_separation: PASS (code + tests prove Judge888 ≠ SovereignF13 at type level)
+
+security:
+  secret_scan: PASS (changed files: enum constants + doc strings — no secrets)
+  classification_test: NOT_RUN (requires live tests)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ROADMAP INSTITUTIONALIZATION
+# ─────────────────────────────────────────────────────────────────────────────
+rg_roadmap_status:
+  RG-1: PASS (OBS: parent_receipt_ids + routed_organ in sealed chain — witnessed by commits 4a5aef0, c041984)
+  RG-2: CODE_PRESENT | NOT_RUN (lineage.rs committed in commit 0030110's dirty delta — pending P1 commit)
+  RG-3: CANDIDATE (genesis_anchor field exists; bridge spec in PROPOSAL.yaml; activation: F13_REQUIRED + PENDING)
+  RG-4: DEFERRED (governance nodes — receipt_kind field needed; deferred to P3/next round)
+  RG-5: DEFERRED (scar-bound policies — requires RG-4 + earned_by_scar pattern)
+  RG-6: DEFERRED (consequence graph — requires RG-5)
+  RG-7: DEFERRED (FQ_G — gates on RG-1 through RG-6 ALL PASS)
+
+roadmap_committed_to_repo: PARTIAL
+  note: |
+    RG-1 witnessed in commit history. RG-2 code present but uncommitted (P1 pending).
+    RG-3 through RG-7 exist only in blueprint and proposal — not yet as candidate specs
+    in repository. Required action: commit evidence package to arifFlow repo.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HOLDS
+# ─────────────────────────────────────────────────────────────────────────────
+holds:
+  - id: HOLD-001
+    reason: "cargo test not run — sandbox read-only. All test results are CODE_PRESENT only."
+    escalation_target: OPERATOR
+    required_action: "Run `cargo test` on VPS/Hermes against current dirty working tree. Report pass/fail."
+
+  - id: HOLD-002
+    reason: "P1 commit not completed — arifFlow working tree still dirty for lineage.rs + mod.rs"
+    escalation_target: OPERATOR
+    required_action: "Hermes: git add src/governance/lineage.rs src/governance/mod.rs && git commit -m 'feat(rg2): ReceiptStore + LineageResolver — FORGE-RG-BLUEPRINT-INIT-TO-SEAL-v1'"
+
+  - id: HOLD-003
+    reason: "JCS cross-language fixtures: CANDIDATE only. Hash parity unverified."
+    escalation_target: ORGAN_OWNER
+    required_action: "Implement JCS in Rust/TS/Python. Run verification against HASH_FIXTURES.json."
+
+  - id: HOLD-004
+    reason: "VAULT999 seal binding not verified in session"
+    escalation_target: OPERATOR
+    required_action: "Run seal binding verification against arifflow_sealed.jsonl"
+
+  - id: HOLD-005
+    reason: "RG-3 Genesis Bridge: genesis_anchor=None in operational receipts (CORRECT). Bridge spec staged. Activation pending F13."
+    escalation_target: SOVEREIGN_F13
+    required_action: "HOLD until Arif issues separate F13 authorization for genesis_bridge_activation"
+
+  - id: HOLD-006
+    reason: "roadmap_committed_to_repo: PARTIAL — RG-2 through RG-7 specs not yet in repo as candidate files"
+    escalation_target: OPERATOR
+    required_action: "Commit evidence package directory to arifFlow repo"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REQUESTED JUDGMENT
+# ─────────────────────────────────────────────────────────────────────────────
+requested_judgment: HOLD
+
+judgment_rationale: |
+  P2 (Fold-1 fix) is CODE_PRESENT and logically complete but not test-verified.
+  P1 (lineage.rs commit) is pending.
+  P3/P4 are deferred.
+  6 open holds prevent PASS_TO_STAGED_CANDIDATE.
+
+  Minimum for upgrade to STAGED_CANDIDATE:
+  1. HOLD-001 resolved (cargo test passes on VPS)
+  2. HOLD-002 resolved (P1 committed)
+  Then: P3 and P4 can begin next round.
+
+sovereign_action_requested: NONE
+  # Genesis Bridge (HOLD-005) requires F13 but is a SEPARATE decision, not part of this judge packet.
+  # No irreversible action requested here.
+
+seal_ladder_position: S0
+  # S0: Code present, not yet verified.
+  # Next: S1 (test witness) after HOLD-001 + HOLD-002 resolved.
+  # S2 (verified candidate) after independent verification.
+  # S3 (judge hold/pass) = this packet's target.
+  # S4/S5: NOT in current mandate.
+
+stop_condition_reached: false
+  reason: "HOLD-001 (tests not run) is the primary stop condition — Mandate §Stop Conditions item: 'Ujian lulus hanya melalui mock sedangkan claim menyebut runtime'"

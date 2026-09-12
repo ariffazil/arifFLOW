@@ -9,6 +9,7 @@ pub mod cooling;
 pub mod invariants;
 pub mod kabarkan;
 pub mod kabarkan_fq;
+pub mod lineage;
 pub mod tri_witness;
 pub mod vault999;
 
@@ -23,8 +24,13 @@ pub use kabarkan_fq::{
     FqAlertEvent, FqAlertSeverity, FqCoolingCorrelationEvent, FqLaneEvent, FqSnapshotEvent,
     FqTrend, KabarkanFqInstrument,
 };
+pub use lineage::{
+    ClassificationBlock, EdgeFailure, GenesisAnchor, InMemoryReceiptStore, JsonlReceiptStore,
+    LineageEdge, LineageNode, LineageNodeKind, LineageProof, LineageResolver, LineageStatus,
+    ReceiptCycle, ReceiptStore, ReceiptStoreError, SealBindingStatus,
+};
 pub use tri_witness::{
     AgentCandidate, ConsensusResolution, TriWitness, TriWitnessVerdict, WitnessChannel,
     WitnessMergeResult, resolve_consensus_with_tiebreaker,
 };
-pub use vault999::Vault999Sealer;
+pub use vault999::{SealReceipt, Vault999Sealer};
