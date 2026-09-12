@@ -76,6 +76,14 @@ pub trait ReceiptStore {
     /// 0 = public (full node in proofs), 1 = protected (opaque stub; identity
     /// fields redacted, structure/edges preserved, genesis anchors suppressed).
     fn classification_level(&self, receipt_id: &str) -> Result<u8, Self::Error>;
+
+    /// Child body_hashes (RG-2D forward traversal): every stored receipt whose
+    /// parent_receipt_ids contains this receipt's CURRENT body hash.
+    /// Input is the receipt_id (UUID); output is body hashes — symmetric with
+    /// the identity model (edges are body-hash keyed).
+    /// v1 is a linear scan; a reverse index is a later optimization, not a
+    /// semantic change. Unknown receipt_id → empty vec (matches parent_ids).
+    fn children(&self, receipt_id: &str) -> Result<Vec<String>, Self::Error>;
 }
 
 /// Seal binding verification result.
@@ -210,6 +218,14 @@ pub struct LineageProof {
     pub max_depth_reached: usize,
     /// Genesis anchors discovered during traversal.
     pub genesis_anchors: Vec<GenesisAnchor>,
+    /// SHA3-256 over the serde serialization of this proof with the field
+    /// itself excluded (serde skip — canonical form = proof sans hash).
+    /// Same store state + same target → identical hash; any semantic-field
+    /// change (nodes, edges, statuses, roots) → different hash. In-process
+    /// determinism only — cross-language proof hashing follows the JCS
+    /// contract (spec/RG2_JCS_HASH_CONTRACT_v1.md).
+    #[serde(skip, default)]
+    pub proof_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -398,7 +414,7 @@ impl<'a, S: ReceiptStore> LineageProver<'a, S> {
         root_receipt_ids.sort();
         root_receipt_ids.dedup();
 
-        LineageProof {
+        let mut proof = LineageProof {
             target_body_hash,
             target_receipt_id,
             root_receipt_ids,
@@ -414,7 +430,16 @@ impl<'a, S: ReceiptStore> LineageProver<'a, S> {
             classification_blocks: self.classification_blocks,
             max_depth_reached,
             genesis_anchors,
-        }
+            proof_hash: String::new(),
+        };
+        // proof_hash over the canonical (serde-skip) form: the field is
+        // excluded from serialization, so the digest covers every semantic
+        // field and nothing of itself.
+        let canonical = serde_json::to_string(&proof).unwrap_or_default();
+        let mut hasher = Sha3Hasher::new();
+        hasher.absorb(canonical.as_bytes());
+        proof.proof_hash = hex::encode(hasher.finalize());
+        proof
     }
 
     /// Compute the body_hash for the target. If target is a receipt_id, look up
@@ -679,6 +704,7 @@ fn match_worse(a: LineageStatus, b: LineageStatus) -> LineageStatus {
 
 /// Reference in-memory implementation of ReceiptStore. Useful for tests
 /// and small-scale validation. Production should use a JSONL-backed store.
+#[derive(Clone)]
 pub struct InMemoryReceiptStore {
     receipts: BTreeMap<String, FlowReceipt>,
     seals: BTreeMap<String, SealReceipt>,
@@ -802,6 +828,22 @@ impl ReceiptStore for InMemoryReceiptStore {
             .and_then(|r| self.genesis_cache.get(&r.hash()))
             .copied()
             .unwrap_or(0) as u8)
+    }
+
+    fn children(&self, receipt_id: &str) -> Result<Vec<String>, Self::Error> {
+        let hash = match self.receipts.get(receipt_id) {
+            Some(r) => r.hash(),
+            None => return Ok(Vec::new()),
+        };
+        let mut children: Vec<String> = self
+            .receipts
+            .values()
+            .filter(|r| r.parent_receipt_ids.contains(&hash))
+            .map(|r| r.hash())
+            .collect();
+        children.sort();
+        children.dedup();
+        Ok(children)
     }
 }
 
@@ -1058,6 +1100,24 @@ impl ReceiptStore for JsonlReceiptStore {
                 .unwrap_or(0)
         })
     }
+
+    fn children(&self, receipt_id: &str) -> Result<Vec<String>, Self::Error> {
+        self.with_loaded(|i| {
+            let hash = match i.by_id.get(receipt_id) {
+                Some(r) => r.hash(),
+                None => return Vec::new(),
+            };
+            let mut children: Vec<String> = i
+                .by_id
+                .values()
+                .filter(|r| r.parent_receipt_ids.contains(&hash))
+                .map(|r| r.hash())
+                .collect();
+            children.sort();
+            children.dedup();
+            children
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1300,6 +1360,29 @@ mod tests {
 
         fn classification_level(&self, _receipt_id: &str) -> Result<u8, Self::Error> {
             Ok(0)
+        }
+
+        fn children(&self, receipt_id: &str) -> Result<Vec<String>, Self::Error> {
+            // Index-divergence model: edges resolve through the hand-wired
+            // index, so children of X = registered keys K where the receipt
+            // registered at K lists X's registered key as parent.
+            let key = match self
+                .by_hash
+                .iter()
+                .find(|(_, r)| r.receipt_id.to_string() == receipt_id)
+            {
+                Some((k, _)) => k.clone(),
+                None => return Ok(Vec::new()),
+            };
+            let mut children: Vec<String> = self
+                .by_hash
+                .iter()
+                .filter(|(_, r)| r.parent_receipt_ids.contains(&key))
+                .map(|(k, _)| k.clone())
+                .collect();
+            children.sort();
+            children.dedup();
+            Ok(children)
         }
     }
 
@@ -1590,6 +1673,153 @@ mod tests {
 
         assert_eq!(proof.status, LineageStatus::PartialDepthLimit);
         assert!(proof.ordered_nodes.len() <= 3);
+    }
+
+    #[test]
+    fn test_children_reverse_traversal() {
+        // RG-2D: forward edges resolve from the same durable evidence.
+        let mut store = InMemoryReceiptStore::new();
+        let mut sealer = Vault999Sealer::new();
+
+        let root = make_receipt("a", 0, vec![]);
+        let root_id = root.receipt_id.to_string();
+        store.insert_receipt(root.clone());
+        store.insert_seal(make_seal_for(&root, &mut sealer), root_id.clone());
+
+        let a = make_receipt("a", 1, vec![root.hash()]);
+        let a_id = a.receipt_id.to_string();
+        store.insert_receipt(a.clone());
+        store.insert_seal(make_seal_for(&a, &mut sealer), a_id.clone());
+
+        let b = make_receipt("b", 1, vec![root.hash()]);
+        let b_id = b.receipt_id.to_string();
+        store.insert_receipt(b.clone());
+        store.insert_seal(make_seal_for(&b, &mut sealer), b_id.clone());
+
+        let c = make_receipt("c", 2, vec![a.hash()]);
+        let c_id = c.receipt_id.to_string();
+        store.insert_receipt(c.clone());
+        store.insert_seal(make_seal_for(&c, &mut sealer), c_id.clone());
+
+        // Fan-out: root's children = {a, b} body hashes, sorted + deduped.
+        let mut expected = vec![a.hash(), b.hash()];
+        expected.sort();
+        assert_eq!(store.children(&root_id).unwrap(), expected);
+        // Chain: a's child = c.
+        assert_eq!(store.children(&a_id).unwrap(), vec![c.hash()]);
+        // Leaf and unknown ids → empty (matches parent_ids semantics).
+        assert!(store.children(&c_id).unwrap().is_empty());
+        assert!(store.children("nonexistent").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_proof_hash_deterministic_and_sensitive() {
+        // Determinism: same store, same resolver, same target → identical hash.
+        // Sensitivity: a semantic proof change flips the hash.
+        let build = || {
+            let mut s = InMemoryReceiptStore::new();
+            let mut sealer = Vault999Sealer::new();
+            let root = make_receipt("a", 0, vec![]);
+            s.insert_receipt(root.clone());
+            // root intentionally UNSEALED.
+            let child = make_receipt("a", 1, vec![root.hash()]);
+            let cid = child.receipt_id.to_string();
+            s.insert_receipt(child.clone());
+            s.insert_seal(make_seal_for(&child, &mut sealer), cid.clone());
+            (s, cid)
+        };
+
+        let (s, cid) = build();
+        let r1 = LineageResolver::new(s.clone()).with_require_sealed(false);
+        let h1a = r1.reconstruct(&cid).proof_hash;
+        let h1b = r1.reconstruct(&cid).proof_hash;
+        assert!(!h1a.is_empty());
+        assert_eq!(h1a, h1b, "same inputs must produce identical proof_hash");
+
+        // Same store, require_sealed=true surfaces the unsealed ancestor →
+        // different status, different unsealed_receipts → different hash.
+        let r2 = LineageResolver::new(s).with_require_sealed(true);
+        let h2 = r2.reconstruct(&cid).proof_hash;
+        assert_ne!(h1a, h2, "semantic proof change must change proof_hash");
+    }
+
+    #[test]
+    #[ignore = "live OL-004 audit — reads production receipt store + sealed ledger; writes SEAL_BINDING_PROOF.json"]
+    fn live_seal_binding_audit_writes_proof_json() {
+        let receipts_path = "/var/lib/arifflow/receipts.jsonl";
+        let seals_path = "/root/arifOS/VAULT999/arifflow_sealed.jsonl";
+        let store = JsonlReceiptStore::new(receipts_path, seals_path);
+
+        // Sample the 25 most recent seal entries (file append order = chain order).
+        let seal_lines = std::fs::read_to_string(seals_path).expect("sealed ledger readable");
+        let mut sampled: Vec<(u64, String)> = Vec::new();
+        for line in seal_lines.lines().filter(|l| !l.trim().is_empty()) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                let pos = v
+                    .get("chain_position")
+                    .and_then(|p| p.as_u64())
+                    .unwrap_or(0);
+                if let Some(rid) = v.get("receipt_id").and_then(|r| r.as_str()) {
+                    sampled.push((pos, rid.to_string()));
+                }
+            }
+        }
+        sampled.sort_by_key(|(pos, _)| *pos);
+        let sample: Vec<String> = sampled
+            .iter()
+            .rev()
+            .take(25)
+            .map(|(_, rid)| rid.clone())
+            .collect();
+        assert!(!sample.is_empty(), "no seal entries found in ledger");
+
+        let (mut bound, mut unsealed, mut tampered, mut not_found) =
+            (0usize, 0usize, 0usize, 0usize);
+        let mut details = Vec::new();
+        for rid in &sample {
+            let status = store.verify_receipt_seal_binding(rid).expect("verify");
+            match status {
+                SealBindingStatus::Bound => bound += 1,
+                SealBindingStatus::Unsealed => unsealed += 1,
+                SealBindingStatus::TamperedBody => tampered += 1,
+                SealBindingStatus::NotFound => not_found += 1,
+            }
+            details.push(serde_json::json!({
+                "receipt_id": rid,
+                "binding": status,
+            }));
+        }
+
+        let proof = serde_json::json!({
+            "schema": "arifos.seal-binding-proof/v1",
+            "generated_at": chrono::Utc::now().to_rfc3339(),
+            "store": {
+                "receipts": receipts_path,
+                "seals": seals_path,
+                "receipt_count": store.len(),
+                "seal_count": store.seal_count(),
+            },
+            "sample": {
+                "size": sample.len(),
+                "bound": bound,
+                "unsealed": unsealed,
+                "tampered_body": tampered,
+                "not_found": not_found,
+            },
+            "details": details,
+        });
+        let out = "/root/forge_work/rg2-verify/SEAL_BINDING_PROOF.json";
+        std::fs::create_dir_all("/root/forge_work/rg2-verify").ok();
+        std::fs::write(out, serde_json::to_string_pretty(&proof).unwrap())
+            .expect("write SEAL_BINDING_PROOF.json");
+        eprintln!(
+            "[live-audit] bound={} unsealed={} tampered={} not_found={} (sample {})",
+            bound,
+            unsealed,
+            tampered,
+            not_found,
+            sample.len()
+        );
     }
 
     #[test]
