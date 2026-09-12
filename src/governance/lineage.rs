@@ -23,9 +23,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use thiserror::Error;
 
-use crate::governance::vault999::{SealReceipt, Vault999Sealer};
-use sha3::Digest;
+use crate::governance::vault999::SealReceipt;
 use crate::receipt::FlowReceipt;
+use sha3::Digest;
 
 // ── ReceiptStore trait (read-only by mandate) ───────────────────────────
 
@@ -71,6 +71,11 @@ pub trait ReceiptStore {
 
     /// Receipt_id for a given body_hash, if known.
     fn receipt_id_for_hash(&self, body_hash: &str) -> Result<Option<String>, Self::Error>;
+
+    /// Classification level for a receipt body (L7).
+    /// 0 = public (full node in proofs), 1 = protected (opaque stub; identity
+    /// fields redacted, structure/edges preserved, genesis anchors suppressed).
+    fn classification_level(&self, receipt_id: &str) -> Result<u8, Self::Error>;
 }
 
 /// Seal binding verification result.
@@ -105,6 +110,7 @@ pub enum ReceiptStoreError {
 pub struct LineageResolver<S: ReceiptStore> {
     store: S,
     max_depth: usize,
+    max_nodes: usize,
     require_sealed: bool,
 }
 
@@ -113,12 +119,18 @@ impl<S: ReceiptStore> LineageResolver<S> {
         Self {
             store,
             max_depth: 4096,
+            max_nodes: 10_000,
             require_sealed: true,
         }
     }
 
     pub fn with_max_depth(mut self, max: usize) -> Self {
         self.max_depth = max;
+        self
+    }
+
+    pub fn with_max_nodes(mut self, max: usize) -> Self {
+        self.max_nodes = max;
         self
     }
 
@@ -129,7 +141,13 @@ impl<S: ReceiptStore> LineageResolver<S> {
 
     /// Reconstruct full backward lineage from `target` to its roots.
     pub fn reconstruct(&self, target: &str) -> LineageProof {
-        LineageProver::new(&self.store, self.max_depth, self.require_sealed).prove(target)
+        LineageProver::new(
+            &self.store,
+            self.max_depth,
+            self.max_nodes,
+            self.require_sealed,
+        )
+        .prove(target)
     }
 }
 
@@ -137,6 +155,7 @@ impl<S: ReceiptStore> LineageResolver<S> {
 struct LineageProver<'a, S: ReceiptStore> {
     store: &'a S,
     max_depth: usize,
+    max_nodes: usize,
     require_sealed: bool,
     /// visited keyed by body_hash. Body_hash is the stable DAG identity.
     visited: BTreeMap<String, LineageNode>,
@@ -145,6 +164,7 @@ struct LineageProver<'a, S: ReceiptStore> {
     missing_parents: BTreeSet<String>,
     unsealed: BTreeSet<String>,
     invalid_bindings: BTreeSet<String>,
+    self_parents: BTreeSet<String>,
     cycles: Vec<ReceiptCycle>,
     classification_blocks: Vec<ClassificationBlock>,
     root_body_hashes: BTreeSet<String>,
@@ -153,6 +173,8 @@ struct LineageProver<'a, S: ReceiptStore> {
     hash_to_id: BTreeMap<String, String>,
     /// Tracks whether DFS hit the max_depth limit.
     depth_limit_hit: bool,
+    /// Tracks whether DFS hit the max_nodes limit.
+    nodes_limit_hit: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +199,9 @@ pub struct LineageProof {
     pub unsealed_receipts: Vec<String>,
     /// Receipts with body-hash / seal-binding mismatch.
     pub invalid_bindings: Vec<String>,
+    /// Receipts that list themselves as parent (L2) — reported distinctly
+    /// from true multi-node cycles.
+    pub self_parent_receipts: Vec<String>,
     /// Cycles detected during traversal.
     pub cycles: Vec<ReceiptCycle>,
     /// Classification-blocked ancestors (opaque stubs only).
@@ -299,22 +324,25 @@ impl LineageStatus {
 }
 
 impl<'a, S: ReceiptStore> LineageProver<'a, S> {
-    fn new(store: &'a S, max_depth: usize, require_sealed: bool) -> Self {
+    fn new(store: &'a S, max_depth: usize, max_nodes: usize, require_sealed: bool) -> Self {
         Self {
             store,
             max_depth,
+            max_nodes,
             require_sealed,
             visited: BTreeMap::new(),
             edges: BTreeSet::new(),
             missing_parents: BTreeSet::new(),
             unsealed: BTreeSet::new(),
             invalid_bindings: BTreeSet::new(),
+            self_parents: BTreeSet::new(),
             cycles: Vec::new(),
             classification_blocks: Vec::new(),
             root_body_hashes: BTreeSet::new(),
             hash_to_id: BTreeMap::new(),
             in_stack: HashSet::new(),
             depth_limit_hit: false,
+            nodes_limit_hit: false,
         }
     }
 
@@ -381,6 +409,7 @@ impl<'a, S: ReceiptStore> LineageProver<'a, S> {
             unresolved_parents: self.missing_parents.into_iter().collect(),
             unsealed_receipts: self.unsealed.into_iter().collect(),
             invalid_bindings: self.invalid_bindings.into_iter().collect(),
+            self_parent_receipts: self.self_parents.into_iter().collect(),
             cycles: self.cycles,
             classification_blocks: self.classification_blocks,
             max_depth_reached,
@@ -396,9 +425,19 @@ impl<'a, S: ReceiptStore> LineageProver<'a, S> {
         if let Ok(Some(receipt)) = self.store.get_receipt(target) {
             return receipt.hash();
         }
-        // Try body_hash lookup (verifies it's a known hash).
-        if let Ok(Some(receipt)) = self.store.get_receipt_by_hash(target) {
-            return receipt.hash();
+        // Try body_hash lookup: if the store's INDEX resolves this address,
+        // use it AS the address. Re-deriving the content hash here would
+        // silently discard index-keyed addressing (the divergence model a
+        // corrupted/tampered index presents). The node's body_hash_recorded
+        // field still reports the content hash, so divergence stays visible.
+        if self
+            .store
+            .get_receipt_by_hash(target)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return target.to_string();
         }
         // Fall through: target is unknown — treat as body_hash string.
         target.to_string()
@@ -414,6 +453,11 @@ impl<'a, S: ReceiptStore> LineageProver<'a, S> {
         // L9: bounded traversal
         if depth > self.max_depth {
             self.depth_limit_hit = true;
+            self.in_stack.remove(body_hash);
+            return (LineageStatus::PartialDepthLimit, depth);
+        }
+        if self.visited.len() >= self.max_nodes {
+            self.nodes_limit_hit = true;
             self.in_stack.remove(body_hash);
             return (LineageStatus::PartialDepthLimit, depth);
         }
@@ -436,10 +480,15 @@ impl<'a, S: ReceiptStore> LineageProver<'a, S> {
 
         let receipt_id = receipt.as_ref().map(|r| r.receipt_id.to_string());
 
-        // Track hash → id mapping for proof output
-        if let Some(rid) = &receipt_id {
-            self.hash_to_id
-                .insert(body_hash.to_string(), rid.clone());
+        // L7: classification gate — decided BEFORE any identity or anchor leak.
+        let protected = match &receipt_id {
+            Some(rid) => self.store.classification_level(rid).unwrap_or(0) >= 1,
+            None => false,
+        };
+
+        // Track hash → id mapping for proof output (suppressed when protected).
+        if let (Some(rid), false) = (&receipt_id, protected) {
+            self.hash_to_id.insert(body_hash.to_string(), rid.clone());
         }
 
         // Verify seal binding (only meaningful when receipt_id is known).
@@ -458,32 +507,45 @@ impl<'a, S: ReceiptStore> LineageProver<'a, S> {
 
         let node_kind = if receipt.is_none() {
             LineageNodeKind::Unresolved
+        } else if protected {
+            LineageNodeKind::ClassificationOpaque
         } else {
             LineageNodeKind::FullReceipt
         };
 
-        // Record genesis anchor if present.
-        if let (Some(_), Some(rid)) = (&receipt, &receipt_id) {
-            if let Ok(Some(anchor)) = self.store.genesis_anchor(rid) {
-                genesis_anchors.push(GenesisAnchor {
-                    body_hash: body_hash.to_string(),
-                    receipt_id: rid.clone(),
-                    anchor: anchor.clone(),
-                });
-            }
+        // Record genesis anchor if present — suppressed for protected nodes;
+        // an anchor entry would carry receipt identity across the boundary.
+        if let (Some(_), Some(rid)) = (&receipt, &receipt_id)
+            && !protected
+            && let Ok(Some(anchor)) = self.store.genesis_anchor(rid)
+        {
+            genesis_anchors.push(GenesisAnchor {
+                body_hash: body_hash.to_string(),
+                receipt_id: rid.clone(),
+                anchor: anchor.clone(),
+            });
         }
 
         self.visited.insert(
             body_hash.to_string(),
             LineageNode {
                 body_hash: body_hash.to_string(),
-                receipt_id: receipt_id.clone(),
+                receipt_id: if protected { None } else { receipt_id.clone() },
                 body_hash_recorded: recorded_body_hash,
                 kind: node_kind,
                 depth,
                 seal_status: binding.clone(),
             },
         );
+
+        // Register the classification block — structure preserved, payload opaque.
+        if protected {
+            self.classification_blocks.push(ClassificationBlock {
+                body_hash: body_hash.to_string(),
+                receipt_id: None,
+                reason: "Protected classification — opaque stub, structure preserved".to_string(),
+            });
+        }
 
         // L5: unsealed handling
         if self.require_sealed
@@ -512,32 +574,6 @@ impl<'a, S: ReceiptStore> LineageProver<'a, S> {
             None => Vec::new(),
         };
 
-        // L2: self-parent check
-        // A receipt is self-parented when one of its parent_receipt_ids equals
-        // the body's hash AS IT IS NOW (post-parent-set). Since the receipt
-        // object's hash includes parent_receipt_ids, true self-parent means the
-        // receipt author inserted r.hash() into r.parent_receipt_ids — which is
-        // impossible to compute (chicken-and-egg). So self-parent detection
-        // here catches:
-        //   (a) Construction-time cycle (parent set to *another* hash that
-        //       happens to be the same hash before parent set). We detect
-        //       by checking if any parent_hash matches a hash that *exists*
-        //       in the visited map with cycle path back to this node.
-        //   (b) Hash collision (two distinct receipts with same hash — vanishingly rare).
-        //
-        // The reliable signal is: a parent_hash points to a receipt whose
-        // parent_receipt_ids contains the current body_hash. We do this check
-        // by examining the in_stack (DFS path) — if any parent's parent chain
-        // comes back to us, that's a cycle. The simple direct check `p == body_hash`
-        // catches only the impossible case but is kept as a defensive guard.
-        if parents.iter().any(|p| p == body_hash) {
-            self.cycles.push(ReceiptCycle {
-                cycle_path: vec![body_hash.to_string(), body_hash.to_string()],
-            });
-            self.in_stack.remove(body_hash);
-            return (LineageStatus::InvalidSelfParent, depth);
-        }
-
         // Root handling
         if parents.is_empty() {
             self.root_body_hashes.insert(body_hash.to_string());
@@ -545,11 +581,20 @@ impl<'a, S: ReceiptStore> LineageProver<'a, S> {
             return (LineageStatus::Valid, depth);
         }
 
-        // L3: cycle detection via DFS path stack
+        // L2/L3: per-parent guards. A self-parent edge (L2) is recorded
+        // distinctly from multi-node cycles (L3) and SKIPPED — never an
+        // early return — so remaining parents still traverse.
         let mut worst = LineageStatus::Valid;
         let mut max_child_depth = depth;
 
         for parent_hash in &parents {
+            // L2: self-parent
+            if parent_hash == body_hash {
+                self.self_parents.insert(body_hash.to_string());
+                worst = match_worse(worst, LineageStatus::InvalidSelfParent);
+                continue;
+            }
+
             // Already in current DFS path → cycle
             if self.in_stack.contains(parent_hash) {
                 self.cycles.push(ReceiptCycle {
@@ -595,13 +640,16 @@ impl<'a, S: ReceiptStore> LineageProver<'a, S> {
         if !self.cycles.is_empty() {
             return LineageStatus::InvalidCycle;
         }
+        if !self.self_parents.is_empty() {
+            return LineageStatus::InvalidSelfParent;
+        }
         if !self.missing_parents.is_empty() {
             return LineageStatus::PartialMissingParent;
         }
         if !self.unsealed.is_empty() {
             return LineageStatus::PartialUnsealedReceipt;
         }
-        if self.depth_limit_hit {
+        if self.depth_limit_hit || self.nodes_limit_hit {
             return LineageStatus::PartialDepthLimit;
         }
         if !self.classification_blocks.is_empty() {
@@ -624,11 +672,7 @@ fn match_worse(a: LineageStatus, b: LineageStatus) -> LineageStatus {
             LineageStatus::InvalidSealBinding => 7,
         }
     };
-    if rank(&b) > rank(&a) {
-        b
-    } else {
-        a
-    }
+    if rank(&b) > rank(&a) { b } else { a }
 }
 
 // ── In-Memory ReceiptStore (for tests + small scale) ──────────────────
@@ -652,11 +696,7 @@ impl InMemoryReceiptStore {
 
     pub fn insert_receipt(&mut self, receipt: FlowReceipt) {
         let id = receipt.receipt_id.to_string();
-        self.receipts.insert(id.clone(), receipt);
-        if self.seals.contains_key(&id) == false {
-            // Auto-create seal binding for test convenience
-            // (real production seals would come from Vault999Sealer.seal())
-        }
+        self.receipts.insert(id, receipt);
     }
 
     pub fn insert_seal(&mut self, seal: SealReceipt, receipt_id: String) {
@@ -685,10 +725,7 @@ impl ReceiptStore for InMemoryReceiptStore {
         Ok(self.receipts.get(receipt_id).cloned())
     }
 
-    fn get_receipt_by_hash(
-        &self,
-        body_hash: &str,
-    ) -> Result<Option<FlowReceipt>, Self::Error> {
+    fn get_receipt_by_hash(&self, body_hash: &str) -> Result<Option<FlowReceipt>, Self::Error> {
         // In-memory: hash all receipts, find match.
         // For larger stores, a hash→receipt index would be more efficient.
         for r in self.receipts.values() {
@@ -755,6 +792,17 @@ impl ReceiptStore for InMemoryReceiptStore {
         }
         Ok(None)
     }
+
+    fn classification_level(&self, receipt_id: &str) -> Result<u8, Self::Error> {
+        // Classification cache is keyed by the receipt's CURRENT body hash
+        // (mark_classification registers it that way). Unregistered → public.
+        Ok(self
+            .receipts
+            .get(receipt_id)
+            .and_then(|r| self.genesis_cache.get(&r.hash()))
+            .copied()
+            .unwrap_or(0) as u8)
+    }
 }
 
 // ── Minimal SHA3-256 helper for seal-binding verification ───────────────
@@ -788,6 +836,13 @@ impl Sha3Hasher {
 /// and seal entries from a separate file (e.g., /root/arifOS/VAULT999/arifflow_sealed.jsonl).
 /// Built lazily on first query.
 pub struct JsonlReceiptStore {
+    /// Interior-mutability cache: files are read once on first query, then
+    /// served from memory. (Not Sync — single-threaded use; the daemon loads
+    /// one store per query context.)
+    inner: std::cell::RefCell<JsonlInner>,
+}
+
+struct JsonlInner {
     receipts_path: std::path::PathBuf,
     seals_path: std::path::PathBuf,
     by_id: BTreeMap<String, FlowReceipt>,
@@ -797,24 +852,45 @@ pub struct JsonlReceiptStore {
 }
 
 impl JsonlReceiptStore {
-    pub fn new<P: Into<std::path::PathBuf>>(
-        receipts_path: P,
-        seals_path: P,
-    ) -> Self {
+    pub fn new<P: Into<std::path::PathBuf>>(receipts_path: P, seals_path: P) -> Self {
         Self {
-            receipts_path: receipts_path.into(),
-            seals_path: seals_path.into(),
-            by_id: BTreeMap::new(),
-            by_hash: BTreeMap::new(),
-            seal_by_id: BTreeMap::new(),
-            loaded: false,
+            inner: std::cell::RefCell::new(JsonlInner {
+                receipts_path: receipts_path.into(),
+                seals_path: seals_path.into(),
+                by_id: BTreeMap::new(),
+                by_hash: BTreeMap::new(),
+                seal_by_id: BTreeMap::new(),
+                loaded: false,
+            }),
         }
     }
 
-    fn ensure_loaded(&mut self) -> Result<(), ReceiptStoreError> {
-        if self.loaded {
-            return Ok(());
+    /// Run `f` against the loaded inner state. Loads lazily exactly once.
+    fn with_loaded<R>(&self, f: impl FnOnce(&JsonlInner) -> R) -> Result<R, ReceiptStoreError> {
+        {
+            let mut inner = self.inner.borrow_mut();
+            if !inner.loaded {
+                inner.load()?;
+            }
         }
+        Ok(f(&self.inner.borrow()))
+    }
+
+    pub fn len(&self) -> usize {
+        self.with_loaded(|i| i.by_id.len()).unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn seal_count(&self) -> usize {
+        self.with_loaded(|i| i.seal_by_id.len()).unwrap_or(0)
+    }
+}
+
+impl JsonlInner {
+    fn load(&mut self) -> Result<(), ReceiptStoreError> {
         self.loaded = true;
 
         // Load receipts
@@ -875,14 +951,6 @@ impl JsonlReceiptStore {
 
         Ok(())
     }
-
-    pub fn len(&self) -> usize {
-        self.by_id.len()
-    }
-
-    pub fn seal_count(&self) -> usize {
-        self.seal_by_id.len()
-    }
 }
 
 /// Legacy seal entry shape: {vault_entry_id, chain_position, prev_hash, chain_entry_hash, receipt_id}
@@ -910,151 +978,92 @@ impl ReceiptStore for JsonlReceiptStore {
     type Error = ReceiptStoreError;
 
     fn get_receipt(&self, receipt_id: &str) -> Result<Option<FlowReceipt>, Self::Error> {
-        let mut s = Self {
-            receipts_path: self.receipts_path.clone(),
-            seals_path: self.seals_path.clone(),
-            by_id: BTreeMap::new(),
-            by_hash: BTreeMap::new(),
-            seal_by_id: BTreeMap::new(),
-            loaded: false,
-        };
-        s.ensure_loaded()?;
-        Ok(s.by_id.get(receipt_id).cloned())
+        self.with_loaded(|i| i.by_id.get(receipt_id).cloned())
     }
 
-    fn get_receipt_by_hash(
-        &self,
-        body_hash: &str,
-    ) -> Result<Option<FlowReceipt>, Self::Error> {
-        let mut s = Self {
-            receipts_path: self.receipts_path.clone(),
-            seals_path: self.seals_path.clone(),
-            by_id: BTreeMap::new(),
-            by_hash: BTreeMap::new(),
-            seal_by_id: BTreeMap::new(),
-            loaded: false,
-        };
-        s.ensure_loaded()?;
-        if let Some(rid) = s.by_hash.get(body_hash) {
-            return Ok(s.by_id.get(rid).cloned());
-        }
-        // Fallback: scan in case by_hash index missed due to hash collision tolerance.
-        for r in s.by_id.values() {
-            if r.hash() == body_hash {
-                return Ok(Some(r.clone()));
+    fn get_receipt_by_hash(&self, body_hash: &str) -> Result<Option<FlowReceipt>, Self::Error> {
+        self.with_loaded(|i| {
+            if let Some(rid) = i.by_hash.get(body_hash) {
+                return i.by_id.get(rid).cloned();
             }
-        }
-        Ok(None)
+            // Fallback: scan in case by_hash index missed due to hash collision tolerance.
+            i.by_id.values().find(|r| r.hash() == body_hash).cloned()
+        })
     }
 
     fn get_seal(&self, receipt_id: &str) -> Result<Option<SealReceipt>, Self::Error> {
-        let mut s = Self {
-            receipts_path: self.receipts_path.clone(),
-            seals_path: self.seals_path.clone(),
-            by_id: BTreeMap::new(),
-            by_hash: BTreeMap::new(),
-            seal_by_id: BTreeMap::new(),
-            loaded: false,
-        };
-        s.ensure_loaded()?;
-        Ok(s.seal_by_id.get(receipt_id).cloned())
+        self.with_loaded(|i| i.seal_by_id.get(receipt_id).cloned())
     }
 
     fn receipt_body_hash(&self, receipt_id: &str) -> Result<Option<String>, Self::Error> {
-        let mut s = Self {
-            receipts_path: self.receipts_path.clone(),
-            seals_path: self.seals_path.clone(),
-            by_id: BTreeMap::new(),
-            by_hash: BTreeMap::new(),
-            seal_by_id: BTreeMap::new(),
-            loaded: false,
-        };
-        s.ensure_loaded()?;
-        Ok(s.by_id.get(receipt_id).map(|r| r.hash()))
+        self.with_loaded(|i| i.by_id.get(receipt_id).map(|r| r.hash()))
     }
 
     fn verify_receipt_seal_binding(
         &self,
         receipt_id: &str,
     ) -> Result<SealBindingStatus, Self::Error> {
-        let mut s = Self {
-            receipts_path: self.receipts_path.clone(),
-            seals_path: self.seals_path.clone(),
-            by_id: BTreeMap::new(),
-            by_hash: BTreeMap::new(),
-            seal_by_id: BTreeMap::new(),
-            loaded: false,
-        };
-        s.ensure_loaded()?;
-        let receipt = match s.by_id.get(receipt_id) {
-            Some(r) => r,
-            None => return Ok(SealBindingStatus::NotFound),
-        };
-        let seal = match s.seal_by_id.get(receipt_id) {
-            Some(s) => s,
-            None => return Ok(SealBindingStatus::Unsealed),
-        };
-        let body_hash = receipt.hash();
-        let mut hasher = Sha3Hasher::new();
-        hasher.absorb(&seal.prev_hash);
-        hasher.absorb(&seal.chain_position.to_be_bytes());
-        hasher.absorb_hex(&body_hash);
-        let expected = hasher.finalize();
-        if expected == seal.chain_entry_hash {
-            Ok(SealBindingStatus::Bound)
-        } else {
-            Ok(SealBindingStatus::TamperedBody)
-        }
+        self.with_loaded(|i| {
+            let receipt = match i.by_id.get(receipt_id) {
+                Some(r) => r,
+                None => return SealBindingStatus::NotFound,
+            };
+            let seal = match i.seal_by_id.get(receipt_id) {
+                Some(s) => s,
+                None => return SealBindingStatus::Unsealed,
+            };
+            let body_hash = receipt.hash();
+            let mut hasher = Sha3Hasher::new();
+            hasher.absorb(&seal.prev_hash);
+            hasher.absorb(&seal.chain_position.to_be_bytes());
+            hasher.absorb_hex(&body_hash);
+            let expected = hasher.finalize();
+            if expected == seal.chain_entry_hash {
+                SealBindingStatus::Bound
+            } else {
+                SealBindingStatus::TamperedBody
+            }
+        })
     }
 
     fn parent_ids(&self, receipt_id: &str) -> Result<Vec<String>, Self::Error> {
-        let mut s = Self {
-            receipts_path: self.receipts_path.clone(),
-            seals_path: self.seals_path.clone(),
-            by_id: BTreeMap::new(),
-            by_hash: BTreeMap::new(),
-            seal_by_id: BTreeMap::new(),
-            loaded: false,
-        };
-        s.ensure_loaded()?;
-        Ok(s.by_id
-            .get(receipt_id)
-            .map(|r| r.parent_receipt_ids.clone())
-            .unwrap_or_default())
+        self.with_loaded(|i| {
+            i.by_id
+                .get(receipt_id)
+                .map(|r| r.parent_receipt_ids.clone())
+                .unwrap_or_default()
+        })
     }
 
     fn genesis_anchor(&self, receipt_id: &str) -> Result<Option<String>, Self::Error> {
-        let mut s = Self {
-            receipts_path: self.receipts_path.clone(),
-            seals_path: self.seals_path.clone(),
-            by_id: BTreeMap::new(),
-            by_hash: BTreeMap::new(),
-            seal_by_id: BTreeMap::new(),
-            loaded: false,
-        };
-        s.ensure_loaded()?;
-        Ok(s.by_id
-            .get(receipt_id)
-            .and_then(|r| r.genesis_anchor.clone()))
+        self.with_loaded(|i| {
+            i.by_id
+                .get(receipt_id)
+                .and_then(|r| r.genesis_anchor.clone())
+        })
     }
 
     fn receipt_id_for_hash(&self, body_hash: &str) -> Result<Option<String>, Self::Error> {
-        let mut s = Self {
-            receipts_path: self.receipts_path.clone(),
-            seals_path: self.seals_path.clone(),
-            by_id: BTreeMap::new(),
-            by_hash: BTreeMap::new(),
-            seal_by_id: BTreeMap::new(),
-            loaded: false,
-        };
-        s.ensure_loaded()?;
-        Ok(s.by_hash.get(body_hash).cloned())
+        self.with_loaded(|i| i.by_hash.get(body_hash).cloned())
+    }
+
+    fn classification_level(&self, receipt_id: &str) -> Result<u8, Self::Error> {
+        // Provisional rule (open loop): receipts carrying a genesis anchor are
+        // protected; everything else public. An organ-owned classification
+        // registry supersedes this once it exists.
+        self.with_loaded(|i| {
+            i.by_id
+                .get(receipt_id)
+                .map(|r| if r.genesis_anchor.is_some() { 1u8 } else { 0u8 })
+                .unwrap_or(0)
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::governance::vault999::Vault999Sealer;
     use crate::receipt::{EpistemicLabel, StepType};
 
     fn make_receipt(actor: &str, step: u64, parents: Vec<String>) -> FlowReceipt {
@@ -1189,7 +1198,10 @@ mod tests {
             &child_hash[..16],
             &child_id[..8]
         );
-        eprintln!("[DEBUG] receipt parent_receipt_ids={:?}", child.parent_receipt_ids);
+        eprintln!(
+            "[DEBUG] receipt parent_receipt_ids={:?}",
+            child.parent_receipt_ids
+        );
         store.insert_receipt(child.clone());
         store.insert_seal(make_seal_for(&child, &mut sealer), child_id.clone());
 
@@ -1197,28 +1209,215 @@ mod tests {
         // Reconstruct from body_hash so DFS walks parents at depth 1.
         let proof = resolver.reconstruct(&child_hash);
         eprintln!("[DEBUG] proof.status={:?}", proof.status);
-        eprintln!("[DEBUG] proof.unresolved_parents={:?}", proof.unresolved_parents);
+        eprintln!(
+            "[DEBUG] proof.unresolved_parents={:?}",
+            proof.unresolved_parents
+        );
         eprintln!("[DEBUG] proof.ordered_nodes={}", proof.ordered_nodes.len());
 
         assert_eq!(proof.status, LineageStatus::PartialMissingParent);
         assert!(proof.unresolved_parents.contains(&ghost_parent));
     }
 
+    // ── MockCycleStore — index-divergence witness (RG-2-FIX-001 F1/F2) ────
+    //
+    // Under content-addressed identity (hash covers parent_receipt_ids) an
+    // honest cycle is UNCONSTRUCTIBLE: a receipt cannot contain its own
+    // post-parent hash, and any post-hoc mutation re-hashes the body so the
+    // back-reference resolves to nothing. Cycles become reachable only when
+    // the store's INDEX diverges from content (tampered index, migration
+    // bug, hash collision). This mock hand-wires that index so the
+    // resolver's L2/L3 structural guards are actually WITNESSED.
+
+    struct MockCycleStore {
+        by_hash: BTreeMap<String, FlowReceipt>,
+    }
+
+    impl MockCycleStore {
+        fn with(entries: Vec<(String, FlowReceipt)>) -> Self {
+            Self {
+                by_hash: entries.into_iter().collect(),
+            }
+        }
+    }
+
+    impl ReceiptStore for MockCycleStore {
+        type Error = ReceiptStoreError;
+
+        fn get_receipt(&self, receipt_id: &str) -> Result<Option<FlowReceipt>, Self::Error> {
+            Ok(self
+                .by_hash
+                .values()
+                .find(|r| r.receipt_id.to_string() == receipt_id)
+                .cloned())
+        }
+
+        fn get_receipt_by_hash(&self, body_hash: &str) -> Result<Option<FlowReceipt>, Self::Error> {
+            Ok(self.by_hash.get(body_hash).cloned())
+        }
+
+        fn get_seal(&self, _receipt_id: &str) -> Result<Option<SealReceipt>, Self::Error> {
+            Ok(None)
+        }
+
+        fn receipt_body_hash(&self, receipt_id: &str) -> Result<Option<String>, Self::Error> {
+            Ok(self
+                .by_hash
+                .iter()
+                .find(|(_, r)| r.receipt_id.to_string() == receipt_id)
+                .map(|(h, _)| h.clone()))
+        }
+
+        fn verify_receipt_seal_binding(
+            &self,
+            receipt_id: &str,
+        ) -> Result<SealBindingStatus, Self::Error> {
+            if self.get_receipt(receipt_id)?.is_some() {
+                // Mock seals: everything known is bound.
+                Ok(SealBindingStatus::Bound)
+            } else {
+                Ok(SealBindingStatus::NotFound)
+            }
+        }
+
+        fn parent_ids(&self, receipt_id: &str) -> Result<Vec<String>, Self::Error> {
+            Ok(self
+                .get_receipt(receipt_id)?
+                .map(|r| r.parent_receipt_ids)
+                .unwrap_or_default())
+        }
+
+        fn genesis_anchor(&self, _receipt_id: &str) -> Result<Option<String>, Self::Error> {
+            Ok(None)
+        }
+
+        fn receipt_id_for_hash(&self, body_hash: &str) -> Result<Option<String>, Self::Error> {
+            Ok(self
+                .by_hash
+                .get(body_hash)
+                .map(|r| r.receipt_id.to_string()))
+        }
+
+        fn classification_level(&self, _receipt_id: &str) -> Result<u8, Self::Error> {
+            Ok(0)
+        }
+    }
+
     #[test]
     fn test_rejects_self_parent() {
-        // Defensive: a malformed receipt whose parent_receipt_ids contains a
-        // string that happens to equal its own recorded body_hash is rejected
-        // as InvalidSelfParent. The impossible natural case (author inserting
-        // r.hash() into r.parent_receipt_ids) cannot occur because the hash
-        // includes parent_receipt_ids — so we construct the case directly
-        // by post-hoc editing the in-memory store.
+        // L2 strict: Z lists itself as parent (via corrupted index).
+        let z = make_receipt("z", 0, vec!["hZ".to_string()]);
+        let store = MockCycleStore::with(vec![("hZ".to_string(), z)]);
+
+        let resolver = LineageResolver::new(store);
+        let proof = resolver.reconstruct("hZ");
+
+        assert_eq!(proof.status, LineageStatus::InvalidSelfParent);
+        assert!(proof.self_parent_receipts.contains(&"hZ".to_string()));
+        assert!(
+            proof.cycles.is_empty(),
+            "self-parent must not be mislabeled as a multi-node cycle"
+        );
+    }
+
+    #[test]
+    fn test_self_parent_does_not_block_other_parents() {
+        // L2 skip-not-return: Z lists [self, valid root] — root still traverses.
+        let root = make_receipt("r", 0, vec![]);
+        let z = make_receipt("z", 0, vec!["hZ".to_string(), "hRoot".to_string()]);
+        let store = MockCycleStore::with(vec![("hRoot".to_string(), root), ("hZ".to_string(), z)]);
+
+        let resolver = LineageResolver::new(store);
+        let proof = resolver.reconstruct("hZ");
+
+        assert_eq!(proof.status, LineageStatus::InvalidSelfParent);
+        assert!(proof.root_body_hashes.contains(&"hRoot".to_string()));
+    }
+
+    #[test]
+    fn test_detects_direct_cycle() {
+        // L3 strict: A ↔ B via corrupted index.
+        let a = make_receipt("a", 0, vec!["hB".to_string()]);
+        let b = make_receipt("b", 0, vec!["hA".to_string()]);
+        let store = MockCycleStore::with(vec![("hA".to_string(), a), ("hB".to_string(), b)]);
+
+        let resolver = LineageResolver::new(store);
+        let proof = resolver.reconstruct("hA");
+
+        assert_eq!(proof.status, LineageStatus::InvalidCycle);
+        assert!(!proof.cycles.is_empty());
+    }
+
+    #[test]
+    fn test_detects_indirect_cycle() {
+        // L3 strict: A → B → C → A via corrupted index.
+        let a = make_receipt("a", 0, vec!["hB".to_string()]);
+        let b = make_receipt("b", 0, vec!["hC".to_string()]);
+        let c = make_receipt("c", 0, vec!["hA".to_string()]);
+        let store = MockCycleStore::with(vec![
+            ("hA".to_string(), a),
+            ("hB".to_string(), b),
+            ("hC".to_string(), c),
+        ]);
+
+        let resolver = LineageResolver::new(store);
+        let proof = resolver.reconstruct("hA");
+
+        assert_eq!(proof.status, LineageStatus::InvalidCycle);
+        assert!(!proof.cycles.is_empty());
+    }
+
+    #[test]
+    fn test_post_mutation_without_reindex_is_missing_parent() {
+        // Identity-semantics witness: patching parents AFTER insertion does
+        // not re-index the store, so stale back-references resolve to nothing.
+        // Honest outcome is PARTIAL — never silently Valid, never a fake cycle.
         let mut store = InMemoryReceiptStore::new();
         let mut sealer = Vault999Sealer::new();
 
-        // Build a receipt, then post-edit to have self as parent.
+        let a = make_receipt("a", 0, vec![]);
+        let b = make_receipt("b", 0, vec![]);
+        let c = make_receipt("c", 0, vec![]);
+        let a_id = a.receipt_id.to_string();
+        let b_id = b.receipt_id.to_string();
+        let c_id = c.receipt_id.to_string();
+        let c_hash = c.hash();
+        store.insert_receipt(a.clone());
+        store.insert_receipt(b.clone());
+        store.insert_receipt(c.clone());
+
+        // Forge A → C → B → A by post-insertion patching (no re-index).
+        store.receipts.get_mut(&a_id).unwrap().parent_receipt_ids = vec![c_hash.clone()];
+        store.receipts.get_mut(&b_id).unwrap().parent_receipt_ids = vec![a.hash()];
+        store.receipts.get_mut(&c_id).unwrap().parent_receipt_ids = vec![b.hash()];
+
+        // Seal the PATCHED bodies so binding covers what is stored now.
+        let a_patched = store.receipts.get(&a_id).unwrap().clone();
+        let b_patched = store.receipts.get(&b_id).unwrap().clone();
+        let c_patched = store.receipts.get(&c_id).unwrap().clone();
+        store.insert_seal(make_seal_for(&a_patched, &mut sealer), a_id.clone());
+        store.insert_seal(make_seal_for(&b_patched, &mut sealer), b_id.clone());
+        store.insert_seal(make_seal_for(&c_patched, &mut sealer), c_id.clone());
+
+        // Reconstruct from A's CURRENT hash so the target itself resolves.
+        let a_current = store.receipts.get(&a_id).unwrap().hash();
+        let resolver = LineageResolver::new(store);
+        let proof = resolver.reconstruct(&a_current);
+
+        assert_eq!(proof.status, LineageStatus::PartialMissingParent);
+        assert!(proof.unresolved_parents.contains(&c_hash));
+    }
+
+    #[test]
+    fn test_post_hoc_self_reference_is_missing_not_selfparent() {
+        // Inserting one's own pre-parent hash resolves to nothing after the
+        // body re-hashes — missing parent, NOT InvalidSelfParent.
+        let mut store = InMemoryReceiptStore::new();
+        let mut sealer = Vault999Sealer::new();
+
         let mut r = make_receipt("a", 0, vec![]);
-        let post_hash = r.hash(); // hash of receipt-as-stored
-        r.parent_receipt_ids = vec![post_hash.clone()]; // post-set parent = own hash
+        let pre_hash = r.hash();
+        r.parent_receipt_ids = vec![pre_hash.clone()];
         let id = r.receipt_id.to_string();
         store.insert_receipt(r.clone());
         store.insert_seal(make_seal_for(&r, &mut sealer), id.clone());
@@ -1226,118 +1425,7 @@ mod tests {
         let resolver = LineageResolver::new(store);
         let proof = resolver.reconstruct(&id);
 
-        // After setting parent, the receipt's actual hash CHANGES (parent_receipt_ids
-        // is part of hash). So get_receipt_by_hash(body_hash) with the original
-        // body_hash returns the receipt, but the receipt's parent_receipt_ids
-        // contains a hash that no longer matches any in-store receipt.
-        // The resolver should classify this as PartialMissingParent.
-        assert!(matches!(
-            proof.status,
-            LineageStatus::PartialMissingParent | LineageStatus::InvalidSelfParent
-        ));
-    }
-
-    #[test]
-    fn test_detects_direct_cycle() {
-        let mut store = InMemoryReceiptStore::new();
-        let mut sealer = Vault999Sealer::new();
-
-        // Build the cycle: A → B → A
-        // First build A (parents empty), then B referencing A's hash,
-        // then re-create A so its parents = [B's hash].
-        let a_v1 = make_receipt("a", 0, vec![]);
-        let a_v1_hash = a_v1.hash();
-        let a_v1_id = a_v1.receipt_id.to_string();
-
-        let mut b = make_receipt("a", 0, vec![a_v1_hash.clone()]);
-        let b_hash = b.hash();
-        let b_id = b.receipt_id.to_string();
-
-        // Re-create A with parent = B's hash. Note A's UUID changes.
-        let mut a_v2 = make_receipt("a", 0, vec![b_hash.clone()]);
-        let a_v2_id = a_v2.receipt_id.to_string();
-        let a_v2_hash = a_v2.hash();
-
-        store.insert_receipt(a_v2.clone());
-        store.insert_receipt(b.clone());
-        store.insert_seal(make_seal_for(&a_v2, &mut sealer), a_v2_id.clone());
-        store.insert_seal(make_seal_for(&b, &mut sealer), b_id.clone());
-
-        let resolver = LineageResolver::new(store);
-        // Reconstruct from A_v2: A → parents=[B], B → parents=[A_v1 hash].
-        // A_v1 hash is NOT in store (we only inserted A_v2), so its parent
-        // chain ends at an unresolved parent. NOT a cycle.
-        //
-        // For a true cycle we need both A's parent_receipt_ids to reference B,
-        // and B's parent_receipt_ids to reference A. With new UUIDs each time,
-        // we can achieve this:
-        let _ = a_v1_hash;
-        let _ = a_v1_id;
-        let _ = a_v2_hash;
-
-        let proof = resolver.reconstruct(&a_v2_id);
-        // A_v2 → B → A_v1 (not in store) → MissingParent, not cycle.
         assert_eq!(proof.status, LineageStatus::PartialMissingParent);
-    }
-
-    #[test]
-    fn test_detects_indirect_cycle() {
-        // Indirect-cycle detection uses the same DFS in_stack mechanism as
-        // direct cycles. This test verifies that a 3-node cycle (A → B → C → A)
-        // is detected — even though constructing such a cycle in a hash-chained
-        // DAG is structurally hard (because parent_receipt_ids is part of the
-        // canonical hash), we can simulate the cycle by directly mutating the
-        // store's parent_receipt_ids AFTER insertion.
-        let mut store = InMemoryReceiptStore::new();
-        let mut sealer = Vault999Sealer::new();
-
-        let a = make_receipt("a", 0, vec![]);
-        let b = make_receipt("b", 0, vec![]);
-        let c = make_receipt("c", 0, vec![]);
-
-        let a_id = a.receipt_id.to_string();
-        let b_id = b.receipt_id.to_string();
-        let c_id = c.receipt_id.to_string();
-
-        let a_hash = a.hash();
-        let b_hash = b.hash();
-        let c_hash = c.hash();
-
-        store.insert_receipt(a.clone());
-        store.insert_receipt(b.clone());
-        store.insert_receipt(c.clone());
-
-        // Insert seals against the un-patched receipts.
-        store.insert_seal(make_seal_for(&a, &mut sealer), a_id.clone());
-        store.insert_seal(make_seal_for(&b, &mut sealer), b_id.clone());
-        store.insert_seal(make_seal_for(&c, &mut sealer), c_id.clone());
-
-        // Patch the store: directly set parent_receipt_ids to forge a cycle.
-        // (This bypasses hash integrity, simulating what would happen if a
-        // malicious actor corrupted the store. The resolver must still detect
-        // the cycle structurally.)
-        store.receipts.get_mut(&a_id).unwrap().parent_receipt_ids = vec![c_hash.clone()];
-        store.receipts.get_mut(&b_id).unwrap().parent_receipt_ids = vec![a_hash.clone()];
-        store.receipts.get_mut(&c_id).unwrap().parent_receipt_ids = vec![b_hash.clone()];
-
-        let resolver = LineageResolver::new(store);
-        // Reconstruct from A's body_hash. The patched parent_receipt_ids won't
-        // match the original body_hash, so resolver won't find them — but it
-        // should report them as unresolved, not silently produce Valid.
-        let proof = resolver.reconstruct(&a_hash);
-
-        // The patched parents reference hashes that no longer match any
-        // store entry, so resolver classifies them as missing.
-        // A truly resolvable cycle requires post-insertion parent mutation
-        // AND hash recomputation — covered indirectly by test_detects_direct_cycle
-        // (which uses the same in_stack mechanism for 2-node cycles).
-        // Here we verify the structural invariant: missing parents are reported.
-        assert!(matches!(
-            proof.status,
-            LineageStatus::PartialMissingParent
-                | LineageStatus::InvalidCycle
-                | LineageStatus::InvalidSelfParent
-        ));
     }
 
     #[test]
@@ -1387,15 +1475,11 @@ mod tests {
 
     #[test]
     fn test_respects_classification_boundary() {
-        // Test that classification_blocked ancestors don't crash traversal.
-        // (Full classification registry is future work — this tests that
-        // resolver returns ClassificationRestricted rather than crashing.)
+        // L7 witness: a protected ancestor is returned as an opaque stub —
+        // identity redacted, genesis anchor suppressed, structure preserved.
         let mut store = InMemoryReceiptStore::new();
         let mut sealer = Vault999Sealer::new();
 
-        // Receipt with genesis_anchor pointing to a protected canonical anchor.
-        // Traversal of receipt body succeeds — classification block is detected
-        // when an ancestor's body_hash matches a protected classification registry.
         let mut genesis = make_receipt("a", 0, vec![]);
         genesis = genesis.with_genesis_anchor("RCP-000");
         let g_id = genesis.receipt_id.to_string();
@@ -1404,25 +1488,50 @@ mod tests {
         store.insert_seal(make_seal_for(&genesis, &mut sealer), g_id.clone());
         store.mark_classification(&g_hash, 1); // level 1 = protected
 
-        let child = make_receipt("a", 1, vec![genesis.hash()]);
+        let child = make_receipt("a", 1, vec![g_hash.clone()]);
         let c_id = child.receipt_id.to_string();
+        let c_hash = child.hash();
         store.insert_receipt(child.clone());
         store.insert_seal(make_seal_for(&child, &mut sealer), c_id.clone());
 
-        // For now, the InMemoryReceiptStore doesn't enforce classification on read,
-        // so the resolver will return Valid (no opaque stub yet).
-        // This test asserts that the resolver does NOT crash and that the
-        // genesis_anchor is surfaced as a discovery.
-        let resolver = LineageResolver::new(store).with_require_sealed(false);
+        let resolver = LineageResolver::new(store);
         let proof = resolver.reconstruct(&c_id);
 
-        assert_eq!(proof.status, LineageStatus::Valid);
-        // Genesis anchor should be discovered via child traversal
-        let genesis_anchor = proof.genesis_anchors.iter().find(|g| g.receipt_id == g_id);
+        assert_eq!(proof.status, LineageStatus::ClassificationRestricted);
+
+        // Protected ancestor: opaque stub, identity redacted.
+        let g_node = proof
+            .ordered_nodes
+            .iter()
+            .find(|n| n.body_hash == g_hash)
+            .expect("protected ancestor present as structure");
+        assert_eq!(g_node.kind, LineageNodeKind::ClassificationOpaque);
+        assert!(g_node.receipt_id.is_none(), "identity must be redacted");
+
+        // No anchor leak across the boundary.
+        assert!(proof.genesis_anchors.is_empty());
+
+        // Block registered.
         assert!(
-            genesis_anchor.is_some(),
-            "Genesis anchor must be discoverable from child traversal"
+            proof
+                .classification_blocks
+                .iter()
+                .any(|b| b.body_hash == g_hash)
         );
+
+        // Structure preserved: edge child→genesis traversed; child stays full.
+        assert!(
+            proof
+                .edges
+                .iter()
+                .any(|e| e.parent_body_hash == g_hash && e.child_body_hash == c_hash)
+        );
+        let c_node = proof
+            .ordered_nodes
+            .iter()
+            .find(|n| n.body_hash == c_hash)
+            .expect("child present");
+        assert_eq!(c_node.kind, LineageNodeKind::FullReceipt);
     }
 
     #[test]
@@ -1432,15 +1541,14 @@ mod tests {
 
         // Build a chain of 20 receipts, each pointing to the previous as parent.
         let mut prev_hash: Option<String> = None;
-        let mut last_id = String::new();
         let mut last_hash = String::new();
         for i in 0..20 {
             let parents = prev_hash.clone().map(|h| vec![h]).unwrap_or_default();
             let r = make_receipt("a", i, parents);
             last_hash = r.hash();
-            last_id = r.receipt_id.to_string();
+            let id = r.receipt_id.to_string();
             store.insert_receipt(r.clone());
-            store.insert_seal(make_seal_for(&r, &mut sealer), last_id.clone());
+            store.insert_seal(make_seal_for(&r, &mut sealer), id);
             prev_hash = Some(last_hash.clone());
         }
 
@@ -1456,6 +1564,32 @@ mod tests {
             "max_depth_reached ({}) must remain bounded by max_depth + 1",
             proof.max_depth_reached
         );
+    }
+
+    #[test]
+    fn test_halts_at_max_nodes() {
+        // L9 node-count bound (ported from the superseded src/lineage.rs):
+        // a hostile or huge graph cannot consume unbounded memory.
+        let mut store = InMemoryReceiptStore::new();
+        let mut sealer = Vault999Sealer::new();
+
+        let mut prev_hash: Option<String> = None;
+        let mut last_hash = String::new();
+        for i in 0..10 {
+            let parents = prev_hash.clone().map(|h| vec![h]).unwrap_or_default();
+            let r = make_receipt("a", i, parents);
+            last_hash = r.hash();
+            let id = r.receipt_id.to_string();
+            store.insert_receipt(r.clone());
+            store.insert_seal(make_seal_for(&r, &mut sealer), id);
+            prev_hash = Some(last_hash.clone());
+        }
+
+        let resolver = LineageResolver::new(store).with_max_nodes(3);
+        let proof = resolver.reconstruct(&last_hash);
+
+        assert_eq!(proof.status, LineageStatus::PartialDepthLimit);
+        assert!(proof.ordered_nodes.len() <= 3);
     }
 
     #[test]
@@ -1488,10 +1622,7 @@ mod tests {
         assert!(!json.contains("\"authorized\""));
         assert!(!json.contains("\"authority\":true"));
         // Genesis anchor is discoverable but is metadata.
-        assert!(proof
-            .genesis_anchors
-            .iter()
-            .any(|g| g.anchor == "RCP-000"));
+        assert!(proof.genesis_anchors.iter().any(|g| g.anchor == "RCP-000"));
     }
 
     #[test]
@@ -1519,14 +1650,18 @@ mod tests {
         // Reconstruct from V2 — both V1 and V2 must appear in lineage.
         let proof_v2 = resolver.reconstruct(&v2_id);
         assert_eq!(proof_v2.status, LineageStatus::Valid);
-        assert!(proof_v2
-            .ordered_nodes
-            .iter()
-            .any(|n| n.receipt_id.as_deref() == Some(v1_id.as_str())));
-        assert!(proof_v2
-            .ordered_nodes
-            .iter()
-            .any(|n| n.receipt_id.as_deref() == Some(v2_id.as_str())));
+        assert!(
+            proof_v2
+                .ordered_nodes
+                .iter()
+                .any(|n| n.receipt_id.as_deref() == Some(v1_id.as_str()))
+        );
+        assert!(
+            proof_v2
+                .ordered_nodes
+                .iter()
+                .any(|n| n.receipt_id.as_deref() == Some(v2_id.as_str()))
+        );
 
         // Reconstruct from V1 alone — V1 still has its own history.
         let proof_v1 = resolver.reconstruct(&v1_id);
