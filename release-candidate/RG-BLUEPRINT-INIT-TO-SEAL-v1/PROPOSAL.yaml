@@ -107,10 +107,10 @@ P3:
     files:
       - src/receipt.rs
     interfaces:
-      - Add: schema: Option<String>  (default: "arifflow.receipt/v1")
-      - Add: graph_id: Option<String>
-      - Add: receipt_kind: Option<ReceiptKind>
-      - Add: payload_hash: Option<String>  (SHA3-256 of canonical JSON)
+      - 'Add: schema: Option<String>  (default: "arifflow.receipt/v1")'
+      - 'Add: graph_id: Option<String>'
+      - 'Add: receipt_kind: Option<ReceiptKind>'
+      - 'Add: payload_hash: Option<String>  (SHA3-256 of canonical JSON)'
     data_migrations:
       - Existing receipts deserialize cleanly: all new fields are Option<T>
       - Old receipts without these fields remain valid (backward compat)
@@ -124,7 +124,8 @@ P3:
     - production seal
   risks:
     - compatibility: serde skip_serializing_if="Option::is_none" prevents breaking old receipts
-    - hash_divergence: payload_hash field is serialized AFTER it is computed — field must be
+    - >-
+      hash_divergence: payload_hash field is serialized AFTER it is computed — field must be
       excluded from its own hash computation (chicken-and-egg). Solution: hash = SHA3-256 of
       receipt body WITH payload_hash=null, then set payload_hash = that hash.
   rollback:
@@ -162,15 +163,16 @@ P4:
       - src/py/arifflow/receipt/jcs.py (new: JCS canonical bytes)
       - src/governance/jcs.rs (new: Rust JCS proxy)
     interfaces:
-      - hash_receipt_jcs(receipt: &FlowReceipt) -> String  (Rust)
-      - hashReceiptJCS(receipt: FlowReceiptV1): string  (TS)
-      - hash_receipt_jcs(receipt: dict) -> str  (Python)
+      - 'hash_receipt_jcs(receipt: &FlowReceipt) -> String  (Rust)'
+      - 'hashReceiptJCS(receipt: FlowReceiptV1): string  (TS)'
+      - 'hash_receipt_jcs(receipt: dict) -> str  (Python)'
     data_migrations: []
   not_in_scope:
     - production hash migration
     - resealing existing VAULT999 entries
   risks:
-    - hash_divergence: serde_json does not guarantee RFC8785 key ordering for all types
+    - >-
+      hash_divergence: serde_json does not guarantee RFC8785 key ordering for all types
       MITIGATION: use client_payload_hash / rust_receipt_hash / seal_checkpoint_hash
       as three NAMED hashes until fixtures confirm parity
     - unicode_edge_cases: JCS requires specific Unicode normalization
