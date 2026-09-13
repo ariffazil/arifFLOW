@@ -156,6 +156,26 @@ TOOLS = [
         },
     },
     {
+        "name": "flow_gov_events",
+        "description": (
+            "RG-4 governance-event query (daemon POST /gov_events, read-only). "
+            "Lists seal/seal_refused/bind_failed events with structured fields "
+            "(verdict, chain_id, judge_state_hash, f13_ack) and supersession "
+            "status — a verdict revised by a later receipt shows as a "
+            "governance belief death. Optional before_receipt_id = time travel."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "before_receipt_id": {
+                    "type": "string",
+                    "description": "Inclusive as-of boundary (time travel). Optional.",
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "flow_lineage",
         "description": (
             "SEQ-N belief-lineage query (daemon POST /lineage, read-only). "
@@ -225,6 +245,12 @@ def flow_post(path: str, body: dict) -> tuple[int, dict]:
 
 
 def call_tool(name: str, args: dict) -> dict:
+    if name == "flow_gov_events":
+        body = {}
+        if args.get("before_receipt_id"):
+            body["before_receipt_id"] = args["before_receipt_id"]
+        code, resp = flow_post("/gov_events", body)
+        return {"http_status": code, "events": resp.get("events", resp)}
     if name == "flow_lineage":
         code, body = flow_post(
             "/lineage",

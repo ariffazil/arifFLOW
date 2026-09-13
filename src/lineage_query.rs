@@ -270,6 +270,115 @@ pub fn lineage_report(
     })
 }
 
+#[derive(Serialize)]
+pub struct GovEvent {
+    pub receipt_id: String,
+    pub created_at: String,
+    pub actor_id: String,
+    pub governance_event: String,
+    pub mode: String,
+    pub verdict: String,
+    pub chain_id: String,
+    pub judge_state_hash: String,
+    pub seal_purpose: String,
+    pub f13_ack: bool,
+    /// active | superseded — a verdict revised by a later governance receipt
+    /// is a governance belief death (RG-4 × SEQ-N junction).
+    pub belief_status: String,
+    pub superseded_by: Vec<SupersessionClaim>,
+}
+
+/// RG-4 (2026-09-13): list governance events — receipts whose payload carries
+/// `governance_event` (fire-seal lane emits seal / seal_refused / bind_failed).
+/// Supersession status is computed within the as-of window like lineage_report.
+pub fn gov_events(
+    ledger: &LoadedLedger,
+    before_receipt_id: Option<&str>,
+) -> Result<Vec<GovEvent>, String> {
+    let boundary = match before_receipt_id {
+        Some(bid) => Some(
+            ledger
+                .position(bid)
+                .ok_or_else(|| format!("as-of receipt {} not found in ledger", bid))?,
+        ),
+        None => None,
+    };
+    let mut events = Vec::new();
+    if ledger.receipts.is_empty() {
+        return Ok(events);
+    }
+    let scan_end = boundary
+        .unwrap_or(ledger.receipts.len() - 1)
+        .min(ledger.receipts.len() - 1);
+    for r in &ledger.receipts[..=scan_end] {
+        let Some(pl) = r.payload.as_ref().and_then(|p| p.as_object()) else {
+            continue;
+        };
+        let Some(ev) = pl.get("governance_event").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let mut superseded_by = Vec::new();
+        for k in &ledger.receipts[..=scan_end] {
+            if let Some(i) = k
+                .supersedes_receipt_ids
+                .iter()
+                .position(|x| *x == r.receipt_id.to_string())
+            {
+                let claimed = k.supersedes_receipt_hashes.get(i).cloned();
+                let actual = actual_hash_of(r);
+                let verdict = match (&claimed, &actual) {
+                    (Some(c), Some(a)) if c == a => "verified",
+                    (Some(_), Some(_)) => "mismatch",
+                    _ => "unverified",
+                };
+                superseded_by.push(SupersessionClaim {
+                    receipt_id: k.receipt_id.to_string(),
+                    created_at: k.created_at.to_rfc3339(),
+                    actor_id: k.actor_id.clone(),
+                    claimed_hash: claimed,
+                    actual_hash: actual,
+                    verdict: verdict.into(),
+                });
+            }
+        }
+        events.push(GovEvent {
+            receipt_id: r.receipt_id.to_string(),
+            created_at: r.created_at.to_rfc3339(),
+            actor_id: r.actor_id.clone(),
+            governance_event: ev.to_string(),
+            mode: pl.get("mode").and_then(|v| v.as_str()).unwrap_or("").into(),
+            verdict: pl
+                .get("verdict")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .into(),
+            chain_id: pl
+                .get("chain_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .into(),
+            judge_state_hash: pl
+                .get("judge_state_hash")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .into(),
+            seal_purpose: pl
+                .get("seal_purpose")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .into(),
+            f13_ack: pl.get("f13_ack").and_then(|v| v.as_bool()).unwrap_or(false),
+            belief_status: if superseded_by.is_empty() {
+                "active".into()
+            } else {
+                "superseded".into()
+            },
+            superseded_by,
+        });
+    }
+    Ok(events)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,6 +467,55 @@ mod tests {
         let node = rep.ancestry.iter().find(|n| n.receipt_id == cid).unwrap();
         assert_eq!(node.edges[0].verdict, "mismatch");
         assert_eq!(node.edges[1].verdict, "missing_parent");
+    }
+
+    #[test]
+    fn rg4_gov_events_payload_scan_and_supersession() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut g1 = FlowReceipt::new_first(
+            "arif",
+            "fire-seal-lane-a",
+            StepType::Cool,
+            EpistemicLabel::Observation,
+            0,
+        );
+        g1.payload = Some(serde_json::json!({
+            "governance_event": "seal_refused", "mode": "seal", "verdict": "HOLD",
+            "chain_id": "cc_x", "f13_ack": false,
+        }));
+        let g1 = stamp(g1);
+        let g1id = g1.receipt_id.to_string();
+        let g1h = g1.jcs_body_hash.clone().unwrap();
+        let killer = stamp(
+            FlowReceipt::new_first(
+                "arif",
+                "fire-seal-lane-a",
+                StepType::Seal,
+                EpistemicLabel::Seal,
+                0,
+            )
+            .with_supersedes(vec![g1id.clone()], vec![g1h]),
+        );
+        let filler = stamp(FlowReceipt::new_first(
+            "t",
+            "s",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1,
+        ));
+        let ledger = write_ledger(dir.path(), &[filler, g1, killer]);
+
+        let events = gov_events(&ledger, None).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].governance_event, "seal_refused");
+        assert_eq!(events[0].verdict, "HOLD");
+        assert_eq!(events[0].belief_status, "superseded");
+        assert_eq!(events[0].superseded_by[0].verdict, "verified");
+
+        // time travel: as-of the refusal itself, the override did not happen
+        let past = gov_events(&ledger, Some(&g1id)).unwrap();
+        assert_eq!(past.len(), 1);
+        assert_eq!(past[0].belief_status, "active");
     }
 
     #[test]
