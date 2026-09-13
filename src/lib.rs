@@ -37,6 +37,7 @@
 //! - **A5 Metabolic-Closure**: Every run ends with VAULT999 receipt, leases closed
 
 pub mod channel;
+pub mod jcs;
 pub mod merkle;
 pub mod receipt;
 pub mod scheduler;
