@@ -1,7 +1,9 @@
 <!-- SOT-MANIFEST
-federation_release: v2026.08.25
-last_verified: 2026-08-25T12:14:00Z
-live_commit: 45293385dccf9d6fb702d8055a311cea8bfe0f35 (fix(vector): INV-3 must not fire on constant or decay-coupled h)
+federation_release: v2026.09.13
+last_verified: 2026-09-13T06:32:00Z
+live_commit: 4d27ede (chore: ignore *.db SQLite runtime artifacts)
+apex_zen: A2A delegates ⊥ MCP equips ⊥ ACT mutates ⊥ arifOS governs ⊥ F13 decides
+branch_note: HEAD on forge/rg2-lineage-reconcile — not auto-merged to main
 organ: arifFlow
 role: METABOLISM organ — FQ pulse, receipt metabolism, attention checkpointing
 authority: METABOLIZE_ONLY — never judges, never executes
