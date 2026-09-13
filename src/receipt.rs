@@ -996,6 +996,9 @@ impl ReceiptStore {
                 ));
             }
             let self_id = receipt.receipt_id.to_string();
+            if receipt.supersedes_receipt_ids.iter().any(|t| t == &self_id) {
+                return Err("Supersession reject: a receipt cannot supersede itself".to_string());
+            }
             for (tid, claimed) in receipt
                 .supersedes_receipt_ids
                 .iter()

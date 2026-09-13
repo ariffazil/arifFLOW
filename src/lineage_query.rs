@@ -124,7 +124,7 @@ fn node_of(r: &FlowReceipt, ledger: &LoadedLedger, boundary: Option<usize>) -> A
             let claimed = r.parent_receipt_hashes.get(i).cloned();
             let visible = ledger
                 .position(pid)
-                .map(|pos| boundary.map_or(true, |b| pos <= b))
+                .map(|pos| !boundary.is_some_and(|b| pos > b))
                 .unwrap_or(false);
             if !visible {
                 return EdgeStatus {
@@ -185,7 +185,7 @@ pub fn lineage_report(
     let visible = |id: &str| -> Option<usize> {
         ledger
             .position(id)
-            .filter(|&p| boundary.map_or(true, |b| p <= b))
+            .filter(|&p| !boundary.is_some_and(|b| p > b))
     };
 
     let target_pos = visible(target_id).ok_or_else(|| {
