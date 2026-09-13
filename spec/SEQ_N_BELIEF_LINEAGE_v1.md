@@ -117,3 +117,25 @@ The chain `reality → scar → policy → enforced behaviour` is now traversabl
 council layer map RG-8 seeded. Policies superseded by later policies read as
 policy belief death. Known polish: /lineage target node shows jcs_body_hash
 None for unstamped receipts (lazy compute exists only on edge verification).
+
+## RG-7 addendum (2026-09-13, commit 08cbf1f)
+
+Consequence records — reality's invoice as a first-class object.
+`payload.consequence` receipts: claim_slug, observed_outcome, evidence,
+outcome_class (recovery|regression|neutral), attributed_to (causal parents =
+the policy/execution receipts that produced the outcome). Query:
+`POST /consequences` + MCP `flow_consequences`. Attribution stays a
+falsifiable CLAIM via the evidence field.
+
+Production witness (session rg7-witness): the full metabolic loop traversed
+by real artifacts —
+`400 failure → scar → policy 10068702 → retry behavior → killer receipt
+7b65a115 live → invoice 2207231e (attributed to BOTH, hash-bound edges)`.
+Second invoice 98dc28e7 records the unplanned in-production JCS parity
+(Python-computed hash verified by Rust daemon). As-of control: count=0 at
+the policy — reality had not yet replied.
+
+What remains: FQ_G (institutional metabolism rate) — measure LAST, per the
+sovereign's own rule. The substrate for measuring it now exists: beliefs
+born / revised / superseded / killed, policies compressed from scars,
+invoices issued — all queryable, all hash-bound.
