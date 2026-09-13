@@ -561,6 +561,46 @@ fn handle_client(
                 })
                 .to_string();
                 http_ok(&body)
+            } else if request.starts_with("POST /scar_policies") {
+                // RG-5 (2026-09-13): scar-bound policy query — read-only.
+                match extract_body(&request) {
+                    None => http_bad_request(
+                        &serde_json::json!({"status": "invalid", "error": "empty body"})
+                            .to_string(),
+                    ),
+                    Some(raw_json) => match serde_json::from_str::<serde_json::Value>(
+                        raw_json.trim(),
+                    ) {
+                        Err(e) => http_bad_request(
+                            &serde_json::json!({"status": "invalid", "error": format!("{}", e)})
+                                .to_string(),
+                        ),
+                        Ok(req) => {
+                            let before = req.get("before_receipt_id").and_then(|v| v.as_str());
+                            match arifflow::lineage_query::LoadedLedger::from_path(std::path::Path::new(
+                                "/var/lib/arifflow/receipts.jsonl",
+                            )) {
+                                Err(e) => http_bad_request(
+                                    &serde_json::json!({"status": "ledger_unreadable", "error": format!("{}", e)}).to_string(),
+                                ),
+                                Ok(ledger) => match arifflow::lineage_query::scar_policies(&ledger, before) {
+                                    Err(e) => http_bad_request(
+                                        &serde_json::json!({"status": "scar_policies_error", "error": e}).to_string(),
+                                    ),
+                                    Ok(policies) => http_ok(
+                                        &serde_json::to_string(&serde_json::json!({
+                                            "schema": "arifflow.scar-policies/v1",
+                                            "as_of_receipt_id": before,
+                                            "count": policies.len(),
+                                            "policies": policies,
+                                        }))
+                                        .unwrap_or_else(|_| "{}".into()),
+                                    ),
+                                },
+                            }
+                        }
+                    },
+                }
             } else if request.starts_with("POST /gov_events") {
                 // RG-4 (2026-09-13): governance-event query — read-only.
                 // Body: {} or {"before_receipt_id": "..."} for time travel.

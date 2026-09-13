@@ -156,6 +156,26 @@ TOOLS = [
         },
     },
     {
+        "name": "flow_scar_policies",
+        "description": (
+            "RG-5 scar-bound policy query (daemon POST /scar_policies, read-only). "
+            "Lists policies compressed from scars (payload.scar_binding): policy "
+            "slug, scar id/fingerprint, enforcement surface+ref, causal parents "
+            "(the event receipts the policy was compressed FROM), and supersession "
+            "status. 'Did reality change future behaviour?' — traversable."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "before_receipt_id": {
+                    "type": "string",
+                    "description": "Inclusive as-of boundary (time travel). Optional.",
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "flow_gov_events",
         "description": (
             "RG-4 governance-event query (daemon POST /gov_events, read-only). "
@@ -245,6 +265,12 @@ def flow_post(path: str, body: dict) -> tuple[int, dict]:
 
 
 def call_tool(name: str, args: dict) -> dict:
+    if name == "flow_scar_policies":
+        body = {}
+        if args.get("before_receipt_id"):
+            body["before_receipt_id"] = args["before_receipt_id"]
+        code, resp = flow_post("/scar_policies", body)
+        return {"http_status": code, "policies": resp.get("policies", resp)}
     if name == "flow_gov_events":
         body = {}
         if args.get("before_receipt_id"):

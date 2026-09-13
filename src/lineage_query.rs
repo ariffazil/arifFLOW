@@ -379,6 +379,102 @@ pub fn gov_events(
     Ok(events)
 }
 
+#[derive(Serialize)]
+pub struct ScarPolicy {
+    pub receipt_id: String,
+    pub created_at: String,
+    pub actor_id: String,
+    pub policy_slug: String,
+    pub scar_id: String,
+    pub scar_fingerprint: String,
+    pub enforcement_surface: String,
+    pub enforcement_ref: String,
+    pub policy_text: String,
+    /// Edges to the event/belief receipts this policy was compressed FROM
+    /// (causal parents) — "reality changed future behaviour" traversable.
+    pub parent_receipt_ids: Vec<String>,
+    pub belief_status: String,
+    pub superseded_by: Vec<SupersessionClaim>,
+}
+
+/// RG-5 (2026-09-13): scar-bound policies — receipts whose payload carries
+/// `scar_binding` (a policy compressed from a scar, citing scar id + the
+/// surface where it is enforced). Policies revised by later policies show as
+/// supersession: policy belief death, same as any other belief.
+pub fn scar_policies(
+    ledger: &LoadedLedger,
+    before_receipt_id: Option<&str>,
+) -> Result<Vec<ScarPolicy>, String> {
+    let boundary = match before_receipt_id {
+        Some(bid) => Some(
+            ledger
+                .position(bid)
+                .ok_or_else(|| format!("as-of receipt {} not found in ledger", bid))?,
+        ),
+        None => None,
+    };
+    let mut policies = Vec::new();
+    if ledger.receipts.is_empty() {
+        return Ok(policies);
+    }
+    let scan_end = boundary
+        .unwrap_or(ledger.receipts.len() - 1)
+        .min(ledger.receipts.len() - 1);
+    for r in &ledger.receipts[..=scan_end] {
+        let Some(pl) = r.payload.as_ref().and_then(|p| p.as_object()) else {
+            continue;
+        };
+        if !pl.contains_key("scar_binding") {
+            continue;
+        }
+        let b = pl.get("scar_binding").cloned().unwrap_or_default();
+        let g = |k: &str| b.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let mut superseded_by = Vec::new();
+        for k in &ledger.receipts[..=scan_end] {
+            if let Some(i) = k
+                .supersedes_receipt_ids
+                .iter()
+                .position(|x| *x == r.receipt_id.to_string())
+            {
+                let claimed = k.supersedes_receipt_hashes.get(i).cloned();
+                let actual = actual_hash_of(r);
+                let verdict = match (&claimed, &actual) {
+                    (Some(c), Some(a)) if c == a => "verified",
+                    (Some(_), Some(_)) => "mismatch",
+                    _ => "unverified",
+                };
+                superseded_by.push(SupersessionClaim {
+                    receipt_id: k.receipt_id.to_string(),
+                    created_at: k.created_at.to_rfc3339(),
+                    actor_id: k.actor_id.clone(),
+                    claimed_hash: claimed,
+                    actual_hash: actual,
+                    verdict: verdict.into(),
+                });
+            }
+        }
+        policies.push(ScarPolicy {
+            receipt_id: r.receipt_id.to_string(),
+            created_at: r.created_at.to_rfc3339(),
+            actor_id: r.actor_id.clone(),
+            policy_slug: g("policy_slug"),
+            scar_id: g("scar_id"),
+            scar_fingerprint: g("scar_fingerprint"),
+            enforcement_surface: g("enforcement_surface"),
+            enforcement_ref: g("enforcement_ref"),
+            policy_text: g("policy_text"),
+            parent_receipt_ids: r.parent_receipt_ids.clone(),
+            belief_status: if superseded_by.is_empty() {
+                "active".into()
+            } else {
+                "superseded".into()
+            },
+            superseded_by,
+        });
+    }
+    Ok(policies)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,6 +563,55 @@ mod tests {
         let node = rep.ancestry.iter().find(|n| n.receipt_id == cid).unwrap();
         assert_eq!(node.edges[0].verdict, "mismatch");
         assert_eq!(node.edges[1].verdict, "missing_parent");
+    }
+
+    #[test]
+    fn rg5_scar_policies_scan_and_lineage() {
+        let dir = tempfile::tempdir().unwrap();
+        // the triggering event receipt (the "scar source" witness)
+        let mut ev = FlowReceipt::new_first(
+            "qwen-code/FI-003",
+            "rg15-fi003",
+            StepType::Verify,
+            EpistemicLabel::Observation,
+            0,
+        );
+        ev.payload = Some(serde_json::json!({"root_cause": "deploy race"}));
+        let ev = stamp(ev);
+        let evid = ev.receipt_id.to_string();
+        let evh = ev.jcs_body_hash.clone().unwrap();
+        // the policy compressed from it
+        let mut pol = FlowReceipt::new_first(
+            "qwen-code/FI-003",
+            "rg5-witness",
+            StepType::Execute,
+            EpistemicLabel::Specification,
+            0,
+        )
+        .with_causal_parents(vec![evid.clone()], vec![evh.clone()]);
+        pol.payload = Some(serde_json::json!({
+            "scar_binding": {
+                "policy_slug": "retry-on-transient-400",
+                "scar_id": "deploy-race-20260913",
+                "enforcement_surface": "fire-seal.py",
+                "enforcement_ref": "scripts 8210114",
+                "policy_text": "emitters retry once after 1s on transient 4xx/EOF"
+            }
+        }));
+        let pol = stamp(pol);
+        let polid = pol.receipt_id.to_string();
+        let ledger = write_ledger(dir.path(), &[ev, pol]);
+
+        let policies = scar_policies(&ledger, None).unwrap();
+        assert_eq!(policies.len(), 1);
+        assert_eq!(policies[0].policy_slug, "retry-on-transient-400");
+        assert_eq!(policies[0].parent_receipt_ids, vec![evid.clone()]);
+        assert_eq!(policies[0].belief_status, "active");
+
+        // as-of before the policy: not yet compressed
+        let past = scar_policies(&ledger, Some(&evid)).unwrap();
+        assert!(past.is_empty());
+        let _ = polid;
     }
 
     #[test]
