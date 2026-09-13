@@ -475,6 +475,99 @@ pub fn scar_policies(
     Ok(policies)
 }
 
+#[derive(Serialize)]
+pub struct ConsequenceRecord {
+    pub receipt_id: String,
+    pub created_at: String,
+    pub actor_id: String,
+    pub claim_slug: String,
+    pub observed_outcome: String,
+    pub evidence: String,
+    /// recovery | regression | neutral — the direction reality moved.
+    pub outcome_class: String,
+    /// Causal parents: the policy/execution receipts this outcome is
+    /// ATTRIBUTED to. Attribution is a claim, kept falsifiable via evidence.
+    pub attributed_to: Vec<String>,
+    pub belief_status: String,
+    pub superseded_by: Vec<SupersessionClaim>,
+}
+
+/// RG-7 (2026-09-13): consequence records — reality's invoice as a
+/// first-class graph object. A consequence receipt attributes an OBSERVED
+/// outcome to the decision/execution receipts that produced it; the DAG edge
+/// makes "did belief change reality?" traversable, and the evidence field
+/// keeps the attribution falsifiable rather than narrative.
+pub fn consequences(
+    ledger: &LoadedLedger,
+    before_receipt_id: Option<&str>,
+) -> Result<Vec<ConsequenceRecord>, String> {
+    let boundary = match before_receipt_id {
+        Some(bid) => Some(
+            ledger
+                .position(bid)
+                .ok_or_else(|| format!("as-of receipt {} not found in ledger", bid))?,
+        ),
+        None => None,
+    };
+    let mut records = Vec::new();
+    if ledger.receipts.is_empty() {
+        return Ok(records);
+    }
+    let scan_end = boundary
+        .unwrap_or(ledger.receipts.len() - 1)
+        .min(ledger.receipts.len() - 1);
+    for r in &ledger.receipts[..=scan_end] {
+        let Some(pl) = r.payload.as_ref().and_then(|p| p.as_object()) else {
+            continue;
+        };
+        let Some(c) = pl.get("consequence").and_then(|v| v.as_object()) else {
+            continue;
+        };
+        let g = |k: &str| c.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let mut superseded_by = Vec::new();
+        for k in &ledger.receipts[..=scan_end] {
+            if let Some(i) = k
+                .supersedes_receipt_ids
+                .iter()
+                .position(|x| *x == r.receipt_id.to_string())
+            {
+                let claimed = k.supersedes_receipt_hashes.get(i).cloned();
+                let actual = actual_hash_of(r);
+                let verdict = match (&claimed, &actual) {
+                    (Some(c2), Some(a)) if c2 == a => "verified",
+                    (Some(_), Some(_)) => "mismatch",
+                    _ => "unverified",
+                };
+                superseded_by.push(SupersessionClaim {
+                    receipt_id: k.receipt_id.to_string(),
+                    created_at: k.created_at.to_rfc3339(),
+                    actor_id: k.actor_id.clone(),
+                    claimed_hash: claimed,
+                    actual_hash: actual,
+                    verdict: verdict.into(),
+                });
+            }
+        }
+        records.push(ConsequenceRecord {
+            receipt_id: r.receipt_id.to_string(),
+            created_at: r.created_at.to_rfc3339(),
+            actor_id: r.actor_id.clone(),
+            claim_slug: g("claim_slug"),
+            observed_outcome: g("observed_outcome"),
+            evidence: g("evidence"),
+            outcome_class: g("outcome_class"),
+            attributed_to: r.parent_receipt_ids.clone(),
+            belief_status: if superseded_by.is_empty() {
+                "active".into()
+            } else {
+                "superseded".into()
+            },
+            superseded_by,
+        });
+    }
+    Ok(records)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,6 +656,43 @@ mod tests {
         let node = rep.ancestry.iter().find(|n| n.receipt_id == cid).unwrap();
         assert_eq!(node.edges[0].verdict, "mismatch");
         assert_eq!(node.edges[1].verdict, "missing_parent");
+    }
+
+    #[test]
+    fn rg7_consequences_attributed_and_as_of() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = stamp(FlowReceipt::new_first(
+            "a",
+            "s",
+            StepType::Execute,
+            EpistemicLabel::Specification,
+            0,
+        ));
+        let pid = policy.receipt_id.to_string();
+        let ph = policy.jcs_body_hash.clone().unwrap();
+        let outcome = stamp(
+            FlowReceipt::new_first("a", "s", StepType::Verify, EpistemicLabel::Observation, 0)
+                .with_causal_parents(vec![pid.clone()], vec![ph]),
+        );
+        let mut cons = outcome.clone();
+        cons.payload = Some(serde_json::json!({
+            "consequence": {
+                "claim_slug": "retry-recovered-400",
+                "observed_outcome": "receipt ingested on retry",
+                "evidence": "first attempt 400 EOF, retry 200",
+                "outcome_class": "recovery"
+            }
+        }));
+        let cons = stamp(cons);
+        let cid = cons.receipt_id.to_string();
+        let ledger = write_ledger(dir.path(), &[policy, cons]);
+        let recs = consequences(&ledger, None).unwrap();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].outcome_class, "recovery");
+        assert_eq!(recs[0].attributed_to, vec![pid.clone()]);
+        // as-of before the consequence: reality had not yet replied
+        assert!(consequences(&ledger, Some(&pid)).unwrap().is_empty());
+        let _ = cid;
     }
 
     #[test]

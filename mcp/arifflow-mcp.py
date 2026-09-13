@@ -156,6 +156,26 @@ TOOLS = [
         },
     },
     {
+        "name": "flow_consequences",
+        "description": (
+            "RG-7 consequence records (daemon POST /consequences, read-only). "
+            "Reality's invoices: observed outcomes ATTRIBUTED to the policy/"
+            "execution receipts that produced them (causal parents). "
+            "outcome_class recovery|regression|neutral; evidence field keeps "
+            "attribution falsifiable. 'Did belief change reality?' — traversable."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "before_receipt_id": {
+                    "type": "string",
+                    "description": "Inclusive as-of boundary (time travel). Optional.",
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "flow_scar_policies",
         "description": (
             "RG-5 scar-bound policy query (daemon POST /scar_policies, read-only). "
@@ -265,6 +285,12 @@ def flow_post(path: str, body: dict) -> tuple[int, dict]:
 
 
 def call_tool(name: str, args: dict) -> dict:
+    if name == "flow_consequences":
+        body = {}
+        if args.get("before_receipt_id"):
+            body["before_receipt_id"] = args["before_receipt_id"]
+        code, resp = flow_post("/consequences", body)
+        return {"http_status": code, "consequences": resp.get("consequences", resp)}
     if name == "flow_scar_policies":
         body = {}
         if args.get("before_receipt_id"):
