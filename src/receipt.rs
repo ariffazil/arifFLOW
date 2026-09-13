@@ -529,6 +529,18 @@ pub struct FlowReceipt {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parent_receipt_hashes: Vec<String>,
 
+    /// SEQ-N belief-death primitive (2026-09-13): receipts this one SUPERSEDES.
+    /// Supersession is visible and non-deleting — the target stays in the
+    /// ledger; this edge records that the belief it expressed has DIED and
+    /// been replaced by this receipt's claim. 1:1 with
+    /// `supersedes_receipt_hashes`. A forged death is rejected like a
+    /// forged parent: the edge binds target content.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supersedes_receipt_ids: Vec<String>,
+    /// Canonical `jcs_body_hash` of each superseded receipt at claim time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supersedes_receipt_hashes: Vec<String>,
+
     // ── Genesis Bridge (RG-3, 2026-09-12) ──
     /// Constitutional anchor reference. When set, this receipt bridges the
     /// Historical Lineage (receipt DAG) to the Constitutional Origin (RCP-000,
@@ -603,6 +615,14 @@ impl FlowReceipt {
         self
     }
 
+    /// SEQ-N (2026-09-13): record belief death — this receipt supersedes the
+    /// given receipts. `hashes` are their `jcs_body_hash` values, 1:1.
+    pub fn with_supersedes(mut self, ids: Vec<String>, hashes: Vec<String>) -> Self {
+        self.supersedes_receipt_ids = ids;
+        self.supersedes_receipt_hashes = hashes;
+        self
+    }
+
     /// RG-PH: canonical JCS SHA3-256 of this receipt, computed over the
     /// receipt with `jcs_body_hash` excluded (self-reference is impossible;
     /// the exclusion is the contract). Cross-language reproducible under
@@ -640,6 +660,8 @@ impl FlowReceipt {
             parent_receipt_ids: Vec::new(),
             jcs_body_hash: None,
             parent_receipt_hashes: Vec::new(),
+            supersedes_receipt_ids: Vec::new(),
+            supersedes_receipt_hashes: Vec::new(),
             genesis_anchor: None,
             cost_ns,
             preceding_verify_cost_ns: None,
@@ -687,6 +709,8 @@ impl FlowReceipt {
             parent_receipt_ids: Vec::new(),
             jcs_body_hash: None,
             parent_receipt_hashes: Vec::new(),
+            supersedes_receipt_ids: Vec::new(),
+            supersedes_receipt_hashes: Vec::new(),
             genesis_anchor: None,
             cost_ns,
             preceding_verify_cost_ns: None,
@@ -952,6 +976,65 @@ impl ReceiptStore {
                             "[arifFlow] WARN: causal-edge parent {} unhashable \
                              (schema-discipline violation in parent) — accepted unverified",
                             pid
+                        );
+                    }
+                }
+            }
+        }
+        // SEQ-N (2026-09-13): belief-death verification. A supersession claim
+        // binds the TARGET's content hash — a forged death (claiming to kill
+        // content that isn't there) is rejected exactly like a forged parent.
+        if !receipt.supersedes_receipt_ids.is_empty() {
+            if receipt.supersedes_receipt_hashes.len() != receipt.supersedes_receipt_ids.len() {
+                return Err(format!(
+                    "Supersession reject: supersedes_receipt_hashes has {} entries but \
+                     supersedes_receipt_ids has {} — must be 1:1",
+                    receipt.supersedes_receipt_hashes.len(),
+                    receipt.supersedes_receipt_ids.len()
+                ));
+            }
+            let self_id = receipt.receipt_id.to_string();
+            for (tid, claimed) in receipt
+                .supersedes_receipt_ids
+                .iter()
+                .zip(receipt.supersedes_receipt_hashes.iter())
+            {
+                if tid == &self_id {
+                    return Err(
+                        "Supersession reject: a receipt cannot supersede itself".to_string()
+                    );
+                }
+                let target = self
+                    .receipts
+                    .iter()
+                    .find(|r| r.receipt_id.to_string() == *tid);
+                let Some(target) = target else {
+                    eprintln!(
+                        "[arifFlow] WARN: supersession target {} not in store window — \
+                         hash claim unverifiable, accepted unverified",
+                        tid
+                    );
+                    continue;
+                };
+                let actual = target
+                    .jcs_body_hash
+                    .clone()
+                    .or_else(|| target.compute_jcs_body_hash().ok());
+                match actual {
+                    Some(ref h) if h == claimed => {}
+                    Some(ref h) => {
+                        return Err(format!(
+                            "Supersession reject: target {} content hash mismatch — \
+                             claimed {}, actual {}. The death edge binds content; refusing \
+                             to record a false death.",
+                            tid, claimed, h
+                        ));
+                    }
+                    None => {
+                        eprintln!(
+                            "[arifFlow] WARN: supersession target {} unhashable — \
+                             accepted unverified",
+                            tid
                         );
                     }
                 }
@@ -1541,6 +1624,101 @@ mod tests {
             liar.compute_jcs_body_hash().unwrap(),
             parent.compute_jcs_body_hash().unwrap()
         );
+    }
+
+    // ── SEQ-N supersession tests (2026-09-13) — belief death ─────────────
+
+    #[test]
+    fn seqn_supersede_happy_path() {
+        let (mut belief, _) = rgph_pair();
+        let bid = belief.receipt_id.to_string();
+        let bh = belief.compute_jcs_body_hash().unwrap();
+        belief.jcs_body_hash = Some(bh.clone());
+
+        let mut store = ReceiptStore::new(100);
+        store.push_chain_aware(belief).unwrap();
+
+        let killer = FlowReceipt::new_first(
+            "rgph-test",
+            "s-rgph",
+            StepType::Execute,
+            EpistemicLabel::Derivation,
+            1,
+        )
+        .with_supersedes(vec![bid], vec![bh]);
+        assert!(store.push_chain_aware(killer).is_ok());
+        assert_eq!(
+            store.receipts.last().unwrap().supersedes_receipt_ids.len(),
+            1
+        );
+    }
+
+    #[test]
+    fn seqn_forged_death_rejected() {
+        let (mut belief, _) = rgph_pair();
+        let bid = belief.receipt_id.to_string();
+        belief.jcs_body_hash = Some(belief.compute_jcs_body_hash().unwrap());
+        let mut store = ReceiptStore::new(100);
+        store.push_chain_aware(belief).unwrap();
+
+        let forged = FlowReceipt::new_first(
+            "rgph-test",
+            "s-rgph",
+            StepType::Execute,
+            EpistemicLabel::Derivation,
+            1,
+        )
+        .with_supersedes(vec![bid], vec!["e".repeat(64)]);
+        let err = store.push_chain_aware(forged).unwrap_err();
+        assert!(err.contains("refusing to record a false death"), "{err}");
+        assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn seqn_self_supersede_rejected() {
+        let (belief, _) = rgph_pair();
+        let mut store = ReceiptStore::new(100);
+        // not stored yet — self-check fires before lookup
+        let bid = belief.receipt_id.to_string();
+        let self_killer = belief.with_supersedes(vec![bid], Vec::new());
+        let err = store.push_chain_aware(self_killer).unwrap_err();
+        assert!(err.contains("cannot supersede itself"), "{err}");
+    }
+
+    #[test]
+    fn seqn_supersede_length_mismatch_rejected() {
+        let (mut belief, _) = rgph_pair();
+        let bid = belief.receipt_id.to_string();
+        belief.jcs_body_hash = Some(belief.compute_jcs_body_hash().unwrap());
+        let mut store = ReceiptStore::new(100);
+        store.push_chain_aware(belief).unwrap();
+        let bad = FlowReceipt::new_first(
+            "rgph-test",
+            "s-rgph",
+            StepType::Execute,
+            EpistemicLabel::Derivation,
+            1,
+        )
+        .with_supersedes(vec![bid, "other".into()], vec!["x".into()]);
+        let err = store.push_chain_aware(bad).unwrap_err();
+        assert!(err.contains("1:1"), "{err}");
+    }
+
+    #[test]
+    fn seqn_supersede_legacy_ids_only_accepted() {
+        let (belief, _) = rgph_pair();
+        let bid = belief.receipt_id.to_string();
+        let mut store = ReceiptStore::new(100);
+        store.push_chain_aware(belief).unwrap();
+        let legacy = FlowReceipt::new_first(
+            "rgph-test",
+            "s-rgph",
+            StepType::Execute,
+            EpistemicLabel::Derivation,
+            1,
+        )
+        .with_supersedes(vec![bid], Vec::new());
+        assert!(store.push_chain_aware(legacy).is_ok());
     }
 
     #[test]

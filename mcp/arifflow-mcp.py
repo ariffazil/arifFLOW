@@ -155,6 +155,32 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "flow_lineage",
+        "description": (
+            "SEQ-N belief-lineage query (daemon POST /lineage, read-only). "
+            "Reconstruct the causal ancestry of a receipt with per-edge hash "
+            "verification, supersession status (belief death), and optional "
+            "time travel: with before_receipt_id, only receipts at or before "
+            "that ledger position exist for the query — 'what did we believe "
+            "then, and why?' answered from receipts alone, never narrative."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "receipt_id": {
+                    "type": "string",
+                    "description": "Target receipt whose lineage to reconstruct.",
+                },
+                "before_receipt_id": {
+                    "type": "string",
+                    "description": "Inclusive as-of boundary: receipts after this ledger position are invisible to the query (time travel). Optional.",
+                },
+            },
+            "required": ["receipt_id"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -199,6 +225,19 @@ def flow_post(path: str, body: dict) -> tuple[int, dict]:
 
 
 def call_tool(name: str, args: dict) -> dict:
+    if name == "flow_lineage":
+        code, body = flow_post(
+            "/lineage",
+            {
+                "receipt_id": args["receipt_id"],
+                **(
+                    {"before_receipt_id": args["before_receipt_id"]}
+                    if args.get("before_receipt_id")
+                    else {}
+                ),
+            },
+        )
+        return {"http_status": code, "report": body}
     if name == "flow_health":
         result = flow_get("/health")
         # Enrich with formula provenance (Gate 1 Instrument)
