@@ -6,6 +6,16 @@ work_order: RG-BLUEPRINT-INIT-TO-SEAL-v1 → RG-2-FIX-002 → P4-JCS
 authored: 2026-09-12, fi-003-qwen (session SEAL-74f9a613aa6f47cc)
 implemented: 2026-09-13, fi-003-qwen (F13 directive "sambung P4-JCS"; assignment moved FI-009 → FI-003)
 
+## ⚠ SCOPE OF PROTECTION — READ FIRST
+
+`FlowReceipt::hash()` is **UNCHANGED** by P4-JCS. The live seal chain
+(`arifflow_sealed.jsonl`, `previous_receipt_hash`, seal checkpoints) still uses
+the pre-JCS serializations and receives **zero protection from this work**
+until a separately-gated migration lands (F13 decision required). JCS exists
+**beside** the chain, not under it. "Canonicalization shipped" ≠ "the chain is
+canonical." Anyone reading "JCS landed" must NOT infer the seal chain gained
+cross-language verifiability — the three-names interim rule remains in force.
+
 ## Problem (disk-witnessed)
 
 Receipt hashing is currently DIVERGENT BY DESIGN-ACCIDENT across the three language
