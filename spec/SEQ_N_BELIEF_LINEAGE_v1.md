@@ -72,3 +72,24 @@ Visible, non-deleting supersession on FlowReceipt:
   currently both visible, no winner-selection semantics).
 - Emitter adoption: fire-seal receipts could supersede prior draft-receipts.
 - FQ_G (RG-7) remains last, per the measure-last rule.
+
+## RG-4 addendum (2026-09-13, commits 722c695 + scripts 89babc6)
+
+Governance events are now first-class graph nodes:
+
+- **fire-seal.py** emits structured governance receipts on ALL outcomes —
+  `seal`, `seal_refused` (judge refusal), `bind_failed`. A refusal is a
+  RECORD, not silence. Payload: `{governance_event, mode, verdict, chain_id,
+  judge_state_hash, seal_purpose, f13_ack, actor, payload_head}`; lane-chained
+  hash-bound (`edges/fire-seal-lane-a.last`). NOTE: fire-seal `--mode receipt`
+  returns no `verdict` field from the kernel (pre-existing untested path) —
+  emission fires on real `mode=seal` arcs (verdict SEAL/SABAR).
+- **`POST /gov_events`** + MCP `flow_gov_events`: scan of
+  `payload.governance_event` receipts with per-event supersession status and
+  as-of time travel.
+- **The junction (production-witnessed)**: a governance verdict revised by a
+  later receipt reads as `belief_status: superseded, superseded_by:
+  [verified]` — judge-refused-then-ratified is a computable governance
+  belief death.
+- Daemon quirk recorded: single-read socket can split header/body →
+  transient `400 EOF` — retry once (the MCP bridge has always done this).
