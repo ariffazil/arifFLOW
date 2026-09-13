@@ -156,6 +156,17 @@ TOOLS = [
         },
     },
     {
+        "name": "flow_fq_g",
+        "description": (
+            "FQ_G — institutional metabolism rate (daemon POST /fq_g, read-only). "
+            "Counts beliefs born/superseded, governance events, scar-bound policies, "
+            "reality invoices; computes revision_rate, invoice_yield, and the "
+            "latencies scar→policy, policy→invoice, belief lifetime. v1 reports "
+            "distributions only — thresholds not invented (measure first)."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
         "name": "flow_consequences",
         "description": (
             "RG-7 consequence records (daemon POST /consequences, read-only). "
@@ -285,6 +296,9 @@ def flow_post(path: str, body: dict) -> tuple[int, dict]:
 
 
 def call_tool(name: str, args: dict) -> dict:
+    if name == "flow_fq_g":
+        code, resp = flow_post("/fq_g", {})
+        return {"http_status": code, "report": resp}
     if name == "flow_consequences":
         body = {}
         if args.get("before_receipt_id"):

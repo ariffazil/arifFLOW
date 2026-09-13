@@ -561,6 +561,20 @@ fn handle_client(
                 })
                 .to_string();
                 http_ok(&body)
+            } else if request.starts_with("POST /fq_g") {
+                // RG-9 / FQ_G (2026-09-13): institutional metabolism rate —
+                // measured LAST. Read-only, full-ledger distributions.
+                match arifflow::lineage_query::LoadedLedger::from_path(std::path::Path::new(
+                    "/var/lib/arifflow/receipts.jsonl",
+                )) {
+                    Err(e) => http_bad_request(
+                        &serde_json::json!({"status": "ledger_unreadable", "error": format!("{}", e)}).to_string(),
+                    ),
+                    Ok(ledger) => http_ok(
+                        &serde_json::to_string(&arifflow::lineage_query::fq_graph(&ledger))
+                            .unwrap_or_else(|_| "{}".into()),
+                    ),
+                }
             } else if request.starts_with("POST /consequences") {
                 // RG-7 (2026-09-13): consequence records — read-only.
                 match extract_body(&request) {

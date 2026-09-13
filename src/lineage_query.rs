@@ -11,6 +11,7 @@
 //! read-only query surface (daemon `POST /lineage`, MCP `flow_lineage`).
 
 use crate::receipt::FlowReceipt;
+use chrono;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader};
@@ -568,6 +569,139 @@ pub fn consequences(
     Ok(records)
 }
 
+#[derive(Serialize)]
+pub struct FqGraphReport {
+    pub schema: String,
+    pub receipts_scanned: usize,
+    pub beliefs_born: usize,
+    pub beliefs_superseded: usize,
+    pub supersession_events: usize,
+    pub governance_events: usize,
+    pub policies_emitted: usize,
+    pub invoices_received: usize,
+    /// supersession_events / beliefs_born — fraction of witnessed beliefs
+    /// that died. Sample-size honesty: meaningless below ~30 beliefs.
+    pub revision_rate: f64,
+    /// invoices / policies — did compressed scars ever get billed by reality?
+    pub invoice_yield: f64,
+    /// belief born → belief died, milliseconds (per supersession, from
+    /// target created_at to killer created_at).
+    pub belief_lifetime_ms: Vec<u64>,
+    /// scar-source event → policy, milliseconds (policy causal parents).
+    pub scar_to_policy_ms: Vec<u64>,
+    /// policy → invoice, milliseconds (consequence attributed_to).
+    pub policy_to_invoice_ms: Vec<u64>,
+    pub note: String,
+}
+
+fn age_ms(from: &str, to: &str) -> Option<u64> {
+    let f = chrono::DateTime::parse_from_rfc3339(from).ok()?;
+    let t = chrono::DateTime::parse_from_rfc3339(to).ok()?;
+    (t.timestamp_millis() - f.timestamp_millis())
+        .try_into()
+        .ok()
+}
+
+/// FQ_G (RG-9, 2026-09-13): institutional metabolism rate — measured LAST.
+/// Counts the primitives the Reality Graph now records (beliefs born/died,
+/// policies compressed from scars, reality invoices) and the latencies
+/// between them. v1 reports DISTRIBUTIONS ONLY — thresholds are not invented
+/// (n is small; the FQ≈1 equilibrium doctrine does not transfer to metabolism
+/// rates without data). The ruler reads; it does not yet judge.
+pub fn fq_graph(ledger: &LoadedLedger) -> FqGraphReport {
+    let mut beliefs_born = 0usize;
+    let mut supersession_events = 0usize;
+    let mut governance_events = 0usize;
+    let mut policies = 0usize;
+    let mut invoices = 0usize;
+    let mut belief_lifetime_ms = Vec::new();
+    let mut scar_to_policy_ms = Vec::new();
+    let mut policy_to_invoice_ms = Vec::new();
+    let by_id: HashMap<String, &FlowReceipt> = ledger
+        .receipts
+        .iter()
+        .map(|r| (r.receipt_id.to_string(), r))
+        .collect();
+
+    for r in &ledger.receipts {
+        beliefs_born += 1;
+        let pl = r.payload.as_ref().and_then(|p| p.as_object());
+        if let Some(pl) = pl {
+            if pl.contains_key("governance_event") {
+                governance_events += 1;
+            }
+            if pl.contains_key("scar_binding") {
+                policies += 1;
+                // scar → policy latency via causal parents
+                for pid in r.parent_receipt_ids.iter() {
+                    if let Some(ms) = by_id.get(pid.as_str()).and_then(|p| {
+                        age_ms(&p.created_at.to_rfc3339(), &r.created_at.to_rfc3339())
+                    }) {
+                        scar_to_policy_ms.push(ms);
+                    }
+                }
+            }
+            if pl.contains_key("consequence") {
+                invoices += 1;
+                for pid in r.parent_receipt_ids.iter() {
+                    if let Some(ms) = by_id.get(pid.as_str()).and_then(|p| {
+                        age_ms(&p.created_at.to_rfc3339(), &r.created_at.to_rfc3339())
+                    }) {
+                        policy_to_invoice_ms.push(ms);
+                    }
+                }
+            }
+        }
+        // supersessions emitted by this receipt (belief deaths it caused)
+        if !r.supersedes_receipt_ids.is_empty() {
+            for tid in &r.supersedes_receipt_ids {
+                supersession_events += 1;
+                if let Some(ms) = by_id
+                    .get(tid.as_str())
+                    .and_then(|t| age_ms(&t.created_at.to_rfc3339(), &r.created_at.to_rfc3339()))
+                {
+                    belief_lifetime_ms.push(ms);
+                }
+            }
+        }
+    }
+    let beliefs_superseded = ledger
+        .receipts
+        .iter()
+        .filter(|r| {
+            ledger.receipts.iter().any(|k| {
+                k.supersedes_receipt_ids
+                    .iter()
+                    .any(|x| *x == r.receipt_id.to_string())
+            })
+        })
+        .count();
+    FqGraphReport {
+        schema: "arifflow.fq-g/v1".into(),
+        receipts_scanned: ledger.len(),
+        beliefs_born,
+        beliefs_superseded,
+        supersession_events,
+        governance_events,
+        policies_emitted: policies,
+        invoices_received: invoices,
+        revision_rate: if beliefs_born > 0 {
+            supersession_events as f64 / beliefs_born as f64
+        } else {
+            0.0
+        },
+        invoice_yield: if policies > 0 {
+            invoices as f64 / policies as f64
+        } else {
+            0.0
+        },
+        belief_lifetime_ms,
+        scar_to_policy_ms,
+        policy_to_invoice_ms,
+        note: "v1 distributions only — thresholds deliberately not invented (small n; measure-first doctrine)".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -656,6 +790,56 @@ mod tests {
         let node = rep.ancestry.iter().find(|n| n.receipt_id == cid).unwrap();
         assert_eq!(node.edges[0].verdict, "mismatch");
         assert_eq!(node.edges[1].verdict, "missing_parent");
+    }
+
+    #[test]
+    fn fq_g_counts_and_latencies() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = stamp(FlowReceipt::new_first(
+            "a",
+            "s",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            0,
+        ));
+        let aid = a.receipt_id.to_string();
+        let ah = a.jcs_body_hash.clone().unwrap();
+        let mut pol = FlowReceipt::new_first(
+            "a",
+            "s",
+            StepType::Execute,
+            EpistemicLabel::Specification,
+            0,
+        )
+        .with_causal_parents(vec![aid], vec![ah]);
+        pol.payload = Some(serde_json::json!({"scar_binding": {
+            "policy_slug": "p", "scar_id": "s", "enforcement_surface": "t",
+            "enforcement_ref": "r", "policy_text": "x"}}));
+        pol.created_at = a.created_at + chrono::Duration::milliseconds(3_600_000);
+        let pol = stamp(pol);
+        let pid = pol.receipt_id.to_string();
+        let ph = pol.jcs_body_hash.clone().unwrap();
+        let mut inv = FlowReceipt::new_first(
+            "a",
+            "s",
+            StepType::Verify,
+            EpistemicLabel::Interpretation,
+            0,
+        )
+        .with_causal_parents(vec![pid], vec![ph]);
+        inv.created_at = pol.created_at + chrono::Duration::milliseconds(7_200_000);
+        let mut inv = stamp(inv);
+        inv.payload = Some(serde_json::json!({"consequence": {
+            "claim_slug": "x", "observed_outcome": "y", "evidence": "z",
+            "outcome_class": "recovery"}}));
+        let inv = stamp(inv);
+        let ledger = write_ledger(dir.path(), &[a, pol, inv]);
+        let rep = fq_graph(&ledger);
+        assert_eq!(rep.policies_emitted, 1);
+        assert_eq!(rep.invoices_received, 1);
+        assert_eq!(rep.invoice_yield, 1.0);
+        assert_eq!(rep.scar_to_policy_ms, vec![3_600_000]);
+        assert_eq!(rep.policy_to_invoice_ms, vec![7_200_000]);
     }
 
     #[test]
