@@ -51,6 +51,8 @@ pub enum StepType {
     Merge,
     /// Routing — dispatch to another organ
     Route,
+    /// Abort — session or step terminated prematurely
+    Abort,
 }
 
 impl StepType {
@@ -68,6 +70,11 @@ impl StepType {
     pub fn is_barrier(&self) -> bool {
         matches!(self, StepType::Barrier)
     }
+
+    /// Returns true if this step type is an abort.
+    pub fn is_abort(&self) -> bool {
+        matches!(self, StepType::Abort)
+    }
 }
 
 impl fmt::Display for StepType {
@@ -80,6 +87,7 @@ impl fmt::Display for StepType {
             StepType::Barrier => write!(f, "Barrier"),
             StepType::Merge => write!(f, "Merge"),
             StepType::Route => write!(f, "Route"),
+            StepType::Abort => write!(f, "Abort"),
         }
     }
 }
@@ -1898,6 +1906,7 @@ mod tests {
         assert_eq!(StepType::Barrier.to_string(), "Barrier");
         assert_eq!(StepType::Merge.to_string(), "Merge");
         assert_eq!(StepType::Route.to_string(), "Route");
+        assert_eq!(StepType::Abort.to_string(), "Abort");
     }
 
     #[test]
@@ -1917,6 +1926,9 @@ mod tests {
         assert!(!StepType::Execute.is_verification());
         assert!(StepType::Verify.is_verification());
         assert!(!StepType::Cool.is_execution());
+        assert!(!StepType::Abort.is_execution());
+        assert!(!StepType::Abort.is_verification());
+        assert!(StepType::Abort.is_abort());
     }
 
     #[test]
