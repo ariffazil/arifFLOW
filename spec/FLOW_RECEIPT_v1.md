@@ -69,6 +69,8 @@ barrier or merge steps.
 | `step_number` | u64 | Monotonic step number within this session |
 | `routed_organ` | Option\<String\> | **(2026-09-12)** Which organ `arif_route` classified this step to. Makes routing decisions auditable on-chain. |
 | `parent_receipt_ids` | Vec\<String\> | **(2026-09-12)** DAG parent receipt hashes. Enables fan-out merge points with multiple parents. `previous_receipt_hash` remains the single-chain anchor. |
+| `jcs_body_hash` | Option\<String\> | **(RG-PH 2026-09-13)** Canonical JCS SHA3-256 of this receipt (the field itself excluded — block-header trick). Daemon-stamped at ingest, client values never trusted. See `spec/RG_PREV_HASH_SCHEMA_v1.md`. |
+| `parent_receipt_hashes` | Vec\<String\> | **(RG-PH 2026-09-13)** 1:1 with `parent_receipt_ids` — each parent's `jcs_body_hash` at edge-creation time. Content-bound causal edges; daemon rejects mismatch. |
 
 **StepType enum:**
 
