@@ -93,3 +93,27 @@ Governance events are now first-class graph nodes:
   belief death.
 - Daemon quirk recorded: single-read socket can split header/body →
   transient `400 EOF` — retry once (the MCP bridge has always done this).
+
+## RG-5 addendum (2026-09-13, commit 442252b)
+
+Scar-bound policies — `payload.scar_binding` receipts citing the scar they
+were compressed FROM and the surface where they are ENFORCED. Query:
+`POST /scar_policies` + MCP `flow_scar_policies` (scan + causal parents +
+supersession + as-of). Production witnesses (session rg5-witness):
+
+- `retry-on-transient-400` ← scar deploy-race-20260913; enforced in
+  scripts/fire-seal.py commit 8210114 (REAL CODE); causally parented to the
+  400-closure receipt 7946ddaf — parent hash computed CLIENT-SIDE in Python
+  and VERIFIED BY THE RUST DAEMON at ingest: cross-language JCS parity
+  proven in production (python-computed == rust-recomputed).
+- `no-pipe-exit-read` ← scar pipe-swallows-exit-20260913 (near-miss ×2 in
+  one session); enforcement: verifier discipline. Honest gap: no receipt
+  ancestor (process scar, not yet receipted) — parents=[].
+- `move-dont-delete-evidence` ← SEALED scar scar_1789211553883
+  (fp e4d9fc5be73367cd) — the bridge from Reality Graph to the existing
+  VAULT999 scar machinery.
+
+The chain `reality → scar → policy → enforced behaviour` is now traversable:
+council layer map RG-8 seeded. Policies superseded by later policies read as
+policy belief death. Known polish: /lineage target node shows jcs_body_hash
+None for unstamped receipts (lazy compute exists only on edge verification).
