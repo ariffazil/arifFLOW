@@ -985,7 +985,9 @@ impl ReceiptStore {
         // binds the TARGET's content hash — a forged death (claiming to kill
         // content that isn't there) is rejected exactly like a forged parent.
         if !receipt.supersedes_receipt_ids.is_empty() {
-            if receipt.supersedes_receipt_hashes.len() != receipt.supersedes_receipt_ids.len() {
+            if !receipt.supersedes_receipt_hashes.is_empty()
+                && receipt.supersedes_receipt_hashes.len() != receipt.supersedes_receipt_ids.len()
+            {
                 return Err(format!(
                     "Supersession reject: supersedes_receipt_hashes has {} entries but \
                      supersedes_receipt_ids has {} — must be 1:1",

@@ -565,67 +565,46 @@ fn handle_client(
                 // SEQ-N (2026-09-13): belief-lineage query surface — read-only.
                 // Body: {"receipt_id": "...", "before_receipt_id": "..."?}
                 match extract_body(&request) {
-                    Some(raw_json) => {
-                        let req: serde_json::Value = match serde_json::from_str(raw_json.trim()) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                let body = serde_json::json!({
-                                    "status": "invalid", "error": format!("{}", e)
-                                })
-                                .to_string();
-                                http_bad_request(&body)
-                            }
-                        };
-                        let target = req.get("receipt_id").and_then(|v| v.as_str());
-                        let before = req.get("before_receipt_id").and_then(|v| v.as_str());
-                        match target {
-                            None => {
-                                let body = serde_json::json!({
-                                    "status": "invalid",
-                                    "error": "receipt_id is required"
-                                })
-                                .to_string();
-                                http_bad_request(&body)
-                            }
-                            Some(target) => {
-                                match crate::lineage_query::LoadedLedger::from_path(
-                                    std::path::Path::new("/var/lib/arifflow/receipts.jsonl"),
-                                ) {
-                                    Ok(ledger) => {
-                                        match crate::lineage_query::lineage_report(
+                    None => http_bad_request(
+                        &serde_json::json!({"status": "invalid", "error": "empty body"})
+                            .to_string(),
+                    ),
+                    Some(raw_json) => match serde_json::from_str::<serde_json::Value>(
+                        raw_json.trim(),
+                    ) {
+                        Err(e) => http_bad_request(
+                            &serde_json::json!({"status": "invalid", "error": format!("{}", e)})
+                                .to_string(),
+                        ),
+                        Ok(req) => {
+                            let target = req.get("receipt_id").and_then(|v| v.as_str());
+                            let before = req.get("before_receipt_id").and_then(|v| v.as_str());
+                            match target {
+                                None => http_bad_request(
+                                    &serde_json::json!({"status": "invalid", "error": "receipt_id is required"}).to_string(),
+                                ),
+                                Some(target) => {
+                                    match arifflow::lineage_query::LoadedLedger::from_path(
+                                        std::path::Path::new("/var/lib/arifflow/receipts.jsonl"),
+                                    ) {
+                                        Err(e) => http_bad_request(
+                                            &serde_json::json!({"status": "ledger_unreadable", "error": format!("{}", e)}).to_string(),
+                                        ),
+                                        Ok(ledger) => match arifflow::lineage_query::lineage_report(
                                             &ledger, target, before,
                                         ) {
-                                            Ok(report) => http_ok(
-                                                &serde_json::to_string(&report)
-                                                    .unwrap_or_else(|_| "{}".into()),
+                                            Err(e) => http_bad_request(
+                                                &serde_json::json!({"status": "lineage_error", "error": e}).to_string(),
                                             ),
-                                            Err(e) => {
-                                                let body = serde_json::json!({
-                                                    "status": "lineage_error",
-                                                    "error": e
-                                                })
-                                                .to_string();
-                                                http_bad_request(&body)
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        let body = serde_json::json!({
-                                            "status": "ledger_unreadable",
-                                            "error": format!("{}", e)
-                                        })
-                                        .to_string();
-                                        http_bad_request(&body)
+                                            Ok(report) => http_ok(
+                                                &serde_json::to_string(&report).unwrap_or_else(|_| "{}".into()),
+                                            ),
+                                        },
                                     }
                                 }
                             }
                         }
-                    }
-                    None => {
-                        let body = serde_json::json!({"status": "invalid", "error": "empty body"})
-                            .to_string();
-                        http_bad_request(&body)
-                    }
+                    },
                 }
             } else if request.starts_with("POST /ingest") {
                 match extract_body(&request) {
