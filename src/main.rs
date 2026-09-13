@@ -554,7 +554,19 @@ fn handle_client(
             } else if request.starts_with("POST /ingest") {
                 match extract_body(&request) {
                     Some(raw_json) => match serde_json::from_str::<FlowReceipt>(raw_json.trim()) {
-                        Ok(receipt) => {
+                        Ok(mut receipt) => {
+                            // RG-PH (2026-09-13): daemon stamps the canonical
+                            // JCS body hash server-side — client-supplied values
+                            // are recomputed, never trusted. Fail-soft on
+                            // schema-discipline violations (e.g. u64 > 2^53).
+                            match receipt.compute_jcs_body_hash() {
+                                Ok(h) => receipt.jcs_body_hash = Some(h),
+                                Err(e) => eprintln!(
+                                    "[arifFlow] WARN: jcs stamp failed for {}: {} \
+                                     (receipt stored unhashed)",
+                                    receipt.receipt_id, e
+                                ),
+                            }
                             let mut store = receipt_store.lock().unwrap();
                             let mut enf = enforcer.lock().unwrap();
                             // [FIX 2] 2026-08-10: chain-aware ingest — rejects receipts with
@@ -664,6 +676,8 @@ fn handle_client(
                                 "status": "ingested",
                                 "actor": receipt.actor_id,
                                 "step_type": format!("{}", receipt.step_type),
+                                "receipt_id": receipt.receipt_id.to_string(),
+                                "jcs_body_hash": receipt.jcs_body_hash,
                                 "fq": {
                                     "quotient": fq.quotient,
                                     "verdict": format!("{}", fq.verdict),

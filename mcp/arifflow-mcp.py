@@ -141,6 +141,15 @@ TOOLS = [
                     "items": {"type": "string"},
                     "description": "DAG parent receipt hashes for fan-out merge points. Enables multi-parent edges in composed topologies.",
                 },
+                "parent_receipt_hashes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "RG-PH: canonical jcs_body_hash of each parent at edge-creation time, 1:1 with parent_receipt_ids. Binds edge to parent CONTENT (tamper-evident causality); daemon verifies against stored parents and rejects mismatch.",
+                },
+                "jcs_body_hash": {
+                    "type": "string",
+                    "description": "RG-PH: ACCEPTED BUT IGNORED — the daemon recomputes and stamps this server-side (client values are never trusted).",
+                },
             },
             "required": ["actor_id", "session_id"],
             "additionalProperties": False,
@@ -293,6 +302,8 @@ def call_tool(name: str, args: dict) -> dict:
             receipt["routed_organ"] = args["routed_organ"]
         if args.get("parent_receipt_ids"):
             receipt["parent_receipt_ids"] = args["parent_receipt_ids"]
+        if args.get("parent_receipt_hashes"):
+            receipt["parent_receipt_hashes"] = args["parent_receipt_hashes"]
         # Inject harness fingerprint into payload if provided (ETCSOVG, arxiv 2605.23950)
         if args.get("harness_fingerprint"):
             if receipt["payload"] is None:
