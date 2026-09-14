@@ -47,6 +47,22 @@ export interface ReceiptEnvelope {
   /** Capability/tool that produced this result */
   capability?: string;
 
+  // ── Lineage (Reality Graph persistence) ──
+
+  /**
+   * The organ to which the actor routed its attention or execution.
+   * This is attention/operational ancestry, not authority.
+   * Optional for backward compatibility; required for Reality Graph traversal.
+   */
+  routed_organ?: string;
+
+  /**
+   * Causal predecessors of this receipt.
+   * Parent lineage provides provenance; it does not inherit authority.
+   * Optional for backward compatibility; required for Reality Graph traversal.
+   */
+  parent_receipt_ids?: string[];
+
   // ── Payload (class-dependent) ──
 
   /** Human-readable 1-line summary */
@@ -103,6 +119,14 @@ export interface ReceiptEnvelope {
 
   /** SHA-256 of this receipt (computed on store) */
   hash?: string;
+
+  /**
+   * SHA-256 of the full canonical receipt payload including lineage fields.
+   * When present, the chain entry binds to this hash — tampering with
+   * routed_organ or parent_receipt_ids invalidates the chain.
+   * Absent on pre-patch receipts (backward compatible).
+   */
+  payload_hash?: string;
 }
 
 // ── Receipt Store Stats ─────────────────────────────────────────────────

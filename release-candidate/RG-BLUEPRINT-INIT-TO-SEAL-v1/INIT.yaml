@@ -1,0 +1,82 @@
+schema: ariflow.init-envelope/v1
+init_id: INIT-2026-09-12T103229Z-ANTIGRAVITY-FI008
+generated_at: "2026-09-12T10:32:29Z"
+
+agent:
+  actor_id: antigravity-fi008
+  model_id: claude-sonnet-4.6-thinking
+  session_id: 798d7ba6-774f-4000-8a47-e66d8384c8e6
+  session_started_at: "2026-09-12T10:30:18Z"
+  tool_schema_version: "antigravity-cli/2026-09"
+  tool_schema_generated_at: "2026-09-12T10:30:18Z"
+
+authority:
+  owner: ARIF
+  delegated_role: FORGER
+  allowed:
+    - read
+    - implement
+    - test
+  forbidden:
+    - production_deploy
+    - production_seal
+    - f13_ratification
+    - memory_promotion
+    - genesis_bridge_activation
+
+scope:
+  repositories:
+    - arifFlow
+    - A-FORGE
+    - arifOS/VAULT999
+    - AAA
+  work_order: RG-BLUEPRINT-INIT-TO-SEAL-v1
+
+constraints:
+  max_rounds: 4
+  max_delegations: 3
+  fail_closed_on:
+    - authority_ambiguity
+    - secret_exposure
+    - seal_binding_mismatch
+    - dirty_release_provenance
+
+outputs:
+  required:
+    - OBSERVATIONS.md
+    - PROPOSAL.yaml
+    - FORGE_MANIFEST.yaml
+    - PATCH.diff
+    - TEST_RESULTS.json
+    - HASH_FIXTURES.json
+    - LINEAGE_PROOF.json
+    - SEAL_BINDING_PROOF.json
+    - SECRET_SCAN.json
+    - ROLLBACK.md
+    - JUDGE_PACKET.yaml
+    - OPEN_LOOPS.yaml
+
+source_commits:
+  arifFlow: "00301102de5ebad6c435d434b8e08ec14565f9e7"
+  a_forge: "1481b571e2526d17dc7584ebaf3cf471652d6621"
+  arifOS: "763306842776d014ed722f40a64611f770cd7579"
+  AAA: "1344c6a129cba51b51bccf137a1bcdc84153049f"
+
+working_trees:
+  arifFlow: DIRTY
+  a_forge: CLEAN
+  arifOS: CLEAN
+  AAA: DIRTY
+
+dirty_classification:
+  arifFlow:
+    - file: src/governance/mod.rs
+      type: REQUIRED_FIX
+      reason: re-exports lineage module and SealReceipt — needed for RG-2 compilation
+    - file: src/governance/lineage.rs
+      type: REQUIRED_FIX
+      reason: new RG-2 ReceiptStore + LineageResolver implementation, 1373 lines, 14 tests
+  AAA:
+    - type: ACCIDENTAL
+      reason: multiple untracked docs/governance files — not required for this mandate
+      files_count: 26+

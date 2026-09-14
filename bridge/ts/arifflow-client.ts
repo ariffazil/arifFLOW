@@ -62,6 +62,9 @@ export interface FlowReceiptIngest {
   merkle_root: string | null;
   merkle_inclusion_proof: string | null;
   payload: Record<string, unknown> | null;
+  // Graph edge fields (2026-09-12)
+  routed_organ?: string | null;
+  parent_receipt_ids?: string[];
 }
 
 export interface IngestResponse {

@@ -132,8 +132,123 @@ TOOLS = [
                     "type": "string",
                     "description": "ETCSOVG harness fingerprint (SHA256-first-8) linking this receipt to a specific harness config (arxiv 2605.23950)",
                 },
+                "routed_organ": {
+                    "type": "string",
+                    "description": "Which organ did arif_route classify this step to (e.g. 'geox', 'wealth', 'well'). Makes routing auditable.",
+                },
+                "parent_receipt_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "DAG parent receipt hashes for fan-out merge points. Enables multi-parent edges in composed topologies.",
+                },
+                "parent_receipt_hashes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "RG-PH: canonical jcs_body_hash of each parent at edge-creation time, 1:1 with parent_receipt_ids. Binds edge to parent CONTENT (tamper-evident causality); daemon verifies against stored parents and rejects mismatch.",
+                },
+                "jcs_body_hash": {
+                    "type": "string",
+                    "description": "RG-PH: ACCEPTED BUT IGNORED — the daemon recomputes and stamps this server-side (client values are never trusted).",
+                },
             },
             "required": ["actor_id", "session_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "flow_fq_g",
+        "description": (
+            "FQ_G — institutional metabolism rate (daemon POST /fq_g, read-only). "
+            "Counts beliefs born/superseded, governance events, scar-bound policies, "
+            "reality invoices; computes revision_rate, invoice_yield, and the "
+            "latencies scar→policy, policy→invoice, belief lifetime. v1 reports "
+            "distributions only — thresholds not invented (measure first)."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "flow_consequences",
+        "description": (
+            "RG-7 consequence records (daemon POST /consequences, read-only). "
+            "Reality's invoices: observed outcomes ATTRIBUTED to the policy/"
+            "execution receipts that produced them (causal parents). "
+            "outcome_class recovery|regression|neutral; evidence field keeps "
+            "attribution falsifiable. 'Did belief change reality?' — traversable."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "before_receipt_id": {
+                    "type": "string",
+                    "description": "Inclusive as-of boundary (time travel). Optional.",
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "flow_scar_policies",
+        "description": (
+            "RG-5 scar-bound policy query (daemon POST /scar_policies, read-only). "
+            "Lists policies compressed from scars (payload.scar_binding): policy "
+            "slug, scar id/fingerprint, enforcement surface+ref, causal parents "
+            "(the event receipts the policy was compressed FROM), and supersession "
+            "status. 'Did reality change future behaviour?' — traversable."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "before_receipt_id": {
+                    "type": "string",
+                    "description": "Inclusive as-of boundary (time travel). Optional.",
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "flow_gov_events",
+        "description": (
+            "RG-4 governance-event query (daemon POST /gov_events, read-only). "
+            "Lists seal/seal_refused/bind_failed events with structured fields "
+            "(verdict, chain_id, judge_state_hash, f13_ack) and supersession "
+            "status — a verdict revised by a later receipt shows as a "
+            "governance belief death. Optional before_receipt_id = time travel."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "before_receipt_id": {
+                    "type": "string",
+                    "description": "Inclusive as-of boundary (time travel). Optional.",
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "flow_lineage",
+        "description": (
+            "SEQ-N belief-lineage query (daemon POST /lineage, read-only). "
+            "Reconstruct the causal ancestry of a receipt with per-edge hash "
+            "verification, supersession status (belief death), and optional "
+            "time travel: with before_receipt_id, only receipts at or before "
+            "that ledger position exist for the query — 'what did we believe "
+            "then, and why?' answered from receipts alone, never narrative."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "receipt_id": {
+                    "type": "string",
+                    "description": "Target receipt whose lineage to reconstruct.",
+                },
+                "before_receipt_id": {
+                    "type": "string",
+                    "description": "Inclusive as-of boundary: receipts after this ledger position are invisible to the query (time travel). Optional.",
+                },
+            },
+            "required": ["receipt_id"],
             "additionalProperties": False,
         },
     },
@@ -181,6 +296,40 @@ def flow_post(path: str, body: dict) -> tuple[int, dict]:
 
 
 def call_tool(name: str, args: dict) -> dict:
+    if name == "flow_fq_g":
+        code, resp = flow_post("/fq_g", {})
+        return {"http_status": code, "report": resp}
+    if name == "flow_consequences":
+        body = {}
+        if args.get("before_receipt_id"):
+            body["before_receipt_id"] = args["before_receipt_id"]
+        code, resp = flow_post("/consequences", body)
+        return {"http_status": code, "consequences": resp.get("consequences", resp)}
+    if name == "flow_scar_policies":
+        body = {}
+        if args.get("before_receipt_id"):
+            body["before_receipt_id"] = args["before_receipt_id"]
+        code, resp = flow_post("/scar_policies", body)
+        return {"http_status": code, "policies": resp.get("policies", resp)}
+    if name == "flow_gov_events":
+        body = {}
+        if args.get("before_receipt_id"):
+            body["before_receipt_id"] = args["before_receipt_id"]
+        code, resp = flow_post("/gov_events", body)
+        return {"http_status": code, "events": resp.get("events", resp)}
+    if name == "flow_lineage":
+        code, body = flow_post(
+            "/lineage",
+            {
+                "receipt_id": args["receipt_id"],
+                **(
+                    {"before_receipt_id": args["before_receipt_id"]}
+                    if args.get("before_receipt_id")
+                    else {}
+                ),
+            },
+        )
+        return {"http_status": code, "report": body}
     if name == "flow_health":
         result = flow_get("/health")
         # Enrich with formula provenance (Gate 1 Instrument)
@@ -279,6 +428,13 @@ def call_tool(name: str, args: dict) -> dict:
             "formula_hash": "sha256:arifflow-fq-v2.2-2026-08-14",
             "witness_organs": args.get("witness_organs"),
         }
+        # Graph edge fields (2026-09-12) — only include when set/non-empty
+        if args.get("routed_organ"):
+            receipt["routed_organ"] = args["routed_organ"]
+        if args.get("parent_receipt_ids"):
+            receipt["parent_receipt_ids"] = args["parent_receipt_ids"]
+        if args.get("parent_receipt_hashes"):
+            receipt["parent_receipt_hashes"] = args["parent_receipt_hashes"]
         # Inject harness fingerprint into payload if provided (ETCSOVG, arxiv 2605.23950)
         if args.get("harness_fingerprint"):
             if receipt["payload"] is None:

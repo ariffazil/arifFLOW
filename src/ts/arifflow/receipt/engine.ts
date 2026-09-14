@@ -106,6 +106,8 @@ export class ReceiptEngine {
     organ: string;
     result_summary: string;
     capability?: string;
+    routed_organ?: string;
+    parent_receipt_ids?: string[];
     evidence_uri?: string;
     verdict?: ReceiptVerdict;
     cc_id?: string;
@@ -129,6 +131,8 @@ export class ReceiptEngine {
       trace_id: params.trace_id,
       organ: params.organ,
       capability: params.capability,
+      routed_organ: params.routed_organ,
+      parent_receipt_ids: params.parent_receipt_ids,
       result_summary: params.result_summary,
       evidence_uri: params.evidence_uri,
       verdict: params.verdict,
@@ -143,7 +147,7 @@ export class ReceiptEngine {
       prev_hash,
     };
 
-    // Compute hash (content → SHA-256)
+    // Compute hash (content → SHA-256) — backward-compatible fields only
     const hashable = JSON.stringify({
       receipt_id: envelope.receipt_id,
       class: envelope.class,
@@ -158,6 +162,34 @@ export class ReceiptEngine {
       prev_hash: envelope.prev_hash,
     });
     envelope.hash = sha256(hashable);
+
+    // Compute payload_hash (full envelope including lineage fields)
+    // When present, chain entry binds to this — tampering with lineage invalidates chain
+    const payloadHashable = JSON.stringify({
+      receipt_id: envelope.receipt_id,
+      class: envelope.class,
+      timestamp: envelope.timestamp,
+      op_id: envelope.op_id,
+      session_id: envelope.session_id,
+      trace_id: envelope.trace_id,
+      organ: envelope.organ,
+      capability: envelope.capability,
+      routed_organ: envelope.routed_organ,
+      parent_receipt_ids: envelope.parent_receipt_ids,
+      result_summary: envelope.result_summary,
+      evidence_uri: envelope.evidence_uri,
+      verdict: envelope.verdict,
+      cc_id: envelope.cc_id,
+      judgment_reference: envelope.judgment_reference,
+      authority: envelope.authority,
+      bounds: envelope.bounds,
+      input_hash: envelope.input_hash,
+      kernel_signature: envelope.kernel_signature,
+      stage: envelope.stage,
+      vault_candidate: envelope.vault_candidate,
+      prev_hash: envelope.prev_hash,
+    }, Object.keys({receipt_id:1,class:1,timestamp:1,op_id:1,session_id:1,trace_id:1,organ:1,capability:1,routed_organ:1,parent_receipt_ids:1,result_summary:1,evidence_uri:1,verdict:1,cc_id:1,judgment_reference:1,authority:1,bounds:1,input_hash:1,kernel_signature:1,stage:1,vault_candidate:1,prev_hash:1}));
+    envelope.payload_hash = sha256(payloadHashable);
 
     // Append to storage
     appendLine(filePath, envelope as unknown as Record<string, unknown>);
@@ -338,7 +370,7 @@ export class ReceiptEngine {
     for (let i = 0; i < receipts.length; i++) {
       const r = receipts[i]!;
 
-      // Recompute hash
+      // Recompute hash (backward-compatible fields)
       const hashable = JSON.stringify({
         receipt_id: r.receipt_id,
         class: r.class,
@@ -358,6 +390,41 @@ export class ReceiptEngine {
         violations.push(
           `Hash mismatch at ${r.receipt_id}: stored=${r.hash?.slice(0, 12)}... computed=${computedHash.slice(0, 12)}...`,
         );
+      }
+
+      // Verify payload_hash if present (post-patch receipts)
+      if (r.payload_hash) {
+        const payloadHashable = JSON.stringify({
+          receipt_id: r.receipt_id,
+          class: r.class,
+          timestamp: r.timestamp,
+          op_id: r.op_id,
+          session_id: r.session_id,
+          trace_id: r.trace_id,
+          organ: r.organ,
+          capability: r.capability,
+          routed_organ: r.routed_organ,
+          parent_receipt_ids: r.parent_receipt_ids,
+          result_summary: r.result_summary,
+          evidence_uri: r.evidence_uri,
+          verdict: r.verdict,
+          cc_id: r.cc_id,
+          judgment_reference: r.judgment_reference,
+          authority: r.authority,
+          bounds: r.bounds,
+          input_hash: r.input_hash,
+          kernel_signature: r.kernel_signature,
+          stage: r.stage,
+          vault_candidate: r.vault_candidate,
+          prev_hash: r.prev_hash,
+        }, Object.keys({receipt_id:1,class:1,timestamp:1,op_id:1,session_id:1,trace_id:1,organ:1,capability:1,routed_organ:1,parent_receipt_ids:1,result_summary:1,evidence_uri:1,verdict:1,cc_id:1,judgment_reference:1,authority:1,bounds:1,input_hash:1,kernel_signature:1,stage:1,vault_candidate:1,prev_hash:1}));
+        const computedPayloadHash = sha256(payloadHashable);
+
+        if (computedPayloadHash !== r.payload_hash) {
+          violations.push(
+            `Payload hash mismatch at ${r.receipt_id}: lineage fields tampered or corrupted`,
+          );
+        }
       }
 
       // Check prev_hash link (skip first receipt)

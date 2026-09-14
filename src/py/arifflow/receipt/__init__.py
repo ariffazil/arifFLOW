@@ -82,6 +82,10 @@ class ReceiptEnvelope(BaseModel):
     organ: str
     capability: Optional[str] = None
 
+    # Reality Graph lineage (post-patch, optional for backward compatibility)
+    routed_organ: Optional[str] = None
+    parent_receipt_ids: Optional[list[str]] = None
+
     # Payload
     result_summary: str
     evidence_uri: Optional[str] = None
@@ -99,6 +103,7 @@ class ReceiptEnvelope(BaseModel):
     signature: Optional[str] = None
     prev_hash: Optional[str] = None
     hash: Optional[str] = None
+    payload_hash: Optional[str] = None
 
     class Config:
         populate_by_name = True
@@ -165,6 +170,8 @@ def emit_receipt(
     organ: str,
     result_summary: str,
     capability: Optional[str] = None,
+    routed_organ: Optional[str] = None,
+    parent_receipt_ids: Optional[list[str]] = None,
     evidence_uri: Optional[str] = None,
     verdict: Optional[ReceiptVerdict] = None,
     cc_id: Optional[str] = None,
@@ -196,6 +203,8 @@ def emit_receipt(
         "trace_id": trace_id,
         "organ": organ,
         "capability": capability,
+        "routed_organ": routed_organ,
+        "parent_receipt_ids": parent_receipt_ids,
         "result_summary": result_summary,
         "evidence_uri": evidence_uri,
         "verdict": verdict.value if verdict else None,
@@ -210,7 +219,7 @@ def emit_receipt(
         "prev_hash": prev_hash,
     }
 
-    # Compute hash
+    # Compute hash (backward-compatible fields only)
     hashable = json.dumps({
         "receipt_id": envelope["receipt_id"],
         "class": envelope["class"],
@@ -225,6 +234,21 @@ def emit_receipt(
         "prev_hash": envelope["prev_hash"],
     }, sort_keys=True)
     envelope["hash"] = _sha256(hashable)
+
+    # Compute payload_hash (full envelope including lineage fields)
+    # When present, chain entry binds to this — tampering with lineage invalidates chain
+    payload_fields = [
+        "receipt_id", "class", "timestamp", "op_id", "session_id", "trace_id",
+        "organ", "capability", "routed_organ", "parent_receipt_ids",
+        "result_summary", "evidence_uri", "verdict", "cc_id", "judgment_reference",
+        "authority", "bounds", "input_hash", "kernel_signature", "stage",
+        "vault_candidate", "prev_hash",
+    ]
+    payload_hashable = json.dumps(
+        {k: envelope[k] for k in payload_fields},
+        sort_keys=True, default=str,
+    )
+    envelope["payload_hash"] = _sha256(payload_hashable)
 
     _append_line(file_path, envelope)
     return envelope
@@ -332,6 +356,26 @@ def verify_chain(data_dir: str = DEFAULT_DATA_DIR) -> tuple[bool, list[str]]:
                 f"Hash mismatch at {r.get('receipt_id')}: "
                 f"stored={str(r.get('hash'))[:12]}... computed={computed[:12]}..."
             )
+
+        # Verify payload_hash if present (post-patch receipts)
+        if r.get("payload_hash"):
+            payload_fields = [
+                "receipt_id", "class", "timestamp", "op_id", "session_id", "trace_id",
+                "organ", "capability", "routed_organ", "parent_receipt_ids",
+                "result_summary", "evidence_uri", "verdict", "cc_id", "judgment_reference",
+                "authority", "bounds", "input_hash", "kernel_signature", "stage",
+                "vault_candidate", "prev_hash",
+            ]
+            payload_hashable = json.dumps(
+                {k: r.get(k) for k in payload_fields},
+                sort_keys=True, default=str,
+            )
+            computed_payload = _sha256(payload_hashable)
+            if computed_payload != r.get("payload_hash"):
+                violations.append(
+                    f"Payload hash mismatch at {r.get('receipt_id')}: "
+                    f"lineage fields tampered or corrupted"
+                )
 
         if i > 0:
             prev = receipts[i - 1]

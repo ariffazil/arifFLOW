@@ -63,9 +63,14 @@ barrier or merge steps.
 | Field | Type | Description |
 |-------|------|-------------|
 | `step_type` | StepType | What kind of step was this |
+| `risk_class` | RiskClass | Autonomy tier (T0-T3) mapping to FQ floor |
 | `topology_id` | Option\<String\> | Which topology (fan-out/pipeline/cascade) |
 | `lane_id` | Option\<u32\> | Which parallel lane within a topology |
 | `step_number` | u64 | Monotonic step number within this session |
+| `routed_organ` | Option\<String\> | **(2026-09-12)** Which organ `arif_route` classified this step to. Makes routing decisions auditable on-chain. |
+| `parent_receipt_ids` | Vec\<String\> | **(2026-09-12)** DAG parent receipt hashes. Enables fan-out merge points with multiple parents. `previous_receipt_hash` remains the single-chain anchor. |
+| `jcs_body_hash` | Option\<String\> | **(RG-PH 2026-09-13)** Canonical JCS SHA3-256 of this receipt (the field itself excluded — block-header trick). Daemon-stamped at ingest, client values never trusted. See `spec/RG_PREV_HASH_SCHEMA_v1.md`. |
+| `parent_receipt_hashes` | Vec\<String\> | **(RG-PH 2026-09-13)** 1:1 with `parent_receipt_ids` — each parent's `jcs_body_hash` at edge-creation time. Content-bound causal edges; daemon rejects mismatch. |
 
 **StepType enum:**
 
@@ -243,6 +248,29 @@ fn verify_chain(receipts: &[FlowReceipt]) -> bool {
 
 Where `hash()` is SHA3-256 of the canonical JSON serialization of the
 receipt.
+
+---
+
+## 7b. DAG Edges (2026-09-12 — Graph Engineering Integration)
+
+`previous_receipt_hash` provides the **single-chain anchor** (backward compat).
+`parent_receipt_ids` provides **multi-parent DAG support** for composed topologies.
+
+**Use case: fan-out merge point**
+
+```
+Input ──→ [A] ──→
+           [B] ──→ Merge ──→ Output
+           [C] ──→
+```
+
+- Receipts A, B, C each have `previous_receipt_hash` pointing to Input.
+- Merge receipt has `parent_receipt_ids: [hash(A), hash(B), hash(C)]`.
+- `previous_receipt_hash` on Merge is `None` (not a chain continuation; it's a DAG join).
+
+**Serialization:** Both fields use `skip_serializing_if` — they don't appear in
+JSON when empty (backward compat with old consumers). Deserialization uses
+`#[serde(default)]` — old receipts without these fields deserialize cleanly.
 
 ---
 

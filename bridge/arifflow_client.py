@@ -105,6 +105,8 @@ class FlowReceiptEnvelope:
     lease_id: str | None = None
     timestamp_iso: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     sha256: str = ""
+    routed_organ: str | None = None  # Graph edge: which organ did arif_route classify this to
+    parent_receipt_ids: list[str] = field(default_factory=list)  # Graph edge: DAG multi-parent
 
     def compute_sha256(self) -> str:
         content = json.dumps(
@@ -197,6 +199,11 @@ class FlowReceiptEnvelope:
             "merkle_inclusion_proof": None,
             "payload": payload,
         }
+        # Graph edge fields (2026-09-12) — only include when set/non-empty
+        if self.routed_organ:
+            d["routed_organ"] = self.routed_organ
+        if self.parent_receipt_ids:
+            d["parent_receipt_ids"] = self.parent_receipt_ids
         return d
 
 
@@ -279,6 +286,8 @@ def emit_receipt(
     chain_id: str | None = None,
     lease_id: str | None = None,
     details: dict[str, Any] | None = None,
+    routed_organ: str | None = None,
+    parent_receipt_ids: list[str] | None = None,
     client: ArifFlowClient | None = None,
 ) -> dict[str, Any]:
     """
@@ -305,6 +314,8 @@ def emit_receipt(
         chain_id=chain_id,
         lease_id=lease_id,
         details=details or {},
+        routed_organ=routed_organ,
+        parent_receipt_ids=parent_receipt_ids or [],
     )
 
     return c.ingest(receipt)
