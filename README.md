@@ -237,12 +237,11 @@ POST /release {"actor_id": "333-AGI"} → FQ rebalances
                      │
                      ▼
         ┌─────── AAA ────────┐
-        │   Control Plane    │
+        │  Attention Plane   │
         │                    │
-        │  arifFlow = MONITOR ← "What is happening right now?"
-        │  FRAME     = AUDIT  ← "Has reality drifted?"
+        │  arifFlow = WITNESS ← "What actually happened?"
+        │  FRAME     = OBSERVE ← "Has reality drifted?"
         │  FED       = ROUTE  ← "Which intelligence source should perform this task?"
-        │  FLAME     = REASON ← "Execute low-cost cognition."
         └────────────────────┘
                      │
                      ▼
@@ -308,15 +307,14 @@ systemctl restart arifflow    # on deploy
 |:---|:---|:---:|:---|:---|
 | **⚖️ arifOS** | Constitutional Kernel — judges, seals | 8088 | [repo](https://github.com/ariffazil/arifos) | [health](https://arifos.arif-fazil.com/health) |
 | **⚒️ A-FORGE** | Execution Engine — builds, deploys | 7071/72 | [repo](https://github.com/ariffazil/A-FORGE) | [health](https://forge.arif-fazil.com/health) |
-| **🏛️ AAA** | Control Plane — A2A gateway, cockpit | 3001 | [repo](https://github.com/ariffazil/AAA) | [health](https://aaa.arif-fazil.com/health) |
+| **🏛️ AAA** | Attention Plane — reality compression + routing | 3001 | [repo](https://github.com/ariffazil/AAA) | [health](https://aaa.arif-fazil.com/health) |
 | **🌍 GEOX** | Earth Intelligence — seismic, wells | 8081 | [repo](https://github.com/ariffazil/GEOX) | [health](https://geox.arif-fazil.com/health) |
 | **💰 WEALTH** | Capital Intelligence — NPV, risk | 18082 | [repo](https://github.com/ariffazil/WEALTH) | [health](https://wealth.arif-fazil.com/health) |
 | **🫀 WELL** | Vitality Guard — human readiness | 18083 | [repo](https://github.com/ariffazil/WELL) | [health](https://well.arif-fazil.com/health) |
 | **🫀 arifFlow** | Metabolism — FQ pulse | 7073 | [repo](https://github.com/ariffazil/arifFlow) | [health](http://127.0.0.1:7073/health) |
 | **🧭 FED** | Route Advisor | 7074 | [repo](https://arif-fazil.com) [private]| [health](https://fed.arif-fazil.com/health) |
-| **🔥 FLAME** | RM0 Inference — free-loop mesh | 18901 | [repo](https://arif-fazil.com) [private]| [health](https://flame.arif-fazil.com/health) |
-| **🧱 FRAME** | Substrate — federation scaffolding | frame-organ.service | [repo](https://arif-fazil.com) [private]| — |
-| **🔮 HERMES** | Multi-Modal Bridge — Telegram relay | 8644 | [repo](https://github.com/ariffazil/HERMES) | — |
+| **🧱 FRAME** | Observer — drift detection, evidence | frame-organ.service | [repo](https://arif-fazil.com) [private]| — |
+| **🔮 HERMES** | Tier-3 Boundary — Telegram `@ASI_arifos_bot` (KVM8, no port) | — | [repo](https://github.com/ariffazil/HERMES) | — |
 | **🌐 arif-fazil.com** | Public Web Surface | 443 | [repo](https://github.com/ariffazil/arif-fazil.com) | [verify](https://arif-fazil.com/999/verify) |
 
 ---
