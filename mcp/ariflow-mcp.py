@@ -1,0 +1,540 @@
+#!/usr/bin/env python3
+"""
+arifFLOW MCP shim — bridges Kimi Code MCP (stdio JSON-RPC) to the arifFlow
+Rust daemon observability surface on 127.0.0.1:7073.
+
+Tools:
+  flow_health  — GET /health: Flow Quotient (FQ), verdict, receipt count, uptime
+  flow_ingest  — POST /ingest: mint + submit a FlowReceipt (19-field schema
+                 from /root/arifFlow/src/receipt.rs) for FQ monitoring,
+                 trend analysis, cooling correlation.
+
+Doctrine: arifFlow is METABOLISM — it routes, checkpoints, and witnesses.
+It never judges (arifOS) and never executes (A-FORGE). FQ = verify/execute
+ratio — the metabolic signal that intelligence is flowing, not just burning.
+
+Stdlib only. MCP stdio = newline-delimited JSON-RPC 2.0.
+"""
+
+import json
+import socket
+import sys
+import uuid
+from datetime import datetime, timezone
+
+FLOW_HOST = "127.0.0.1"
+FLOW_PORT = 7073
+PROTOCOL_VERSION = "2024-11-05"
+
+STEP_TYPES = ["Execute", "Verify", "Cool", "Seal", "Barrier", "Merge", "Route"]
+
+# Entity classification — loaded once at startup
+_ENTITY_CLASSES = {}
+_ENTITY_CLASS_FILE = "/root/arifFlow/config/entity_classes.yaml"
+try:
+    import yaml as _yaml  # optional dep; falls back to empty if missing
+    with open(_ENTITY_CLASS_FILE) as _f:
+        _raw = _yaml.safe_load(_f) or {}
+    for _cls, _actors in _raw.items():
+        if isinstance(_actors, list):
+            for _a in _actors:
+                _ENTITY_CLASSES[str(_a)] = _cls
+except Exception:
+    pass  # no classification available — treat all as unknown
+EPISTEMIC = ["Observation", "Derivation", "Interpretation", "Specification", "Seal"]
+VERDICTS = ["Pass", "Caution", "Hold", "Void"]
+
+TOOLS = [
+    {
+        "name": "flow_health",
+        "description": (
+            "arifFlow daemon health + Flow Quotient (FQ = verify/execute ratio over "
+            "recent receipts). Verdicts: FLOWING (healthy metabolism), STUCK (no "
+            "verification), BURNING (execution outruns verification). Read-only."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "flow_entity_report",
+        "description": (
+            "Entity-classified FQ report. Classifies actors by type (human_agent, "
+            "interactive_session, daemon, infrastructure, synthetic) and computes "
+            "governance-weighted FQ from consequence-bearing actors only. "
+            "Doctrine: E4 (not all receipts are reality), E6 (actors are not equal)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "flow_ingest",
+        "description": (
+            "Mint and ingest a FlowReceipt into the arifFlow metabolic ledger "
+            "(POST /ingest). Records one governed step: identity, step_type, cost, "
+            "epistemic label, and floor verdict. Use to checkpoint work so FQ "
+            "monitoring and cooling correlation see it. Returns FQ after ingest."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "actor_id": {
+                    "type": "string",
+                    "description": "Agent performing the step (e.g. kimi-code/FI-008)",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Governing session id (arif_init)",
+                },
+                "step_type": {
+                    "type": "string",
+                    "enum": STEP_TYPES,
+                    "default": "Execute",
+                },
+                "step_number": {"type": "integer", "default": 1},
+                "cost_ns": {
+                    "type": "integer",
+                    "description": "Wall-clock step duration in ns",
+                    "default": 0,
+                },
+                "epistemic_label": {
+                    "type": "string",
+                    "enum": EPISTEMIC,
+                    "default": "Derivation",
+                },
+                "floor_verdict": {
+                    "type": "string",
+                    "enum": VERDICTS,
+                    "default": "Pass",
+                },
+                "session_token": {
+                    "type": "string",
+                    "description": "SCT token if governed by arifOS",
+                },
+                "topology_id": {"type": "string"},
+                "lane_id": {"type": "integer"},
+                "previous_receipt_hash": {"type": "string"},
+                "payload": {
+                    "type": "object",
+                    "description": "Step-specific data, errors, intermediates",
+                },
+                "witness_organs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Organs that witnessed this step (e.g. ['arifos', 'geox'])",
+                },
+                "harness_fingerprint": {
+                    "type": "string",
+                    "description": "ETCSOVG harness fingerprint (SHA256-first-8) linking this receipt to a specific harness config (arxiv 2605.23950)",
+                },
+                "routed_organ": {
+                    "type": "string",
+                    "description": "Which organ did arif_route classify this step to (e.g. 'geox', 'wealth', 'well'). Makes routing auditable.",
+                },
+                "parent_receipt_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "DAG parent receipt hashes for fan-out merge points. Enables multi-parent edges in composed topologies.",
+                },
+                "parent_receipt_hashes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "RG-PH: canonical jcs_body_hash of each parent at edge-creation time, 1:1 with parent_receipt_ids. Binds edge to parent CONTENT (tamper-evident causality); daemon verifies against stored parents and rejects mismatch.",
+                },
+                "jcs_body_hash": {
+                    "type": "string",
+                    "description": "RG-PH: ACCEPTED BUT IGNORED — the daemon recomputes and stamps this server-side (client values are never trusted).",
+                },
+            },
+            "required": ["actor_id", "session_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "flow_fq_g",
+        "description": (
+            "FQ_G — institutional metabolism rate (daemon POST /fq_g, read-only). "
+            "Counts beliefs born/superseded, governance events, scar-bound policies, "
+            "reality invoices; computes revision_rate, invoice_yield, and the "
+            "latencies scar→policy, policy→invoice, belief lifetime. v1 reports "
+            "distributions only — thresholds not invented (measure first)."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "flow_consequences",
+        "description": (
+            "RG-7 consequence records (daemon POST /consequences, read-only). "
+            "Reality's invoices: observed outcomes ATTRIBUTED to the policy/"
+            "execution receipts that produced them (causal parents). "
+            "outcome_class recovery|regression|neutral; evidence field keeps "
+            "attribution falsifiable. 'Did belief change reality?' — traversable."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "before_receipt_id": {
+                    "type": "string",
+                    "description": "Inclusive as-of boundary (time travel). Optional.",
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "flow_scar_policies",
+        "description": (
+            "RG-5 scar-bound policy query (daemon POST /scar_policies, read-only). "
+            "Lists policies compressed from scars (payload.scar_binding): policy "
+            "slug, scar id/fingerprint, enforcement surface+ref, causal parents "
+            "(the event receipts the policy was compressed FROM), and supersession "
+            "status. 'Did reality change future behaviour?' — traversable."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "before_receipt_id": {
+                    "type": "string",
+                    "description": "Inclusive as-of boundary (time travel). Optional.",
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "flow_gov_events",
+        "description": (
+            "RG-4 governance-event query (daemon POST /gov_events, read-only). "
+            "Lists seal/seal_refused/bind_failed events with structured fields "
+            "(verdict, chain_id, judge_state_hash, f13_ack) and supersession "
+            "status — a verdict revised by a later receipt shows as a "
+            "governance belief death. Optional before_receipt_id = time travel."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "before_receipt_id": {
+                    "type": "string",
+                    "description": "Inclusive as-of boundary (time travel). Optional.",
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "flow_lineage",
+        "description": (
+            "SEQ-N belief-lineage query (daemon POST /lineage, read-only). "
+            "Reconstruct the causal ancestry of a receipt with per-edge hash "
+            "verification, supersession status (belief death), and optional "
+            "time travel: with before_receipt_id, only receipts at or before "
+            "that ledger position exist for the query — 'what did we believe "
+            "then, and why?' answered from receipts alone, never narrative."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "receipt_id": {
+                    "type": "string",
+                    "description": "Target receipt whose lineage to reconstruct.",
+                },
+                "before_receipt_id": {
+                    "type": "string",
+                    "description": "Inclusive as-of boundary: receipts after this ledger position are invisible to the query (time travel). Optional.",
+                },
+            },
+            "required": ["receipt_id"],
+            "additionalProperties": False,
+        },
+    },
+]
+
+
+def flow_raw(request: bytes) -> tuple[int, dict]:
+    """One socket, one write, read to EOF.
+
+    The arifFlow daemon performs a single read() per connection, so headers
+    and body must arrive in one segment — loopback single-send guarantees this.
+    """
+    with socket.create_connection((FLOW_HOST, FLOW_PORT), timeout=10) as s:
+        s.sendall(request)
+        s.shutdown(socket.SHUT_WR)
+        chunks = []
+        while True:
+            data = s.recv(65536)
+            if not data:
+                break
+            chunks.append(data)
+    raw = b"".join(chunks).decode(errors="replace")
+    status = int(raw.split(" ", 2)[1]) if raw.startswith("HTTP/") else 0
+    body = raw.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in raw else "{}"
+    return status, json.loads(body or "{}")
+
+
+def flow_get(path: str) -> dict:
+    req = (
+        f"GET {path} HTTP/1.1\r\nHost: {FLOW_HOST}:{FLOW_PORT}\r\n"
+        "Connection: close\r\n\r\n"
+    ).encode()
+    _, body = flow_raw(req)
+    return body
+
+
+def flow_post(path: str, body: dict) -> tuple[int, dict]:
+    payload = json.dumps(body).encode()
+    req = (
+        f"POST {path} HTTP/1.1\r\nHost: {FLOW_HOST}:{FLOW_PORT}\r\n"
+        f"Content-Type: application/json\r\nContent-Length: {len(payload)}\r\n"
+        "Connection: close\r\n\r\n"
+    ).encode() + payload
+    return flow_raw(req)
+
+
+def call_tool(name: str, args: dict) -> dict:
+    if name == "flow_fq_g":
+        code, resp = flow_post("/fq_g", {})
+        return {"http_status": code, "report": resp}
+    if name == "flow_consequences":
+        body = {}
+        if args.get("before_receipt_id"):
+            body["before_receipt_id"] = args["before_receipt_id"]
+        code, resp = flow_post("/consequences", body)
+        return {"http_status": code, "consequences": resp.get("consequences", resp)}
+    if name == "flow_scar_policies":
+        body = {}
+        if args.get("before_receipt_id"):
+            body["before_receipt_id"] = args["before_receipt_id"]
+        code, resp = flow_post("/scar_policies", body)
+        return {"http_status": code, "policies": resp.get("policies", resp)}
+    if name == "flow_gov_events":
+        body = {}
+        if args.get("before_receipt_id"):
+            body["before_receipt_id"] = args["before_receipt_id"]
+        code, resp = flow_post("/gov_events", body)
+        return {"http_status": code, "events": resp.get("events", resp)}
+    if name == "flow_lineage":
+        code, body = flow_post(
+            "/lineage",
+            {
+                "receipt_id": args["receipt_id"],
+                **(
+                    {"before_receipt_id": args["before_receipt_id"]}
+                    if args.get("before_receipt_id")
+                    else {}
+                ),
+            },
+        )
+        return {"http_status": code, "report": body}
+    if name == "flow_health":
+        result = flow_get("/health")
+        # Enrich with formula provenance (Gate 1 Instrument)
+        result.setdefault("provenance", {})
+        result["provenance"].setdefault("formula_version", "qg.v0.2")
+        result["provenance"].setdefault(
+            "formula_hash", "sha256:arifflow-fq-v2.2-2026-08-14"
+        )
+        result["provenance"].setdefault(
+            "missing_inputs",
+            ["window_duration_s", "apex_block", "flow_block", "projection_block"],
+        )
+        return result
+    if name == "flow_entity_report":
+        result = flow_get("/health")
+        fq_data = result.get("fq", {})
+        per_actor = fq_data.get("per_actor", {})
+
+        # Classify each actor
+        classified = {}
+        class_totals = {}
+        for actor_id, data in per_actor.items():
+            entity_class = _ENTITY_CLASSES.get(actor_id, "unknown")
+            entry = {
+                "entity_class": entity_class,
+                "execute": data.get("execute", 0),
+                "verify": data.get("verify", 0),
+                "quotient": data.get("quotient"),
+                "held": data.get("held", False),
+                "diagnosis": data.get("diagnosis", "?"),
+                "verdict": data.get("verdict", "?"),
+                "consequence_bearing": entity_class in ("human_agent", "interactive_session"),
+            }
+            classified[actor_id] = entry
+            if entity_class not in class_totals:
+                class_totals[entity_class] = {"execute": 0, "verify": 0, "actors": 0}
+            class_totals[entity_class]["execute"] += entry["execute"]
+            class_totals[entity_class]["verify"] += entry["verify"]
+            class_totals[entity_class]["actors"] += 1
+
+        # Compute governance-weighted FQ (only consequence-bearing actors)
+        gov_exec = sum(
+            d["execute"] for d in classified.values() if d["consequence_bearing"]
+        )
+        gov_ver = sum(
+            d["verify"] for d in classified.values() if d["consequence_bearing"]
+        )
+        gov_fq = (gov_ver / gov_exec) if gov_exec > 0 else None
+
+        # Verdict on governance-weighted FQ
+        if gov_fq is None:
+            gov_verdict = "UNKNOWN"
+        elif gov_fq < 0.1:
+            gov_verdict = "BURNING"
+        elif gov_fq < 0.5:
+            gov_verdict = "STUCK"
+        elif gov_fq < 2.0:
+            gov_verdict = "FLOWING"
+        else:
+            gov_verdict = "FOSSILIZED"
+
+        return {
+            "raw_fq": fq_data.get("quotient"),
+            "raw_verdict": fq_data.get("verdict"),
+            "governance_weighted_fq": round(gov_fq, 4) if gov_fq else None,
+            "governance_verdict": gov_verdict,
+            "governance_execute": gov_exec,
+            "governance_verify": gov_ver,
+            "entity_classes": class_totals,
+            "actors": classified,
+            "classification_source": _ENTITY_CLASS_FILE,
+            "note": "Only human_agent + interactive_session contribute to governance FQ",
+        }
+    if name == "flow_ingest":
+        receipt = {
+            "receipt_id": str(uuid.uuid4()),
+            "previous_receipt_hash": args.get("previous_receipt_hash"),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "actor_id": args["actor_id"],
+            "session_id": args["session_id"],
+            "session_token": args.get("session_token"),
+            "step_type": args.get("step_type", "Execute"),
+            "topology_id": args.get("topology_id"),
+            "lane_id": args.get("lane_id"),
+            "step_number": int(args.get("step_number", 1)),
+            "cost_ns": int(args.get("cost_ns", 0)),
+            "preceding_verify_cost_ns": None,
+            "epistemic_label": args.get("epistemic_label", "Derivation"),
+            "floor_verdict": args.get("floor_verdict", "Pass"),
+            "cooling_decision": "None",
+            "tri_witness_votes": None,
+            "merkle_root": None,
+            "merkle_inclusion_proof": None,
+            "payload": args.get("payload"),
+            "formula_version": "qg.v0.2",
+            "formula_hash": "sha256:arifflow-fq-v2.2-2026-08-14",
+            "witness_organs": args.get("witness_organs"),
+        }
+        # Graph edge fields (2026-09-12) — only include when set/non-empty
+        if args.get("routed_organ"):
+            receipt["routed_organ"] = args["routed_organ"]
+        if args.get("parent_receipt_ids"):
+            receipt["parent_receipt_ids"] = args["parent_receipt_ids"]
+        if args.get("parent_receipt_hashes"):
+            receipt["parent_receipt_hashes"] = args["parent_receipt_hashes"]
+        # Inject harness fingerprint into payload if provided (ETCSOVG, arxiv 2605.23950)
+        if args.get("harness_fingerprint"):
+            if receipt["payload"] is None:
+                receipt["payload"] = {}
+            receipt["payload"]["harness_fingerprint"] = args["harness_fingerprint"]
+        status, body = flow_post("/ingest", receipt)
+        # [TAP] Trace tool call for Dataset B training — fires once per ingest
+        try:
+            with open(
+                "/root/arifOS-model-registry/data/tool_traces.jsonl", "a"
+            ) as _tap:
+                _tap.write(
+                    json.dumps(
+                        {
+                            "actor_id": receipt["actor_id"],
+                            "session_id": receipt["session_id"],
+                            "turn": receipt["step_number"],
+                            "role": "assistant",
+                            "timestamp": receipt["created_at"],
+                            "tool_name": "flow_ingest",
+                            "tool_result": json.dumps(body)[:2000],
+                            "epistemic": receipt["epistemic_label"],
+                            "floor_verdict": receipt["floor_verdict"],
+                        }
+                    )
+                    + "\n"
+                )
+        except Exception:
+            pass  # tap failure never breaks the loop
+        return {"http_status": status, "receipt_id": receipt["receipt_id"], **body}
+    raise ValueError(f"unknown tool: {name}")
+
+
+def respond(msg_id, result=None, error=None):
+    out = {"jsonrpc": "2.0", "id": msg_id}
+    if error is not None:
+        out["error"] = error
+    else:
+        out["result"] = result
+    sys.stdout.write(json.dumps(out) + "\n")
+    sys.stdout.flush()
+
+
+def main() -> None:
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        method = msg.get("method", "")
+        msg_id = msg.get("id")
+
+        if method == "initialize":
+            respond(
+                msg_id,
+                {
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "arifflow", "version": "2026.7.26"},
+                },
+            )
+        elif method == "ping":
+            respond(msg_id, {})
+        elif method and method.startswith("notifications/"):
+            continue  # initialized, cancelled, etc. — no response
+        elif method == "tools/list":
+            respond(msg_id, {"tools": TOOLS})
+        elif method == "tools/call":
+            params = msg.get("params", {})
+            tname = params.get("name", "")
+            targs = params.get("arguments", {}) or {}
+            try:
+                result = call_tool(tname, targs)
+                respond(
+                    msg_id,
+                    {
+                        "content": [
+                            {"type": "text", "text": json.dumps(result, indent=2)}
+                        ],
+                        "isError": False,
+                    },
+                )
+            except Exception as e:  # daemon down, bad input, etc.
+                respond(
+                    msg_id,
+                    {
+                        "content": [{"type": "text", "text": f"arifFLOW error: {e}"}],
+                        "isError": True,
+                    },
+                )
+        else:
+            if msg_id is not None:
+                respond(
+                    msg_id,
+                    error={"code": -32601, "message": f"method not found: {method}"},
+                )
+
+
+if __name__ == "__main__":
+    main()

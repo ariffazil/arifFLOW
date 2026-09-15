@@ -51,6 +51,8 @@ pub enum StepType {
     Merge,
     /// Routing — dispatch to another organ
     Route,
+    /// Abort — session or step terminated prematurely
+    Abort,
 }
 
 impl StepType {
@@ -68,6 +70,11 @@ impl StepType {
     pub fn is_barrier(&self) -> bool {
         matches!(self, StepType::Barrier)
     }
+
+    /// Returns true if this step type is an abort.
+    pub fn is_abort(&self) -> bool {
+        matches!(self, StepType::Abort)
+    }
 }
 
 impl fmt::Display for StepType {
@@ -80,6 +87,7 @@ impl fmt::Display for StepType {
             StepType::Barrier => write!(f, "Barrier"),
             StepType::Merge => write!(f, "Merge"),
             StepType::Route => write!(f, "Route"),
+            StepType::Abort => write!(f, "Abort"),
         }
     }
 }
@@ -604,6 +612,33 @@ pub struct FlowReceipt {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parent_receipt_ids: Vec<String>,
 
+    /// RG-PH (2026-09-13): canonical JCS SHA3-256 of THIS receipt, computed
+    /// over the receipt with `jcs_body_hash` itself excluded (block-header
+    /// trick). Cross-language verifiable under `arifflow-jcs-v1`. Stamped by
+    /// the daemon at ingest — client-supplied values are recomputed
+    /// server-side, never trusted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jcs_body_hash: Option<String>,
+    /// RG-PH (2026-09-13): parallel to `parent_receipt_ids` — the canonical
+    /// `jcs_body_hash` of each parent AT EDGE-CREATION TIME. Binds content,
+    /// not just identity: a tampered or replaced parent diverges from the
+    /// recorded hash and the causal edge breaks VISIBLY. Must be 1:1 with
+    /// `parent_receipt_ids` when present.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parent_receipt_hashes: Vec<String>,
+
+    /// SEQ-N belief-death primitive (2026-09-13): receipts this one SUPERSEDES.
+    /// Supersession is visible and non-deleting — the target stays in the
+    /// ledger; this edge records that the belief it expressed has DIED and
+    /// been replaced by this receipt's claim. 1:1 with
+    /// `supersedes_receipt_hashes`. A forged death is rejected like a
+    /// forged parent: the edge binds target content.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supersedes_receipt_ids: Vec<String>,
+    /// Canonical `jcs_body_hash` of each superseded receipt at claim time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supersedes_receipt_hashes: Vec<String>,
+
     // ── Genesis Bridge (RG-3, 2026-09-12) ──
     /// Constitutional anchor reference. When set, this receipt bridges the
     /// Historical Lineage (receipt DAG) to the Constitutional Origin (RCP-000,
@@ -678,6 +713,35 @@ pub struct FlowReceipt {
 }
 
 impl FlowReceipt {
+    /// Bind DAG parents with cryptographic causal edges (RG-PH, 2026-09-13).
+    /// `hashes` must be the parents' `jcs_body_hash` values, 1:1 with `ids`.
+    pub fn with_causal_parents(mut self, ids: Vec<String>, hashes: Vec<String>) -> Self {
+        self.parent_receipt_ids = ids;
+        self.parent_receipt_hashes = hashes;
+        self
+    }
+
+    /// SEQ-N (2026-09-13): record belief death — this receipt supersedes the
+    /// given receipts. `hashes` are their `jcs_body_hash` values, 1:1.
+    pub fn with_supersedes(mut self, ids: Vec<String>, hashes: Vec<String>) -> Self {
+        self.supersedes_receipt_ids = ids;
+        self.supersedes_receipt_hashes = hashes;
+        self
+    }
+
+    /// RG-PH: canonical JCS SHA3-256 of this receipt, computed over the
+    /// receipt with `jcs_body_hash` excluded (self-reference is impossible;
+    /// the exclusion is the contract). Cross-language reproducible under
+    /// `arifflow-jcs-v1` — see spec/RG_PREV_HASH_SCHEMA_v1.md.
+    pub fn compute_jcs_body_hash(&self) -> Result<String, crate::jcs::JcsError> {
+        let mut value =
+            serde_json::to_value(self).map_err(|_| crate::jcs::JcsError::UnsupportedValue)?;
+        if let Some(obj) = value.as_object_mut() {
+            obj.remove("jcs_body_hash");
+        }
+        crate::jcs::jcs_sha3_hex(&value)
+    }
+
     /// Create a new receipt as the **first** in a flow chain (no previous).
     pub fn new_first(
         actor_id: impl Into<String>,
@@ -700,6 +764,10 @@ impl FlowReceipt {
             step_number: 0,
             routed_organ: None,
             parent_receipt_ids: Vec::new(),
+            jcs_body_hash: None,
+            parent_receipt_hashes: Vec::new(),
+            supersedes_receipt_ids: Vec::new(),
+            supersedes_receipt_hashes: Vec::new(),
             genesis_anchor: None,
             cost_ns,
             preceding_verify_cost_ns: None,
@@ -746,6 +814,10 @@ impl FlowReceipt {
             step_number: previous.step_number + 1,
             routed_organ: None,
             parent_receipt_ids: Vec::new(),
+            jcs_body_hash: None,
+            parent_receipt_hashes: Vec::new(),
+            supersedes_receipt_ids: Vec::new(),
+            supersedes_receipt_hashes: Vec::new(),
             genesis_anchor: None,
             cost_ns,
             preceding_verify_cost_ns: None,
@@ -970,6 +1042,128 @@ impl ReceiptStore {
                     prev_hash,
                     self.receipts.len()
                 ));
+            }
+        }
+        // RG-PH (2026-09-13): cryptographic causal-edge verification. When the
+        // client binds parent content hashes, each claim is checked against
+        // the stored parent's canonical jcs_body_hash. A mismatch means the
+        // edge points at different content than it was created against —
+        // reject: a false "because" is worse than no edge.
+        if !receipt.parent_receipt_hashes.is_empty() {
+            if receipt.parent_receipt_hashes.len() != receipt.parent_receipt_ids.len() {
+                return Err(format!(
+                    "Causal-edge reject: parent_receipt_hashes has {} entries but \
+                     parent_receipt_ids has {} — must be 1:1",
+                    receipt.parent_receipt_hashes.len(),
+                    receipt.parent_receipt_ids.len()
+                ));
+            }
+            for (pid, claimed) in receipt
+                .parent_receipt_ids
+                .iter()
+                .zip(receipt.parent_receipt_hashes.iter())
+            {
+                let parent = self
+                    .receipts
+                    .iter()
+                    .find(|r| r.receipt_id.to_string() == *pid);
+                let Some(parent) = parent else {
+                    // Parent outside the in-memory window — cannot verify.
+                    // Accept with a logged gap rather than reject: the edge
+                    // stays queryable; verification simply didn't happen.
+                    eprintln!(
+                        "[arifFlow] WARN: causal-edge parent {} not in store window — \
+                         hash claim unverifiable, accepted unverified",
+                        pid
+                    );
+                    continue;
+                };
+                let actual = parent
+                    .jcs_body_hash
+                    .clone()
+                    .or_else(|| parent.compute_jcs_body_hash().ok());
+                match actual {
+                    Some(ref h) if h == claimed => {}
+                    Some(ref h) => {
+                        return Err(format!(
+                            "Causal-edge reject: parent {} content hash mismatch — \
+                             claimed {}, actual {}. The edge binds content; refusing \
+                             to record a false 'because'.",
+                            pid, claimed, h
+                        ));
+                    }
+                    None => {
+                        eprintln!(
+                            "[arifFlow] WARN: causal-edge parent {} unhashable \
+                             (schema-discipline violation in parent) — accepted unverified",
+                            pid
+                        );
+                    }
+                }
+            }
+        }
+        // SEQ-N (2026-09-13): belief-death verification. A supersession claim
+        // binds the TARGET's content hash — a forged death (claiming to kill
+        // content that isn't there) is rejected exactly like a forged parent.
+        if !receipt.supersedes_receipt_ids.is_empty() {
+            if !receipt.supersedes_receipt_hashes.is_empty()
+                && receipt.supersedes_receipt_hashes.len() != receipt.supersedes_receipt_ids.len()
+            {
+                return Err(format!(
+                    "Supersession reject: supersedes_receipt_hashes has {} entries but \
+                     supersedes_receipt_ids has {} — must be 1:1",
+                    receipt.supersedes_receipt_hashes.len(),
+                    receipt.supersedes_receipt_ids.len()
+                ));
+            }
+            let self_id = receipt.receipt_id.to_string();
+            if receipt.supersedes_receipt_ids.iter().any(|t| t == &self_id) {
+                return Err("Supersession reject: a receipt cannot supersede itself".to_string());
+            }
+            for (tid, claimed) in receipt
+                .supersedes_receipt_ids
+                .iter()
+                .zip(receipt.supersedes_receipt_hashes.iter())
+            {
+                if tid == &self_id {
+                    return Err(
+                        "Supersession reject: a receipt cannot supersede itself".to_string()
+                    );
+                }
+                let target = self
+                    .receipts
+                    .iter()
+                    .find(|r| r.receipt_id.to_string() == *tid);
+                let Some(target) = target else {
+                    eprintln!(
+                        "[arifFlow] WARN: supersession target {} not in store window — \
+                         hash claim unverifiable, accepted unverified",
+                        tid
+                    );
+                    continue;
+                };
+                let actual = target
+                    .jcs_body_hash
+                    .clone()
+                    .or_else(|| target.compute_jcs_body_hash().ok());
+                match actual {
+                    Some(ref h) if h == claimed => {}
+                    Some(ref h) => {
+                        return Err(format!(
+                            "Supersession reject: target {} content hash mismatch — \
+                             claimed {}, actual {}. The death edge binds content; refusing \
+                             to record a false death.",
+                            tid, claimed, h
+                        ));
+                    }
+                    None => {
+                        eprintln!(
+                            "[arifFlow] WARN: supersession target {} unhashable — \
+                             accepted unverified",
+                            tid
+                        );
+                    }
+                }
             }
         }
         // Either no hash (new chain) or hash matched → accept.
@@ -1456,6 +1650,204 @@ mod tests {
 
     // ── push_chain_aware tests (Fix 2 — 2026-08-10) ──────────────────────
 
+    // ── RG-PH tests (2026-09-13) — cryptographically-chained causal edges ──
+
+    fn rgph_pair() -> (FlowReceipt, FlowReceipt) {
+        let parent = FlowReceipt::new_first(
+            "rgph-test",
+            "s-rgph",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            10,
+        );
+        let child = FlowReceipt::new_first(
+            "rgph-test",
+            "s-rgph",
+            StepType::Verify,
+            EpistemicLabel::Observation,
+            5,
+        );
+        (parent, child)
+    }
+
+    #[test]
+    fn rgph_stamp_roundtrip_is_stable() {
+        // Exclusion rule: setting jcs_body_hash must not change its own
+        // recomputation (self-reference impossible, exclusion is the contract).
+        let (parent, _) = rgph_pair();
+        let h1 = parent.compute_jcs_body_hash().unwrap();
+        let mut stamped = parent.clone();
+        stamped.jcs_body_hash = Some(h1.clone());
+        let h2 = stamped.compute_jcs_body_hash().unwrap();
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 64);
+        assert!(h1.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn rgph_causal_edge_happy_path() {
+        let (mut parent, child) = rgph_pair();
+        let pid = parent.receipt_id.to_string();
+        let ph = parent.compute_jcs_body_hash().unwrap();
+        parent.jcs_body_hash = Some(ph.clone());
+
+        let mut store = ReceiptStore::new(100);
+        store.push_chain_aware(parent.clone()).unwrap();
+
+        let bound = child.with_causal_parents(vec![pid], vec![ph.clone()]);
+        assert!(store.push_chain_aware(bound.clone()).is_ok());
+        let stored = store.receipts.last().unwrap();
+        assert_eq!(stored.parent_receipt_hashes, vec![ph]);
+    }
+
+    #[test]
+    fn rgph_causal_edge_tamper_rejected() {
+        let (mut parent, child) = rgph_pair();
+        let pid = parent.receipt_id.to_string();
+        parent.jcs_body_hash = Some(parent.compute_jcs_body_hash().unwrap());
+
+        let mut store = ReceiptStore::new(100);
+        store.push_chain_aware(parent).unwrap();
+
+        let forged = child.with_causal_parents(
+            vec![pid],
+            vec!["deadbeef".repeat(8)], // claims content that isn't the parent's
+        );
+        let err = store.push_chain_aware(forged).unwrap_err();
+        assert!(err.contains("refusing to record a false"), "{err}");
+        assert_eq!(store.len(), 1, "forged child must not be stored");
+    }
+
+    #[test]
+    fn rgph_causal_edge_length_mismatch_rejected() {
+        let (parent, child) = rgph_pair();
+        let pid = parent.receipt_id.to_string();
+        let mut store = ReceiptStore::new(100);
+        store.push_chain_aware(parent).unwrap();
+        let bad = child.with_causal_parents(vec![pid, "other".into()], vec!["x".into()]);
+        let err = store.push_chain_aware(bad).unwrap_err();
+        assert!(err.contains("1:1"), "{err}");
+    }
+
+    #[test]
+    fn rgph_legacy_ids_only_still_accepted() {
+        // Compat path: RG-1.5 emitters send ids without hashes.
+        let (parent, child) = rgph_pair();
+        let pid = parent.receipt_id.to_string();
+        let mut store = ReceiptStore::new(100);
+        store.push_chain_aware(parent).unwrap();
+        let legacy = child.with_causal_parents(vec![pid], Vec::new());
+        assert!(store.push_chain_aware(legacy).is_ok());
+    }
+
+    #[test]
+    fn rgph_client_stamp_is_recomputed_not_trusted() {
+        // Same receipt content, two different lying client stamps → the
+        // canonical hash depends only on content, never on the field itself.
+        let (parent, _) = rgph_pair();
+        let mut liar = parent.clone();
+        liar.jcs_body_hash = Some("0".repeat(64));
+        assert_eq!(
+            liar.compute_jcs_body_hash().unwrap(),
+            parent.compute_jcs_body_hash().unwrap()
+        );
+    }
+
+    // ── SEQ-N supersession tests (2026-09-13) — belief death ─────────────
+
+    #[test]
+    fn seqn_supersede_happy_path() {
+        let (mut belief, _) = rgph_pair();
+        let bid = belief.receipt_id.to_string();
+        let bh = belief.compute_jcs_body_hash().unwrap();
+        belief.jcs_body_hash = Some(bh.clone());
+
+        let mut store = ReceiptStore::new(100);
+        store.push_chain_aware(belief).unwrap();
+
+        let killer = FlowReceipt::new_first(
+            "rgph-test",
+            "s-rgph",
+            StepType::Execute,
+            EpistemicLabel::Derivation,
+            1,
+        )
+        .with_supersedes(vec![bid], vec![bh]);
+        assert!(store.push_chain_aware(killer).is_ok());
+        assert_eq!(
+            store.receipts.last().unwrap().supersedes_receipt_ids.len(),
+            1
+        );
+    }
+
+    #[test]
+    fn seqn_forged_death_rejected() {
+        let (mut belief, _) = rgph_pair();
+        let bid = belief.receipt_id.to_string();
+        belief.jcs_body_hash = Some(belief.compute_jcs_body_hash().unwrap());
+        let mut store = ReceiptStore::new(100);
+        store.push_chain_aware(belief).unwrap();
+
+        let forged = FlowReceipt::new_first(
+            "rgph-test",
+            "s-rgph",
+            StepType::Execute,
+            EpistemicLabel::Derivation,
+            1,
+        )
+        .with_supersedes(vec![bid], vec!["e".repeat(64)]);
+        let err = store.push_chain_aware(forged).unwrap_err();
+        assert!(err.contains("refusing to record a false death"), "{err}");
+        assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn seqn_self_supersede_rejected() {
+        let (belief, _) = rgph_pair();
+        let mut store = ReceiptStore::new(100);
+        // not stored yet — self-check fires before lookup
+        let bid = belief.receipt_id.to_string();
+        let self_killer = belief.with_supersedes(vec![bid], Vec::new());
+        let err = store.push_chain_aware(self_killer).unwrap_err();
+        assert!(err.contains("cannot supersede itself"), "{err}");
+    }
+
+    #[test]
+    fn seqn_supersede_length_mismatch_rejected() {
+        let (mut belief, _) = rgph_pair();
+        let bid = belief.receipt_id.to_string();
+        belief.jcs_body_hash = Some(belief.compute_jcs_body_hash().unwrap());
+        let mut store = ReceiptStore::new(100);
+        store.push_chain_aware(belief).unwrap();
+        let bad = FlowReceipt::new_first(
+            "rgph-test",
+            "s-rgph",
+            StepType::Execute,
+            EpistemicLabel::Derivation,
+            1,
+        )
+        .with_supersedes(vec![bid, "other".into()], vec!["x".into()]);
+        let err = store.push_chain_aware(bad).unwrap_err();
+        assert!(err.contains("1:1"), "{err}");
+    }
+
+    #[test]
+    fn seqn_supersede_legacy_ids_only_accepted() {
+        let (belief, _) = rgph_pair();
+        let bid = belief.receipt_id.to_string();
+        let mut store = ReceiptStore::new(100);
+        store.push_chain_aware(belief).unwrap();
+        let legacy = FlowReceipt::new_first(
+            "rgph-test",
+            "s-rgph",
+            StepType::Execute,
+            EpistemicLabel::Derivation,
+            1,
+        )
+        .with_supersedes(vec![bid], Vec::new());
+        assert!(store.push_chain_aware(legacy).is_ok());
+    }
+
     #[test]
     fn test_push_chain_aware_accepts_no_previous_hash() {
         // [OBS] Receipt with no previous_receipt_hash → accepted (new chain start, multi-session safe)
@@ -1628,6 +2020,7 @@ mod tests {
         assert_eq!(StepType::Barrier.to_string(), "Barrier");
         assert_eq!(StepType::Merge.to_string(), "Merge");
         assert_eq!(StepType::Route.to_string(), "Route");
+        assert_eq!(StepType::Abort.to_string(), "Abort");
     }
 
     #[test]
@@ -1647,6 +2040,9 @@ mod tests {
         assert!(!StepType::Execute.is_verification());
         assert!(StepType::Verify.is_verification());
         assert!(!StepType::Cool.is_execution());
+        assert!(!StepType::Abort.is_execution());
+        assert!(!StepType::Abort.is_verification());
+        assert!(StepType::Abort.is_abort());
     }
 
     #[test]
