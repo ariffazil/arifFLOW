@@ -34,3 +34,11 @@ jobs:
 
       - name: Build
         run: cargo build --release
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: JCS cross-language conformance (Rust/Python/Node byte-equality)
+        run: node --experimental-strip-types tools/jcs_conformance.mjs

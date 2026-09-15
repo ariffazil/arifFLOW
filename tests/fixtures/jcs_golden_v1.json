@@ -1,0 +1,279 @@
+{
+  "schema": "arifflow.spec/jcs-golden-fixtures/v1",
+  "contract": "spec/RG2_JCS_HASH_CONTRACT_v1.md",
+  "canonicalization": "arifflow-jcs-v1 (RFC 8785)",
+  "hash": "sha3-256",
+  "reference_runtime": "node (ECMAScript semantics)",
+  "fixtures": [
+    {
+      "id": 1,
+      "note": "minimal root receipt",
+      "value": {
+        "receipt_id": "00000000-0000-4000-8000-000000000001",
+        "created_at": "2026-09-13T00:00:00Z",
+        "actor_id": "fi-003-qwen",
+        "session_id": "SEAL-jcs-fixture-001",
+        "step_type": "Execute",
+        "step_number": 0,
+        "cost_ns": 0,
+        "epistemic_label": "Observation",
+        "floor_verdict": "Pass",
+        "parent_receipt_ids": []
+      },
+      "canonical": "{\"actor_id\":\"fi-003-qwen\",\"cost_ns\":0,\"created_at\":\"2026-09-13T00:00:00Z\",\"epistemic_label\":\"Observation\",\"floor_verdict\":\"Pass\",\"parent_receipt_ids\":[],\"receipt_id\":\"00000000-0000-4000-8000-000000000001\",\"session_id\":\"SEAL-jcs-fixture-001\",\"step_number\":0,\"step_type\":\"Execute\"}",
+      "sha3_256": "847e4b7e86252463214e3eb53315814d86fe9238c948938aac741847acdef0e8"
+    },
+    {
+      "id": 2,
+      "note": "single-parent receipt",
+      "value": {
+        "receipt_id": "00000000-0000-4000-8000-000000000002",
+        "created_at": "2026-09-13T00:00:00.000001Z",
+        "actor_id": "qwen-code",
+        "session_id": "SEAL-jcs-fixture-001",
+        "step_type": "Verify",
+        "step_number": 1,
+        "cost_ns": 1200000,
+        "epistemic_label": "Observation",
+        "floor_verdict": "Pass",
+        "routed_organ": "AAA",
+        "parent_receipt_ids": [
+          "00000000-0000-4000-8000-000000000001"
+        ]
+      },
+      "canonical": "{\"actor_id\":\"qwen-code\",\"cost_ns\":1200000,\"created_at\":\"2026-09-13T00:00:00.000001Z\",\"epistemic_label\":\"Observation\",\"floor_verdict\":\"Pass\",\"parent_receipt_ids\":[\"00000000-0000-4000-8000-000000000001\"],\"receipt_id\":\"00000000-0000-4000-8000-000000000002\",\"routed_organ\":\"AAA\",\"session_id\":\"SEAL-jcs-fixture-001\",\"step_number\":1,\"step_type\":\"Verify\"}",
+      "sha3_256": "22655c92a60d593621b0894d197fa8c9304622ba264ce1844b7c65d7f17d6a25"
+    },
+    {
+      "id": 3,
+      "note": "multi-parent receipt (fan-out merge)",
+      "value": {
+        "receipt_id": "00000000-0000-4000-8000-000000000003",
+        "created_at": "2026-09-13T00:00:00.000002Z",
+        "actor_id": "a-forge",
+        "session_id": "SEAL-jcs-fixture-003",
+        "step_type": "Execute",
+        "step_number": 4,
+        "cost_ns": 987654321,
+        "epistemic_label": "Derivation",
+        "floor_verdict": "Pass",
+        "topology_id": "cascade-alpha",
+        "lane_id": 2,
+        "routed_organ": "A-FORGE",
+        "parent_receipt_ids": [
+          "00000000-0000-4000-8000-000000000001",
+          "00000000-0000-4000-8000-000000000002"
+        ]
+      },
+      "canonical": "{\"actor_id\":\"a-forge\",\"cost_ns\":987654321,\"created_at\":\"2026-09-13T00:00:00.000002Z\",\"epistemic_label\":\"Derivation\",\"floor_verdict\":\"Pass\",\"lane_id\":2,\"parent_receipt_ids\":[\"00000000-0000-4000-8000-000000000001\",\"00000000-0000-4000-8000-000000000002\"],\"receipt_id\":\"00000000-0000-4000-8000-000000000003\",\"routed_organ\":\"A-FORGE\",\"session_id\":\"SEAL-jcs-fixture-003\",\"step_number\":4,\"step_type\":\"Execute\",\"topology_id\":\"cascade-alpha\"}",
+      "sha3_256": "887d6093717c741451daede024ac08d8864a5cb03cbecee1461953e63ee38f55"
+    },
+    {
+      "id": 4,
+      "note": "unicode + UTF-16 key-order proof (U+FFFD vs U+10000 flip)",
+      "value": {
+        "receipt_id": "00000000-0000-4000-8000-000000000004",
+        "created_at": "2026-09-13T00:00:00Z",
+        "actor_id": "信道試験-৩৩৩-AGI",
+        "session_id": "SEAL-jcs-fixture-004",
+        "step_type": "Execute",
+        "step_number": 0,
+        "cost_ns": 0,
+        "epistemic_label": "Observation",
+        "floor_verdict": "Pass",
+        "summary": "emoji 🇲🇾 + combining é̄ + CJK 漢字",
+        "extensions": {
+          "�": "replacement-char-key (BMP high)",
+          "𐀀": "linear-b-syllable-key (astral low)",
+          "zz_last_by_points": "key order must be UTF-16, not code-point"
+        },
+        "parent_receipt_ids": []
+      },
+      "canonical": "{\"actor_id\":\"信道試験-৩৩৩-AGI\",\"cost_ns\":0,\"created_at\":\"2026-09-13T00:00:00Z\",\"epistemic_label\":\"Observation\",\"extensions\":{\"zz_last_by_points\":\"key order must be UTF-16, not code-point\",\"𐀀\":\"linear-b-syllable-key (astral low)\",\"�\":\"replacement-char-key (BMP high)\"},\"floor_verdict\":\"Pass\",\"parent_receipt_ids\":[],\"receipt_id\":\"00000000-0000-4000-8000-000000000004\",\"session_id\":\"SEAL-jcs-fixture-004\",\"step_number\":0,\"step_type\":\"Execute\",\"summary\":\"emoji 🇲🇾 + combining é̄ + CJK 漢字\"}",
+      "sha3_256": "28e8d43f3007c1fa95df6b34ece825f30e834cfc22b213ff89fbd5231f891abe"
+    },
+    {
+      "id": 5,
+      "note": "absent optional fields omitted entirely",
+      "value": {
+        "receipt_id": "00000000-0000-4000-8000-000000000005",
+        "created_at": "2026-09-13T00:00:00Z",
+        "actor_id": "hermes-asi",
+        "session_id": "SEAL-jcs-fixture-005",
+        "step_type": "Execute",
+        "step_number": 2,
+        "cost_ns": 500,
+        "epistemic_label": "Observation",
+        "floor_verdict": "Pass",
+        "parent_receipt_ids": [
+          "00000000-0000-4000-8000-000000000004"
+        ]
+      },
+      "canonical": "{\"actor_id\":\"hermes-asi\",\"cost_ns\":500,\"created_at\":\"2026-09-13T00:00:00Z\",\"epistemic_label\":\"Observation\",\"floor_verdict\":\"Pass\",\"parent_receipt_ids\":[\"00000000-0000-4000-8000-000000000004\"],\"receipt_id\":\"00000000-0000-4000-8000-000000000005\",\"session_id\":\"SEAL-jcs-fixture-005\",\"step_number\":2,\"step_type\":\"Execute\"}",
+      "sha3_256": "55413196bc6d36ffd42c1b73f9400feb5f724e6a1530f979602eab81890a54e2"
+    },
+    {
+      "id": 6,
+      "note": "explicit null where semantically allowed",
+      "value": {
+        "receipt_id": "00000000-0000-4000-8000-000000000006",
+        "created_at": "2026-09-13T00:00:00Z",
+        "actor_id": "codex-startup",
+        "session_id": "SEAL-jcs-fixture-006",
+        "session_token": null,
+        "previous_receipt_hash": null,
+        "step_type": "Execute",
+        "step_number": 0,
+        "cost_ns": 0,
+        "epistemic_label": "Observation",
+        "floor_verdict": "Pass",
+        "parent_receipt_ids": []
+      },
+      "canonical": "{\"actor_id\":\"codex-startup\",\"cost_ns\":0,\"created_at\":\"2026-09-13T00:00:00Z\",\"epistemic_label\":\"Observation\",\"floor_verdict\":\"Pass\",\"parent_receipt_ids\":[],\"previous_receipt_hash\":null,\"receipt_id\":\"00000000-0000-4000-8000-000000000006\",\"session_id\":\"SEAL-jcs-fixture-006\",\"session_token\":null,\"step_number\":0,\"step_type\":\"Execute\"}",
+      "sha3_256": "a9997734f1940070654df2eb900c966b9a83025c2c7c6fdfb025d728baa866a9"
+    },
+    {
+      "id": 7,
+      "note": "ordered arrays preserved (never sorted)",
+      "value": {
+        "receipt_id": "00000000-0000-4000-8000-000000000007",
+        "created_at": "2026-09-13T00:00:00Z",
+        "actor_id": "grok-build",
+        "session_id": "SEAL-jcs-fixture-007",
+        "step_type": "Cool",
+        "step_number": 9,
+        "cost_ns": 42,
+        "epistemic_label": "Observation",
+        "floor_verdict": "Pass",
+        "extensions": {
+          "sequence": [
+            3,
+            1,
+            2
+          ],
+          "labels": [
+            "c",
+            "a",
+            "b"
+          ]
+        },
+        "parent_receipt_ids": [
+          "00000000-0000-4000-8000-000000000003",
+          "00000000-0000-4000-8000-000000000001",
+          "00000000-0000-4000-8000-000000000002"
+        ]
+      },
+      "canonical": "{\"actor_id\":\"grok-build\",\"cost_ns\":42,\"created_at\":\"2026-09-13T00:00:00Z\",\"epistemic_label\":\"Observation\",\"extensions\":{\"labels\":[\"c\",\"a\",\"b\"],\"sequence\":[3,1,2]},\"floor_verdict\":\"Pass\",\"parent_receipt_ids\":[\"00000000-0000-4000-8000-000000000003\",\"00000000-0000-4000-8000-000000000001\",\"00000000-0000-4000-8000-000000000002\"],\"receipt_id\":\"00000000-0000-4000-8000-000000000007\",\"session_id\":\"SEAL-jcs-fixture-007\",\"step_number\":9,\"step_type\":\"Cool\"}",
+      "sha3_256": "37073dbf139846dda2d00aa59207103b3d1627e45080879e7c5fdb9257fe76ae"
+    },
+    {
+      "id": 8,
+      "note": "high-precision RFC3339 timestamp string",
+      "value": {
+        "receipt_id": "00000000-0000-4000-8000-000000000008",
+        "created_at": "2026-09-13T00:51:35.072989123Z",
+        "actor_id": "arif",
+        "session_id": "SEAL-d41edbd74936426e",
+        "step_type": "Seal",
+        "step_number": 36,
+        "cost_ns": 5129494123456789,
+        "epistemic_label": "Seal",
+        "floor_verdict": "Pass",
+        "genesis_anchor": "RCP-000/000/F13",
+        "parent_receipt_ids": []
+      },
+      "canonical": "{\"actor_id\":\"arif\",\"cost_ns\":5129494123456789,\"created_at\":\"2026-09-13T00:51:35.072989123Z\",\"epistemic_label\":\"Seal\",\"floor_verdict\":\"Pass\",\"genesis_anchor\":\"RCP-000/000/F13\",\"parent_receipt_ids\":[],\"receipt_id\":\"00000000-0000-4000-8000-000000000008\",\"session_id\":\"SEAL-d41edbd74936426e\",\"step_number\":36,\"step_type\":\"Seal\"}",
+      "sha3_256": "f228f609d22d5bf47d4dcb5603e6ffaa7fdcde865aff8c52fb638e8456c58a44"
+    },
+    {
+      "id": 9,
+      "note": "negative + max-safe (2^53-1) integer edges",
+      "value": {
+        "receipt_id": "00000000-0000-4000-8000-000000000009",
+        "created_at": "2026-09-13T00:00:00Z",
+        "actor_id": "kimi-code/FI-008",
+        "session_id": "SEAL-jcs-fixture-009",
+        "step_type": "Execute",
+        "step_number": 9007199254740991,
+        "cost_ns": 0,
+        "epistemic_label": "Observation",
+        "floor_verdict": "Pass",
+        "extensions": {
+          "neg_max_safe": -9007199254740991,
+          "max_safe": 9007199254740991,
+          "neg_one": -1,
+          "zero": 0
+        },
+        "parent_receipt_ids": []
+      },
+      "canonical": "{\"actor_id\":\"kimi-code/FI-008\",\"cost_ns\":0,\"created_at\":\"2026-09-13T00:00:00Z\",\"epistemic_label\":\"Observation\",\"extensions\":{\"max_safe\":9007199254740991,\"neg_max_safe\":-9007199254740991,\"neg_one\":-1,\"zero\":0},\"floor_verdict\":\"Pass\",\"parent_receipt_ids\":[],\"receipt_id\":\"00000000-0000-4000-8000-000000000009\",\"session_id\":\"SEAL-jcs-fixture-009\",\"step_number\":9007199254740991,\"step_type\":\"Execute\"}",
+      "sha3_256": "fc90d2900e31b8e0242bd23a8910bee74f6e5cadebac49c62fca58b07358f09e"
+    },
+    {
+      "id": 10,
+      "note": "classification-redacted receipt (opaque fields)",
+      "value": {
+        "receipt_id": "00000000-0000-4000-8000-00000000000a",
+        "created_at": "2026-09-13T00:00:00Z",
+        "actor_id": "fi-003-qwen",
+        "session_id": "REDACTED:sha256:0f2a",
+        "step_type": "Execute",
+        "step_number": 1,
+        "cost_ns": 77,
+        "epistemic_label": "Observation",
+        "floor_verdict": "Pass",
+        "summary": "[REDACTED:classification]",
+        "extensions": {
+          "classification": "RESTRICTED",
+          "redacted_fields": [
+            "session_id",
+            "summary"
+          ]
+        },
+        "parent_receipt_ids": [
+          "REDACTED:parent"
+        ]
+      },
+      "canonical": "{\"actor_id\":\"fi-003-qwen\",\"cost_ns\":77,\"created_at\":\"2026-09-13T00:00:00Z\",\"epistemic_label\":\"Observation\",\"extensions\":{\"classification\":\"RESTRICTED\",\"redacted_fields\":[\"session_id\",\"summary\"]},\"floor_verdict\":\"Pass\",\"parent_receipt_ids\":[\"REDACTED:parent\"],\"receipt_id\":\"00000000-0000-4000-8000-00000000000a\",\"session_id\":\"REDACTED:sha256:0f2a\",\"step_number\":1,\"step_type\":\"Execute\",\"summary\":\"[REDACTED:classification]\"}",
+      "sha3_256": "01424d5c9cd8bbbeaa7449a6fc0d303f107fb751dfc9bb6d5e0289bd7ab4bf41"
+    }
+  ],
+  "float_edge_sweep": [
+    {
+      "value": 0.5,
+      "canonical": "0.5"
+    },
+    {
+      "value": -2.25,
+      "canonical": "-2.25"
+    },
+    {
+      "value": 1e+21,
+      "canonical": "1e+21"
+    },
+    {
+      "value": 1e-7,
+      "canonical": "1e-7"
+    },
+    {
+      "value": 1.5e-7,
+      "canonical": "1.5e-7"
+    },
+    {
+      "value": 123456.789,
+      "canonical": "123456.789"
+    },
+    {
+      "value": 0,
+      "canonical": "0"
+    },
+    {
+      "value": 1000000000000000,
+      "canonical": "1000000000000000"
+    },
+    {
+      "value": 0.0001,
+      "canonical": "0.0001"
+    }
+  ]
+}

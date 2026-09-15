@@ -370,6 +370,16 @@ fn http_ok(body: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+/// HTTP 400 response helper (SEQ-N /lineage and future read-only surfaces)
+fn http_bad_request(body: &str) -> Vec<u8> {
+    format!(
+        "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+    .into_bytes()
+}
+
 /// Extract JSON body from HTTP request (after \r\n\r\n)
 fn extract_body(request: &str) -> Option<&str> {
     request.split("\r\n\r\n").nth(1)
@@ -551,10 +561,202 @@ fn handle_client(
                 })
                 .to_string();
                 http_ok(&body)
+            } else if request.starts_with("POST /fq_g") {
+                // RG-9 / FQ_G (2026-09-13): institutional metabolism rate —
+                // measured LAST. Read-only, full-ledger distributions.
+                match arifflow::lineage_query::LoadedLedger::from_path(std::path::Path::new(
+                    "/var/lib/arifflow/receipts.jsonl",
+                )) {
+                    Err(e) => http_bad_request(
+                        &serde_json::json!({"status": "ledger_unreadable", "error": format!("{}", e)}).to_string(),
+                    ),
+                    Ok(ledger) => http_ok(
+                        &serde_json::to_string(&arifflow::lineage_query::fq_graph(&ledger))
+                            .unwrap_or_else(|_| "{}".into()),
+                    ),
+                }
+            } else if request.starts_with("POST /consequences") {
+                // RG-7 (2026-09-13): consequence records — read-only.
+                match extract_body(&request) {
+                    None => http_bad_request(
+                        &serde_json::json!({"status": "invalid", "error": "empty body"})
+                            .to_string(),
+                    ),
+                    Some(raw_json) => match serde_json::from_str::<serde_json::Value>(
+                        raw_json.trim(),
+                    ) {
+                        Err(e) => http_bad_request(
+                            &serde_json::json!({"status": "invalid", "error": format!("{}", e)})
+                                .to_string(),
+                        ),
+                        Ok(req) => {
+                            let before = req.get("before_receipt_id").and_then(|v| v.as_str());
+                            match arifflow::lineage_query::LoadedLedger::from_path(std::path::Path::new(
+                                "/var/lib/arifflow/receipts.jsonl",
+                            )) {
+                                Err(e) => http_bad_request(
+                                    &serde_json::json!({"status": "ledger_unreadable", "error": format!("{}", e)}).to_string(),
+                                ),
+                                Ok(ledger) => match arifflow::lineage_query::consequences(&ledger, before) {
+                                    Err(e) => http_bad_request(
+                                        &serde_json::json!({"status": "consequences_error", "error": e}).to_string(),
+                                    ),
+                                    Ok(records) => http_ok(
+                                        &serde_json::to_string(&serde_json::json!({
+                                            "schema": "arifflow.consequences/v1",
+                                            "as_of_receipt_id": before,
+                                            "count": records.len(),
+                                            "consequences": records,
+                                        }))
+                                        .unwrap_or_else(|_| "{}".into()),
+                                    ),
+                                },
+                            }
+                        }
+                    },
+                }
+            } else if request.starts_with("POST /scar_policies") {
+                // RG-5 (2026-09-13): scar-bound policy query — read-only.
+                match extract_body(&request) {
+                    None => http_bad_request(
+                        &serde_json::json!({"status": "invalid", "error": "empty body"})
+                            .to_string(),
+                    ),
+                    Some(raw_json) => match serde_json::from_str::<serde_json::Value>(
+                        raw_json.trim(),
+                    ) {
+                        Err(e) => http_bad_request(
+                            &serde_json::json!({"status": "invalid", "error": format!("{}", e)})
+                                .to_string(),
+                        ),
+                        Ok(req) => {
+                            let before = req.get("before_receipt_id").and_then(|v| v.as_str());
+                            match arifflow::lineage_query::LoadedLedger::from_path(std::path::Path::new(
+                                "/var/lib/arifflow/receipts.jsonl",
+                            )) {
+                                Err(e) => http_bad_request(
+                                    &serde_json::json!({"status": "ledger_unreadable", "error": format!("{}", e)}).to_string(),
+                                ),
+                                Ok(ledger) => match arifflow::lineage_query::scar_policies(&ledger, before) {
+                                    Err(e) => http_bad_request(
+                                        &serde_json::json!({"status": "scar_policies_error", "error": e}).to_string(),
+                                    ),
+                                    Ok(policies) => http_ok(
+                                        &serde_json::to_string(&serde_json::json!({
+                                            "schema": "arifflow.scar-policies/v1",
+                                            "as_of_receipt_id": before,
+                                            "count": policies.len(),
+                                            "policies": policies,
+                                        }))
+                                        .unwrap_or_else(|_| "{}".into()),
+                                    ),
+                                },
+                            }
+                        }
+                    },
+                }
+            } else if request.starts_with("POST /gov_events") {
+                // RG-4 (2026-09-13): governance-event query — read-only.
+                // Body: {} or {"before_receipt_id": "..."} for time travel.
+                match extract_body(&request) {
+                    None => http_bad_request(
+                        &serde_json::json!({"status": "invalid", "error": "empty body"})
+                            .to_string(),
+                    ),
+                    Some(raw_json) => match serde_json::from_str::<serde_json::Value>(
+                        raw_json.trim(),
+                    ) {
+                        Err(e) => http_bad_request(
+                            &serde_json::json!({"status": "invalid", "error": format!("{}", e)})
+                                .to_string(),
+                        ),
+                        Ok(req) => {
+                            let before = req.get("before_receipt_id").and_then(|v| v.as_str());
+                            match arifflow::lineage_query::LoadedLedger::from_path(std::path::Path::new(
+                                "/var/lib/arifflow/receipts.jsonl",
+                            )) {
+                                Err(e) => http_bad_request(
+                                    &serde_json::json!({"status": "ledger_unreadable", "error": format!("{}", e)}).to_string(),
+                                ),
+                                Ok(ledger) => match arifflow::lineage_query::gov_events(&ledger, before) {
+                                    Err(e) => http_bad_request(
+                                        &serde_json::json!({"status": "gov_events_error", "error": e}).to_string(),
+                                    ),
+                                    Ok(events) => http_ok(
+                                        &serde_json::to_string(&serde_json::json!({
+                                            "schema": "arifflow.gov-events/v1",
+                                            "as_of_receipt_id": before,
+                                            "count": events.len(),
+                                            "events": events,
+                                        }))
+                                        .unwrap_or_else(|_| "{}".into()),
+                                    ),
+                                },
+                            }
+                        }
+                    },
+                }
+            } else if request.starts_with("POST /lineage") {
+                // SEQ-N (2026-09-13): belief-lineage query surface — read-only.
+                // Body: {"receipt_id": "...", "before_receipt_id": "..."?}
+                match extract_body(&request) {
+                    None => http_bad_request(
+                        &serde_json::json!({"status": "invalid", "error": "empty body"})
+                            .to_string(),
+                    ),
+                    Some(raw_json) => match serde_json::from_str::<serde_json::Value>(
+                        raw_json.trim(),
+                    ) {
+                        Err(e) => http_bad_request(
+                            &serde_json::json!({"status": "invalid", "error": format!("{}", e)})
+                                .to_string(),
+                        ),
+                        Ok(req) => {
+                            let target = req.get("receipt_id").and_then(|v| v.as_str());
+                            let before = req.get("before_receipt_id").and_then(|v| v.as_str());
+                            match target {
+                                None => http_bad_request(
+                                    &serde_json::json!({"status": "invalid", "error": "receipt_id is required"}).to_string(),
+                                ),
+                                Some(target) => {
+                                    match arifflow::lineage_query::LoadedLedger::from_path(
+                                        std::path::Path::new("/var/lib/arifflow/receipts.jsonl"),
+                                    ) {
+                                        Err(e) => http_bad_request(
+                                            &serde_json::json!({"status": "ledger_unreadable", "error": format!("{}", e)}).to_string(),
+                                        ),
+                                        Ok(ledger) => match arifflow::lineage_query::lineage_report(
+                                            &ledger, target, before,
+                                        ) {
+                                            Err(e) => http_bad_request(
+                                                &serde_json::json!({"status": "lineage_error", "error": e}).to_string(),
+                                            ),
+                                            Ok(report) => http_ok(
+                                                &serde_json::to_string(&report).unwrap_or_else(|_| "{}".into()),
+                                            ),
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
             } else if request.starts_with("POST /ingest") {
                 match extract_body(&request) {
                     Some(raw_json) => match serde_json::from_str::<FlowReceipt>(raw_json.trim()) {
-                        Ok(receipt) => {
+                        Ok(mut receipt) => {
+                            // RG-PH (2026-09-13): daemon stamps the canonical
+                            // JCS body hash server-side — client-supplied values
+                            // are recomputed, never trusted. Fail-soft on
+                            // schema-discipline violations (e.g. u64 > 2^53).
+                            match receipt.compute_jcs_body_hash() {
+                                Ok(h) => receipt.jcs_body_hash = Some(h),
+                                Err(e) => eprintln!(
+                                    "[arifFlow] WARN: jcs stamp failed for {}: {} \
+                                     (receipt stored unhashed)",
+                                    receipt.receipt_id, e
+                                ),
+                            }
                             let mut store = receipt_store.lock().unwrap();
                             let mut enf = enforcer.lock().unwrap();
                             // [FIX 2] 2026-08-10: chain-aware ingest — rejects receipts with
@@ -664,6 +866,8 @@ fn handle_client(
                                 "status": "ingested",
                                 "actor": receipt.actor_id,
                                 "step_type": format!("{}", receipt.step_type),
+                                "receipt_id": receipt.receipt_id.to_string(),
+                                "jcs_body_hash": receipt.jcs_body_hash,
                                 "fq": {
                                     "quotient": fq.quotient,
                                     "verdict": format!("{}", fq.verdict),

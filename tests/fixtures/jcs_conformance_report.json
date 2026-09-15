@@ -1,0 +1,22 @@
+{
+  "schema": "arifflow.spec/jcs-conformance-report/v1",
+  "generated_utc": "2026-09-13T01:11:05.310Z",
+  "corpus": {
+    "path": "tests/fixtures/jcs_golden_v1.json",
+    "sha3_256": "ef48780a8e0e044c7426c730067f86573eaea5719796e6b37e8ed5b8faba068a",
+    "fixtures": 10,
+    "float_edges": 9
+  },
+  "runtimes": {
+    "node": "v22.23.2",
+    "python": "Python 3.13.7",
+    "rust": "cargo 1.98.1 (797e8a9bc 2026-08-05)"
+  },
+  "checks": {
+    "canonical_bytes_identical_across_runtimes": true,
+    "sha3_256_identical_across_runtimes": true,
+    "matches_corpus_expected": true
+  },
+  "verdict": "CONFORMANT",
+  "mismatches": []
+}

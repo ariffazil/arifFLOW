@@ -60,6 +60,7 @@ WELL/
 forge_work/
 scratch/
 *.jsonl
+*.db
 entropy-report.json
 
 # ── Backup (any pattern) ──
