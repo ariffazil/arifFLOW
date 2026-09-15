@@ -1,0 +1,68 @@
+{
+  "receipt_id": "0190e1a3-0000-7000-8000-000000000000",
+  "previous_receipt_hash": null,
+  "created_at": "2026-09-16T01:30:00Z",
+  "actor_id": "555-ASI",
+  "session_id": "code-reality-reconciliation",
+  "session_token": null,
+  "step_type": "Verify",
+  "risk_class": "T1Mutate",
+  "topology_id": null,
+  "lane_id": null,
+  "step_number": 1,
+  "routed_organ": "arifflow",
+  "cost_ns": 250000,
+  "preceding_verify_cost_ns": null,
+  "epistemic_label": "Derivation",
+  "floor_verdict": "Pass",
+  "intent_reason": "D3 reconciliation evidence-origin contract",
+  "expected_outcome": "CODE_REALITY_RECONCILIATION event receivable with origin axis",
+  "cooling_decision": "None",
+  "tri_witness_votes": null,
+  "merkle_root": null,
+  "merkle_inclusion_proof": null,
+  "payload": {
+    "event": "CODE_REALITY_RECONCILIATION",
+    "claim": "D3 evidence-origin field is additive and backward-compatible"
+  },
+  "formula_version": "qg.v0.2",
+  "formula_hash": "sha256:placeholder",
+  "witness_organs": [
+    "arifflow"
+  ],
+  "apex_block": null,
+  "flow_block": null,
+  "projection_block": null,
+  "evidence_refs": [
+    {
+      "origin": "INTENDED",
+      "status": "Specification",
+      "reference": "policy:human-confirm-required",
+      "captured_at": "2026-09-16T01:29:50Z"
+    },
+    {
+      "origin": "STATIC",
+      "status": "Derivation",
+      "reference": "src/receipt.rs:91",
+      "repo_id": "arifFlow",
+      "git_sha": "934d989",
+      "captured_at": "2026-09-16T01:29:55Z"
+    },
+    {
+      "origin": "OBSERVED",
+      "status": "Observation",
+      "reference": "arifflow:receipt:0190e1a2-0000-7000-8000-000000000000",
+      "environment": "kvm8",
+      "captured_at": "2026-09-16T01:30:00Z"
+    },
+    {
+      "origin": "VERIFIED",
+      "status": "Derivation",
+      "reference": "cargo::test_golden_fixtures_parse",
+      "repo_id": "arifFlow",
+      "git_sha": "934d989",
+      "environment": "worktree",
+      "captured_at": "2026-09-16T01:30:05Z"
+    }
+  ]
+}

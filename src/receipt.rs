@@ -113,6 +113,96 @@ impl fmt::Display for EpistemicLabel {
     }
 }
 
+// ── Evidence Origin (D3, 2026-09-16) ─────────────────────────────────────
+
+/// Source axis for reconciliation evidence — **where** an evidence claim
+/// came from. D3 ratification (F13, 2026-09-16): two-axis model.
+///
+/// `EvidenceOrigin` is the **origin axis** (provenance class of the evidence),
+/// while `EpistemicLabel` is the **confidence axis** (truth status per F2/F7).
+/// Neither replaces the other; every evidence reference carries both.
+///
+/// Worked examples (ratified proposal):
+/// - policy-requires-confirmation → `(Intended, Specification|Seal)`
+/// - CGC-finds-guard              → `(Static, Derivation)`
+/// - arifFlow receipt             → `(Observed, Observation)`
+/// - passing-test                 → `(Verified, Derivation)`
+///
+/// Additive + backward-compatible: v1 receipts (without this axis) deserialize
+/// with an empty evidence set; serialization omits the field when empty so
+/// legacy hash chains stay byte-stable.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum EvidenceOrigin {
+    /// INTENDED — policy/design intent, not yet grounded in artifact or runtime
+    Intended,
+    /// STATIC — static analysis finding on an artifact (source, config, schema)
+    Static,
+    /// OBSERVED — runtime observation with provenance (receipt, probe, log)
+    Observed,
+    /// VERIFIED — independently checked claim (test pass, second witness)
+    Verified,
+}
+
+impl fmt::Display for EvidenceOrigin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EvidenceOrigin::Intended => write!(f, "INTENDED"),
+            EvidenceOrigin::Static => write!(f, "STATIC"),
+            EvidenceOrigin::Observed => write!(f, "OBSERVED"),
+            EvidenceOrigin::Verified => write!(f, "VERIFIED"),
+        }
+    }
+}
+
+/// A single reconciliation evidence reference — one origin × one status ×
+/// one pointer into reality (file:line, arifflow:receipt, policy:rule).
+///
+/// Carried additively on `FlowReceipt::evidence_refs` for
+/// CODE_REALITY_RECONCILIATION events. Field-for-field serialization contract
+/// (D3 golden fixtures): `origin` + `status` + `reference` + `captured_at` are
+/// required; `repo_id` / `git_sha` / `environment` are optional and omitted
+/// when `None`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EvidenceRef {
+    /// Where this evidence came from (origin axis)
+    pub origin: EvidenceOrigin,
+    /// Truth status of this evidence (confidence axis, F2/F7) — untouched
+    pub status: EpistemicLabel,
+    /// Pointer into reality: `file:line` | `arifflow:receipt:<id>` | `policy:<rule>`
+    pub reference: String,
+    /// Repository identifier, when the evidence is repo-scoped
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_id: Option<String>,
+    /// Git SHA the evidence was captured against
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_sha: Option<String>,
+    /// Environment the evidence was captured in (e.g. `kvm8`, `prod`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+    /// When the evidence was captured (UTC)
+    pub captured_at: DateTime<Utc>,
+}
+
+impl EvidenceRef {
+    /// Minimal evidence reference — origin, status, pointer, now.
+    pub fn new(
+        origin: EvidenceOrigin,
+        status: EpistemicLabel,
+        reference: impl Into<String>,
+    ) -> Self {
+        Self {
+            origin,
+            status,
+            reference: reference.into(),
+            repo_id: None,
+            git_sha: None,
+            environment: None,
+            captured_at: Utc::now(),
+        }
+    }
+}
+
 // ── Risk Class ────────────────────────────────────────────────────────────
 
 /// Autonomy tier classification for risk-weighted FQ thresholds.
@@ -577,6 +667,14 @@ pub struct FlowReceipt {
     /// QG.v0.3 (2026-08-14): PROJECTION block number — the forward-model/projection
     /// cycle this receipt belongs to. None when unwired.
     pub projection_block: Option<u64>,
+    // ── Evidence Origin (D3, 2026-09-16) ──
+    /// Reconciliation evidence references (CODE_REALITY_RECONCILIATION events).
+    /// Two-axis model: origin (`EvidenceOrigin`) × status (`EpistemicLabel`).
+    /// Additive + backward-compatible: absent in v1 receipts (deserializes to
+    /// empty via `serde(default)`), omitted when empty so legacy hash output
+    /// (`hash()` = SHA3-256 of canonical JSON) is byte-stable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_refs: Vec<EvidenceRef>,
 }
 
 impl FlowReceipt {
@@ -620,6 +718,7 @@ impl FlowReceipt {
             apex_block: None,
             flow_block: None,
             projection_block: None,
+            evidence_refs: Vec::new(),
         }
     }
 
@@ -665,6 +764,7 @@ impl FlowReceipt {
             apex_block: None,
             flow_block: None,
             projection_block: None,
+            evidence_refs: Vec::new(),
         }
     }
 
@@ -763,6 +863,19 @@ impl FlowReceipt {
     /// Example: `.with_genesis_anchor("RCP-000")` or `.with_genesis_anchor("/000")`
     pub fn with_genesis_anchor(mut self, anchor: impl Into<String>) -> Self {
         self.genesis_anchor = Some(anchor.into());
+        self
+    }
+
+    /// Attach one reconciliation evidence reference (D3, 2026-09-16).
+    /// Append-only by design — evidence accumulates, never rewrites.
+    pub fn with_evidence_ref(mut self, evidence: EvidenceRef) -> Self {
+        self.evidence_refs.push(evidence);
+        self
+    }
+
+    /// Set the full reconciliation evidence set (D3, 2026-09-16).
+    pub fn with_evidence_refs(mut self, evidence: Vec<EvidenceRef>) -> Self {
+        self.evidence_refs = evidence;
         self
     }
 }
@@ -944,6 +1057,7 @@ impl Default for ReceiptStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn test_create_first_receipt() {
@@ -1945,6 +2059,284 @@ mod tests {
         assert!(observe.genesis_anchor.is_none());
         assert!(interpret.genesis_anchor.is_none());
         assert!(verify.genesis_anchor.is_none());
+    }
+
+    // ── D3 Evidence Origin (2026-09-16) ──────────────────────────────────
+
+    /// D3: all four origin variants serialize to the canonical UPPERCASE wire
+    /// form (INTENDED/STATIC/OBSERVED/VERIFIED) and round-trip losslessly.
+    #[test]
+    fn test_evidence_origin_serde_uppercase_wire_form() {
+        for (variant, wire) in [
+            (EvidenceOrigin::Intended, "INTENDED"),
+            (EvidenceOrigin::Static, "STATIC"),
+            (EvidenceOrigin::Observed, "OBSERVED"),
+            (EvidenceOrigin::Verified, "VERIFIED"),
+        ] {
+            let json = serde_json::to_string(&variant).expect("serialize origin");
+            assert_eq!(json, format!("\"{wire}\""), "wire form of {wire}");
+
+            let back: EvidenceOrigin = serde_json::from_str(&json).expect("deserialize origin");
+            assert_eq!(back, variant);
+
+            // Display matches the wire form (single spelling per axis).
+            assert_eq!(variant.to_string(), wire);
+        }
+    }
+
+    /// D3: EvidenceRef field-for-field serde round-trip, including optional
+    /// provenance fields and the worked examples from the ratified proposal.
+    #[test]
+    fn test_evidence_ref_round_trip() {
+        let refs = vec![
+            // Worked example: policy-requires-confirmation = (Intended, Spec)
+            EvidenceRef {
+                origin: EvidenceOrigin::Intended,
+                status: EpistemicLabel::Specification,
+                reference: "policy:human-confirm-required".into(),
+                repo_id: None,
+                git_sha: None,
+                environment: None,
+                captured_at: Utc::now(),
+            },
+            // Worked example: CGC-finds-guard = (Static, Der)
+            EvidenceRef {
+                origin: EvidenceOrigin::Static,
+                status: EpistemicLabel::Derivation,
+                reference: "src/governance/invariants.rs:210".into(),
+                repo_id: Some("arifFlow".into()),
+                git_sha: Some("934d989".into()),
+                environment: None,
+                captured_at: Utc::now(),
+            },
+            // Worked example: arifFlow-receipt = (Observed, Obs)
+            EvidenceRef {
+                origin: EvidenceOrigin::Observed,
+                status: EpistemicLabel::Observation,
+                reference: "arifflow:receipt:0190e1a2-0000-7000-8000-000000000001".into(),
+                repo_id: None,
+                git_sha: None,
+                environment: Some("kvm8".into()),
+                captured_at: Utc::now(),
+            },
+            // Worked example: passing-test = (Verified, Der)
+            EvidenceRef {
+                origin: EvidenceOrigin::Verified,
+                status: EpistemicLabel::Derivation,
+                reference: "cargo::test_receipt_hash_deterministic".into(),
+                repo_id: Some("arifFlow".into()),
+                git_sha: Some("934d989".into()),
+                environment: Some("ci".into()),
+                captured_at: Utc::now(),
+            },
+        ];
+
+        for r in refs {
+            let json = serde_json::to_string(&r).expect("serialize EvidenceRef");
+            let back: EvidenceRef = serde_json::from_str(&json).expect("deserialize EvidenceRef");
+            assert_eq!(back, r);
+
+            // None-valued optional fields are omitted from the wire form.
+            if r.repo_id.is_none() {
+                assert!(
+                    !json.contains("repo_id"),
+                    "None repo_id must be omitted: {json}"
+                );
+            }
+            if r.git_sha.is_none() {
+                assert!(
+                    !json.contains("git_sha"),
+                    "None git_sha must be omitted: {json}"
+                );
+            }
+            if r.environment.is_none() {
+                assert!(
+                    !json.contains("environment"),
+                    "None environment must be omitted: {json}"
+                );
+            }
+        }
+    }
+
+    /// D3: full FlowReceipt carrying evidence_refs survives the serde
+    /// round-trip field-for-field (the reconciliation-result contract).
+    #[test]
+    fn test_receipt_with_evidence_refs_round_trip() {
+        let evidence = EvidenceRef {
+            origin: EvidenceOrigin::Observed,
+            status: EpistemicLabel::Observation,
+            reference: "arifflow:receipt:probe-5-fq-drift".into(),
+            repo_id: Some("arifFlow".into()),
+            git_sha: Some("934d989".into()),
+            environment: Some("kvm8".into()),
+            captured_at: Utc::now(),
+        };
+        let receipt = FlowReceipt::new_first(
+            "555-ASI",
+            "code-reality-reconciliation",
+            StepType::Verify,
+            EpistemicLabel::Derivation,
+            120_000,
+        )
+        .with_evidence_ref(evidence.clone());
+
+        let json = serde_json::to_string(&receipt).expect("serialize receipt");
+        assert!(
+            json.contains("evidence_refs"),
+            "field present when non-empty"
+        );
+
+        let back: FlowReceipt = serde_json::from_str(&json).expect("deserialize receipt");
+        assert_eq!(back.evidence_refs.len(), 1);
+        assert_eq!(back.evidence_refs[0], evidence);
+        assert_eq!(back.hash(), receipt.hash(), "hash stable across round-trip");
+    }
+
+    /// D3 backward compat: a v1 receipt JSON (no `evidence_refs` key) parses
+    /// cleanly with an empty evidence set — old receipts still load.
+    #[test]
+    fn test_old_receipt_compat_without_evidence_field() {
+        let legacy_json = r#"{
+            "receipt_id": "0190e1a2-0000-7000-8000-000000000000",
+            "previous_receipt_hash": null,
+            "created_at": "2026-09-10T04:58:00Z",
+            "actor_id": "333-AGI",
+            "session_id": "legacy-session",
+            "session_token": null,
+            "step_type": "Execute",
+            "risk_class": "T0Observe",
+            "topology_id": null,
+            "lane_id": null,
+            "step_number": 0,
+            "cost_ns": 1000000,
+            "preceding_verify_cost_ns": null,
+            "epistemic_label": "Observation",
+            "floor_verdict": "Pass",
+            "intent_reason": null,
+            "expected_outcome": null,
+            "cooling_decision": "None",
+            "tri_witness_votes": null,
+            "merkle_root": null,
+            "merkle_inclusion_proof": null,
+            "payload": null,
+            "formula_version": "qg.v0.2",
+            "formula_hash": "sha256:placeholder",
+            "witness_organs": null,
+            "apex_block": null,
+            "flow_block": null,
+            "projection_block": null
+        }"#;
+
+        let receipt: FlowReceipt =
+            serde_json::from_str(legacy_json).expect("v1 receipt without evidence_refs must parse");
+        assert!(receipt.evidence_refs.is_empty(), "defaults to empty set");
+        assert_eq!(receipt.actor_id, "333-AGI");
+        assert_eq!(receipt.step_type, StepType::Execute);
+
+        // Re-serialization must NOT introduce the new key — legacy hash
+        // chains over this receipt's bytes stay stable.
+        let reserialized = serde_json::to_string(&receipt).expect("reserialize");
+        assert!(
+            !reserialized.contains("evidence_refs"),
+            "empty evidence_refs omitted from wire form: {reserialized}"
+        );
+        assert_eq!(reserialized, legacy_json.replace(char::is_whitespace, ""));
+    }
+
+    /// D3: hash() of an evidence-free receipt is unchanged by the field's
+    /// existence — proves additive-compat for the SHA3-256 chain.
+    #[test]
+    fn test_empty_evidence_refs_do_not_change_hash() {
+        let receipt = FlowReceipt::new_first(
+            "a-forge",
+            "hash-stability",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1_000,
+        );
+        // The receipt has an (empty) evidence_refs vec in memory; the wire
+        // form must be identical to a v1-shaped receipt.
+        let json = serde_json::to_string(&receipt).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert!(v.get("evidence_refs").is_none());
+
+        // Chaining still works: chained receipt anchors to first's hash.
+        let chained = FlowReceipt::new_chained(
+            &receipt,
+            "a-forge",
+            "hash-stability",
+            StepType::Verify,
+            EpistemicLabel::Derivation,
+            500,
+        );
+        assert_eq!(
+            chained.previous_receipt_hash.as_deref(),
+            Some(receipt.hash().as_str())
+        );
+    }
+
+    /// D3: builder semantics — evidence accumulates append-only, and a
+    /// reconciliation receipt can carry multiple origin axes at once.
+    #[test]
+    fn test_evidence_builder_accumulates_multi_origin() {
+        let receipt = FlowReceipt::new_first(
+            "333-AGI",
+            "code-reality-reconciliation",
+            StepType::Verify,
+            EpistemicLabel::Derivation,
+            90_000,
+        )
+        .with_evidence_ref(EvidenceRef::new(
+            EvidenceOrigin::Intended,
+            EpistemicLabel::Specification,
+            "policy:arifflow-evidence-origin-proposal",
+        ))
+        .with_evidence_ref(EvidenceRef::new(
+            EvidenceOrigin::Static,
+            EpistemicLabel::Derivation,
+            "src/receipt.rs:1",
+        ));
+
+        assert_eq!(receipt.evidence_refs.len(), 2);
+        assert_eq!(receipt.evidence_refs[0].origin, EvidenceOrigin::Intended);
+        assert_eq!(receipt.evidence_refs[1].origin, EvidenceOrigin::Static);
+    }
+
+    /// D3 golden fixtures: the committed fixture pair — a v1 legacy receipt
+    /// (no evidence axis) and a v2 reconciliation receipt (with evidence
+    /// axis) — both parse and represent the cross-version contract.
+    #[test]
+    fn test_golden_fixtures_parse() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/evidence-origin");
+
+        // Fixture 1 — legacy v1 receipt without evidence_refs.
+        let legacy_bytes = std::fs::read_to_string(dir.join("receipt-v1-legacy.json"))
+            .expect("legacy fixture exists");
+        let legacy: FlowReceipt =
+            serde_json::from_str(&legacy_bytes).expect("legacy fixture parses");
+        assert!(legacy.evidence_refs.is_empty());
+
+        // Fixture 2 — v2 reconciliation receipt with all four origins.
+        let v2_bytes = std::fs::read_to_string(dir.join("receipt-v2-reconciliation.json"))
+            .expect("v2 fixture exists");
+        let v2: FlowReceipt = serde_json::from_str(&v2_bytes).expect("v2 fixture parses");
+        assert_eq!(v2.evidence_refs.len(), 4);
+        for (i, expected) in [
+            EvidenceOrigin::Intended,
+            EvidenceOrigin::Static,
+            EvidenceOrigin::Observed,
+            EvidenceOrigin::Verified,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(v2.evidence_refs[i].origin, expected);
+        }
+
+        // Round-trip the v2 fixture through the wire.
+        let wire = serde_json::to_string(&v2).expect("reserialize v2");
+        let back: FlowReceipt = serde_json::from_str(&wire).expect("reparses");
+        assert_eq!(back.evidence_refs, v2.evidence_refs);
     }
 }
 
