@@ -18,6 +18,12 @@ OVERRIDE_LOG = "/var/lib/arifflow/override_log.jsonl"
 FLOW_STATE = "/root/AAA/state/flow_state.json"
 HEALTH_URL = "http://127.0.0.1:7073/health"
 
+# Human return block — human-benefit-sleep-joy-v1 (witness-ratified 2026-09-16)
+HUMAN_DIRECTIVE = "/root/WELL/state/human-benefit-sleep-joy-v1.json"
+BAIK_LOG = "/root/WELL/state/3baik_log.jsonl"
+WELL_SNAPSHOT = "/state/triadic_snapshot.json"
+DELIVERY_LOG = "/root/WELL/state/digest_delivery_log.jsonl"
+
 
 def read_jsonl(path, since=None):
     """Read JSONL file, return list of dicts. Optional: filter by timestamp."""
@@ -92,6 +98,125 @@ def get_organ_heartbeats():
     return statuses
 
 
+def _find_sleep_hours(obj):
+    """Recursively hunt a sleep_hours value in the triadic snapshot. None = no data."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k in ("sleep_hours", "sleep_last_night_hours") and isinstance(v, (int, float)):
+                return v
+            found = _find_sleep_hours(v)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _find_sleep_hours(item)
+            if found is not None:
+                return found
+    return None
+
+
+def baik_streak():
+    """Consecutive-day streak of 3baik replies ending today or yesterday (UTC)."""
+    if not os.path.exists(BAIK_LOG):
+        return None
+    days = set()
+    with open(BAIK_LOG) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                days.add((json.loads(line).get("timestamp_utc") or "")[:10])
+            except json.JSONDecodeError:
+                continue
+    days.discard("")
+    if not days:
+        return None
+    d = datetime.now(timezone.utc).date()
+    if d.isoformat() not in days:
+        d = d - timedelta(days=1)
+        if d.isoformat() not in days:
+            return None
+    n = 0
+    while d.isoformat() in days:
+        n += 1
+        d = d - timedelta(days=1)
+    return n
+
+
+def delivery_failure_notice():
+    """P1 (witness 2026-09-16): a failed nightly delivery must be VISIBLE in the
+    next human surface — no silent empty-log condition."""
+    if not os.path.exists(DELIVERY_LOG):
+        return None
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=26)).isoformat()
+    worst = None
+    with open(DELIVERY_LOG) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if e.get("status") == "FAILED" and (e.get("attempted_at_utc") or "") >= cutoff:
+                worst = e
+    if not worst:
+        return None
+    return (
+        f"⚠️ Delivery digest malam lepas GAGAL ({worst.get('error_class', '?')} @ "
+        f"{worst.get('attempted_at_utc', '?')[11:16]}Z) — cron-deliver perlu check"
+    )
+
+
+def human_joy_block():
+    """22:00 human block — one sleep signal + one gratitude prompt. Never more.
+
+    Directive: human-benefit-sleep-joy-v1 (external witness PROCEED_S3,
+    2026-09-16). 'tak ada'/'skip'/'bad day' are valid replies — no nagging,
+    no diagnosis, no medical inference. Missing directive file defaults ON.
+    """
+    try:
+        with open(HUMAN_DIRECTIVE) as f:
+            directive = json.load(f)
+        if directive.get("status") != "ACTIVE":
+            return []
+        if "three_good_things" not in directive.get("scope", []):
+            return []
+    except Exception:
+        pass
+
+    lines = ["🌙 **MALAM INI**", ""]
+
+    notice = delivery_failure_notice()
+    if notice:
+        lines.append(notice)
+
+    # Sleep-as-joy signal — honest omit when no data (Void Guard)
+    sleep_hours = None
+    try:
+        with open(WELL_SNAPSHOT) as f:
+            sleep_hours = _find_sleep_hours(json.load(f))
+    except Exception:
+        sleep_hours = None
+    if sleep_hours is not None:
+        lines.append(f"Tidur: {sleep_hours:.1f}j — otak dah tune untuk esok ✨")
+    else:
+        lines.append("Tidur: data belum ada (biometric consent OFF)")
+
+    streak = baik_streak()
+    if streak:
+        lines.append(f"Streak 3 baik: {streak} hari ✨")
+
+    lines.append("")
+    lines.append("**3 BAIK HARI INI** — balas mesej ini:")
+    lines.append("`3baik: satu; dua; tiga`")
+    lines.append("_(tak ada / skip pun sah — semua jawapan valid)_")
+    lines.append("")
+    return lines
+
+
 def format_digest():
     """Generate the governance digest for Arif."""
     now = datetime.now(timezone.utc)
@@ -122,19 +247,42 @@ def format_digest():
             }
         )
 
-    # Vault entries (receipts sealed in last 24h)
+    # Vault entries.
+    # 2026-09-15 VAULT999 SOT reconciliation (Hermes/333 subagent):
+    #   arifflow_sealed.jsonl records carry NO timestamp/created_at field (keys
+    #   are chain_entry_hash, chain_position, prev_hash, receipt_id,
+    #   vault_entry_id, body_hash, genesis_anchor, parent_receipt_hashes,
+    #   routed_organ). read_jsonl()'s `since` window is therefore inert and this
+    #   is a CUMULATIVE-TO-DATE count of the mirror file, never a 24h count.
+    #   It was previously published as "(24h)" — a fabricated window. Labelled
+    #   honestly now.
+    #   chain_position is a PER-CHAIN index that restarts at 0 for each batch,
+    #   so first-record/last-record positions do not describe one chain (the
+    #   old "0 → 147" output was the position of the first and last line, not a
+    #   chain length). Report the chain count and the max position instead.
     actor_counts = {}
     for v in vault_entries:
         actor = v.get("receipt_id", "unknown")[:8]
         actor_counts[actor] = actor_counts.get(actor, 0) + 1
     if vault_entries:
+        positions = [
+            v["chain_position"]
+            for v in vault_entries
+            if isinstance(v.get("chain_position"), int)
+        ]
+        n_chains = positions.count(0)
         events.append(
             {
                 "type": "VAULT_ACTIVITY",
-                "summary": f"{len(vault_entries)} receipts sealed to VAULT999 (24h)",
+                "summary": (
+                    f"{len(vault_entries)} receipts in VAULT999 arifFLOW mirror "
+                    f"(cumulative — mirror records carry no timestamp)"
+                ),
                 "details": {
-                    "Total sealed": str(len(vault_entries)),
-                    "Chain positions": f"{vault_entries[0].get('chain_position', '?')} → {vault_entries[-1].get('chain_position', '?')}",
+                    "Total entries (cumulative)": str(len(vault_entries)),
+                    "Chains in file": str(n_chains),
+                    "Max chain_position": str(max(positions) if positions else "?"),
+                    "Window": "NONE — source records have no timestamp field",
                 },
                 "priority": 2,
             }
@@ -220,12 +368,15 @@ def format_digest():
         }
     )
 
-    # No events = nothing happened = stay silent
-    if not events:
+    # Human return block (sleep-as-joy + 3 baik) fires nightly regardless
+    joy = human_joy_block()
+
+    # No events AND no joy block = nothing to say
+    if not events and not joy:
         return None
 
-    # Format digest
-    lines = []
+    # Format digest — human block first, governance after
+    lines = joy
     lines.append("🍓 **arifFLOW Governance Digest**")
     lines.append(f"_{now.strftime('%a %d %b %H:%M UTC')}_\n")
 

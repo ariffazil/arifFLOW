@@ -108,7 +108,17 @@ def flow_health() -> dict[str, Any]:
     """arifFlow daemon health + Flow Quotient (FQ = verify/execute ratio over
     recent receipts). Verdicts: FLOWING (healthy metabolism), STUCK (no
     verification), BURNING (execution outruns verification). Read-only."""
-    return _flow_get("/health")
+    result = _flow_get("/health")
+    result.setdefault("provenance", {})
+    result["provenance"].setdefault("formula_version", "qg.v0.2")
+    result["provenance"].setdefault(
+        "formula_hash", "sha256:arifflow-fq-v2.2-2026-08-14"
+    )
+    result["provenance"].setdefault(
+        "missing_inputs",
+        ["window_duration_s", "apex_block", "flow_block", "projection_block"],
+    )
+    return result
 
 
 @mcp.tool()
@@ -120,17 +130,53 @@ def flow_entity_report() -> dict[str, Any]:
     health = _flow_get("/health")
     if "error" in health:
         return health
-    per_actor = health.get("fq", {}).get("per_actor", {})
-    classified: dict[str, list[dict]] = {}
-    for actor, data in per_actor.items():
-        entity_class = _ENTITY_CLASSES.get(actor, "unknown")
-        classified.setdefault(entity_class, []).append(
-            {"actor": actor, **data}
-        )
+    fq_data = health.get("fq", {})
+    per_actor = fq_data.get("per_actor", {})
+    classified: dict[str, dict] = {}
+    class_totals: dict[str, dict] = {}
+    for actor_id, data in per_actor.items():
+        entity_class = _ENTITY_CLASSES.get(actor_id, "unknown")
+        consequence_bearing = entity_class in ("human_agent", "interactive_session")
+        entry = {
+            "entity_class": entity_class,
+            "execute": data.get("execute", 0),
+            "verify": data.get("verify", 0),
+            "quotient": data.get("quotient"),
+            "held": data.get("held", False),
+            "diagnosis": data.get("diagnosis", "?"),
+            "verdict": data.get("verdict", "?"),
+            "consequence_bearing": consequence_bearing,
+        }
+        classified[actor_id] = entry
+        if entity_class not in class_totals:
+            class_totals[entity_class] = {"execute": 0, "verify": 0, "actors": 0}
+        class_totals[entity_class]["execute"] += entry["execute"]
+        class_totals[entity_class]["verify"] += entry["verify"]
+        class_totals[entity_class]["actors"] += 1
+    gov_exec = sum(d["execute"] for d in classified.values() if d["consequence_bearing"])
+    gov_ver = sum(d["verify"] for d in classified.values() if d["consequence_bearing"])
+    gov_fq = (gov_ver / gov_exec) if gov_exec > 0 else None
+    if gov_fq is None:
+        gov_verdict = "UNKNOWN"
+    elif gov_fq < 0.1:
+        gov_verdict = "BURNING"
+    elif gov_fq < 0.5:
+        gov_verdict = "STUCK"
+    elif gov_fq < 2.0:
+        gov_verdict = "FLOWING"
+    else:
+        gov_verdict = "FOSSILIZED"
     return {
-        "entity_classes": classified,
-        "total_actors": len(per_actor),
-        "class_distribution": {k: len(v) for k, v in classified.items()},
+        "raw_fq": fq_data.get("quotient"),
+        "raw_verdict": fq_data.get("verdict"),
+        "governance_weighted_fq": round(gov_fq, 4) if gov_fq else None,
+        "governance_verdict": gov_verdict,
+        "governance_execute": gov_exec,
+        "governance_verify": gov_ver,
+        "entity_classes": class_totals,
+        "actors": classified,
+        "classification_source": _ENTITY_CLASS_FILE,
+        "note": "Only human_agent + interactive_session contribute to governance FQ",
     }
 
 
@@ -150,6 +196,9 @@ def flow_ingest(
     routed_organ: str | None = None,
     session_token: str | None = None,
     harness_fingerprint: str | None = None,
+    parent_receipt_ids: list[str] | None = None,
+    parent_receipt_hashes: list[str] | None = None,
+    jcs_body_hash: str | None = None,
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Mint and ingest a FlowReceipt into the arifFlow metabolic ledger
@@ -182,9 +231,80 @@ def flow_ingest(
         receipt["session_token"] = session_token
     if harness_fingerprint:
         receipt["harness_fingerprint"] = harness_fingerprint
+    if parent_receipt_ids:
+        receipt["parent_receipt_ids"] = parent_receipt_ids
+    if parent_receipt_hashes:
+        receipt["parent_receipt_hashes"] = parent_receipt_hashes
+    if jcs_body_hash:
+        receipt["jcs_body_hash"] = jcs_body_hash
     if payload:
         receipt["payload"] = payload
     return _flow_post("/ingest", receipt)
+
+
+@mcp.tool()
+def flow_fq_g() -> dict[str, Any]:
+    """FQ_G — institutional metabolism rate (read-only). Counts beliefs
+    born/superseded, governance events, scar-bound policies, reality invoices;
+    computes revision_rate, invoice_yield, and latencies scar→policy,
+    policy→invoice, belief lifetime. v1 distributions only — thresholds not
+    invented (measure-first doctrine)."""
+    return _flow_post("/fq_g", {})
+
+
+@mcp.tool()
+def flow_consequences(
+    before_receipt_id: str | None = None,
+) -> dict[str, Any]:
+    """RG-7 consequence records (read-only). Reality's invoices: observed
+    outcomes ATTRIBUTED to the policy/receipts that produced them.
+    outcome_class recovery|regression|neutral; evidence keeps attribution
+    falsifiable. 'Did belief change reality?' — traversable."""
+    body: dict[str, Any] = {}
+    if before_receipt_id:
+        body["before_receipt_id"] = before_receipt_id
+    return _flow_post("/consequences", body)
+
+
+@mcp.tool()
+def flow_scar_policies(
+    before_receipt_id: str | None = None,
+) -> dict[str, Any]:
+    """RG-5 scar-bound policy query (read-only). Policies compressed from
+    scars: slug, scar id, enforcement surface+ref, causal parents, and
+    supersession status. 'Did reality change future behaviour?' — traversable."""
+    body: dict[str, Any] = {}
+    if before_receipt_id:
+        body["before_receipt_id"] = before_receipt_id
+    return _flow_post("/scar_policies", body)
+
+
+@mcp.tool()
+def flow_gov_events(
+    before_receipt_id: str | None = None,
+) -> dict[str, Any]:
+    """RG-4 governance-event query (read-only). Seal/seal_refused/bind_failed
+    events with verdict, chain_id, judge_state_hash, and supersession status.
+    Optional before_receipt_id = time travel."""
+    body: dict[str, Any] = {}
+    if before_receipt_id:
+        body["before_receipt_id"] = before_receipt_id
+    return _flow_post("/gov_events", body)
+
+
+@mcp.tool()
+def flow_lineage(
+    receipt_id: str,
+    before_receipt_id: str | None = None,
+) -> dict[str, Any]:
+    """SEQ-N belief-lineage query (read-only). Reconstruct causal ancestry of
+    a receipt with per-edge hash verification, supersession status (belief
+    death), and optional time travel: with before_receipt_id, only receipts at
+    or before that ledger position exist — 'what did we believe then, and why?'"""
+    body: dict[str, Any] = {"receipt_id": receipt_id}
+    if before_receipt_id:
+        body["before_receipt_id"] = before_receipt_id
+    return _flow_post("/lineage", body)
 
 
 if __name__ == "__main__":

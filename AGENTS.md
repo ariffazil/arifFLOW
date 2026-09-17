@@ -180,3 +180,10 @@ STDIN/STDOUT JSON-L protocol — arifOS sends commands, arifFlow streams verdict
 ## Versioning
 
 **Iron Rule — date-stamped only.** Tags: `vYYYY.MM.DD`. No semver.
+## APEX-ZEN Alignment (canonical)
+> **Governance chain:** BUILD → VERIFY → JUDGE → SEAL → ACT → WITNESS
+> **Invariant:** CAPABILITY ≠ AUTHORITY
+> **Doctrine:** Govern capabilities, not implementations.
+> **Canonical ref:** `/root/AAA/canon/APEX-ZEN-CANONICAL-COMPRESSION.md`
+> **Motto:** DITEMPA BUKAN DIBERI ⚒️
+
