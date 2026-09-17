@@ -14,9 +14,14 @@
 #   daemon/infrastructure/synthetic receipts are telemetry, not governance.
 
 # --- Human Agents (consequence-bearing, interactive) ---
+# 2026-09-17 FI-008 patch: added `arif` (F13 SOVEREIGN — was unlisted despite
+# appearing in 5+ receipts as actor). Doctrine E6 (actors not equal) — sovereign
+# MUST be classified as consequence-bearing for governance FQ to be computable.
 human_agent:
+  - arif
   - qwen-code
   - fi-003-qwen-code
+  - FI-003
   - kimi-code/FI-008
   - claude-code
   - opencode
@@ -24,6 +29,9 @@ human_agent:
   - hermes-asi
   - hermes-prime
   - 333-AGI
+  - FI-009
+  - antigravity
+  - agy
 
 # --- Interactive Sessions (sometimes consequence-bearing) ---
 interactive_session:

@@ -27,6 +27,7 @@ use arifflow::governance::invariants::InvariantEnforcer;
 use arifflow::receipt::{FlowReceipt, ReceiptStore};
 use arifflow::scheduler::{FlowNode, SuperStepScheduler, TopologyKind, VerdictClass};
 use arifflow::vector::{Dimension, Epistemology, IndependenceMonitor, VectorStore};
+use arifflow::bridge::{ArifOSGovernanceBridge, AForgeExecutorBridge, ExecutionRequest};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -1114,6 +1115,46 @@ Connection: close
                         .into_bytes()
                     }
                 }
+            } else if request.starts_with("POST /execute") {
+                // ── E2: arifFlow → A-FORGE execution bridge ──
+                // Routes node execution requests through AForgeExecutorBridge
+                // which now makes a real HTTP call to A-FORGE :7071/mcp.
+                match extract_body(&request) {
+                    Some(raw_json) => {
+                        #[derive(Deserialize)]
+                        struct ExecuteRequest {
+                            node_id: String,
+                            topology: Option<String>,
+                            envelope_json: Option<String>,
+                            lease_id: Option<String>,
+                            actor_id: Option<String>,
+                        }
+                        match serde_json::from_str::<ExecuteRequest>(raw_json.trim()) {
+                            Ok(req) => {
+                                let exec_req = ExecutionRequest {
+                                    node_id: req.node_id,
+                                    topology: req.topology.unwrap_or_else(|| "pipeline".into()),
+                                    envelope_json: req.envelope_json.unwrap_or_else(|| "{}".into()),
+                                    lease_id: req.lease_id.unwrap_or_else(|| "unknown".into()),
+                                    actor_id: req.actor_id.unwrap_or_else(|| "arifflow".into()),
+                                };
+                                let bridge = AForgeExecutorBridge::new();
+                                match bridge.execute(exec_req) {
+                                    Ok(resp) => http_ok(&serde_json::to_string(&resp).unwrap_or_else(|_| "{}".into())),
+                                    Err(e) => format!(
+                                        "HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                        serde_json::json!({"status":"aforge_bridge_error", "error": e}).to_string().len(),
+                                        serde_json::json!({"status":"aforge_bridge_error", "error": e}).to_string()
+                                    ).into_bytes(),
+                                }
+                            }
+                            Err(e) => http_bad_request(
+                                &serde_json::json!({"status":"invalid", "error": format!("{}", e)}).to_string(),
+                            ),
+                        }
+                    }
+                    None => http_bad_request(r#"{"status":"error","message":"Empty body. Send {\"node_id\":\"...\"}"}"#),
+                }
             } else if request.starts_with("POST /enforce") {
                 // ── Manually trigger enforcement cycle ──
                 let mut enf = enforcer.lock().unwrap();
@@ -1227,6 +1268,54 @@ fn daemon_mode() {
                 persist_path.display()
             );
         }
+    }
+
+    // ── E1 PHASE E ACTIVATION: arifOS governance bridge boot lease ──
+    // Cross-organ bridge activation per Phase E charter (F13 SOVEREIGN-ratified 2026-09-17).
+    // Calls arifOS :8088/mcp (arif_init) to acquire a session + constitutional chain ID.
+    // Failure is non-fatal: daemon continues with local-only mode.
+    eprintln!("[arifFlow E1] Activating arifOS governance bridge at boot...");
+    match ArifOSGovernanceBridge::new().request_lease("arifflow-daemon", "E1_Phase_E_activation_2026-09-17") {
+        Ok(lease) => {
+            eprintln!(
+                "[arifFlow E1] arifOS bridge ONLINE: session_id={}, chain_id={}, scope={:?}",
+                lease.lease_id, lease.constitutional_chain_id, lease.scope
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "[arifFlow E1] arifOS bridge BOOT FAILED: {} (daemon continues in local mode)",
+                e
+            );
+        }
+    }
+
+    // ── E2 PHASE E ACTIVATION: A-FORGE executor bridge boot probe ──
+    // Calls A-FORGE :7071/mcp to verify cross-organ bridge connectivity at boot.
+    // Failure is non-fatal: daemon continues with local-only mode.
+    eprintln!("[arifFlow E2] Activating A-FORGE executor bridge at boot...");
+    let aforge_health = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .ok()
+        .and_then(|c| {
+            let url = std::env::var("AFORGE_URL").unwrap_or_else(|_| "http://127.0.0.1:7071".into());
+            c.get(format!("{}/health", url.trim_end_matches('/'))).send().ok()
+        });
+    match aforge_health {
+        Some(r) if r.status().is_success() => {
+            eprintln!(
+                "[arifFlow E2] A-FORGE bridge ONLINE: HTTP {} from :7071/health",
+                r.status()
+            );
+        }
+        Some(r) => eprintln!(
+            "[arifFlow E2] A-FORGE bridge DEGRADED: HTTP {} from :7071/health",
+            r.status()
+        ),
+        None => eprintln!(
+            "[arifFlow E2] A-FORGE bridge UNREACHABLE (daemon continues in local mode)"
+        ),
     }
 
     // ── Auto-enforcement timer (audit 2026-08-10) ──

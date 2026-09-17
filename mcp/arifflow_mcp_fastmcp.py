@@ -135,7 +135,17 @@ def flow_entity_report() -> dict[str, Any]:
     classified: dict[str, dict] = {}
     class_totals: dict[str, dict] = {}
     for actor_id, data in per_actor.items():
-        entity_class = _ENTITY_CLASSES.get(actor_id, "unknown")
+        # RG-CC (2026-09-17 FI-008): case-insensitive lookup. Doctrine forbids
+        # case-variant copies (anti-entropy rules); YAML keeps native case
+        # for human readability; runtime lookup normalizes.
+        entity_class = _ENTITY_CLASSES.get(actor_id)
+        if entity_class is None:
+            for _k, _v in _ENTITY_CLASSES.items():
+                if _k.lower() == actor_id.lower():
+                    entity_class = _v
+                    break
+        if entity_class is None:
+            entity_class = "unknown"
         consequence_bearing = entity_class in ("human_agent", "interactive_session")
         entry = {
             "entity_class": entity_class,
@@ -153,7 +163,9 @@ def flow_entity_report() -> dict[str, Any]:
         class_totals[entity_class]["execute"] += entry["execute"]
         class_totals[entity_class]["verify"] += entry["verify"]
         class_totals[entity_class]["actors"] += 1
-    gov_exec = sum(d["execute"] for d in classified.values() if d["consequence_bearing"])
+    gov_exec = sum(
+        d["execute"] for d in classified.values() if d["consequence_bearing"]
+    )
     gov_ver = sum(d["verify"] for d in classified.values() if d["consequence_bearing"])
     gov_fq = (gov_ver / gov_exec) if gov_exec > 0 else None
     if gov_fq is None:
@@ -231,6 +243,19 @@ def flow_ingest(
         receipt["session_token"] = session_token
     if harness_fingerprint:
         receipt["harness_fingerprint"] = harness_fingerprint
+    # RG-OM (2026-09-17 FI-008): parent_receipt_ids mandatory unless explicit
+    # top_level_intent. F2: orphan ratio 71% (5/7 events) in arifFlow ledger.
+    # Lineage CAN reconstruct chains when parents set (2207231e verified
+    # 5-deep across arifOS→arifFlow→AAA); defect is upstream actors skipping
+    # parent at receipt creation, not in lineage system.
+    payload_dict = payload if isinstance(payload, dict) else {}
+    top_level_claim = bool(payload_dict.get("top_level_intent"))
+    if not parent_receipt_ids and not top_level_claim:
+        return {
+            "http_status": 400,
+            "error": "PARENT_REQUIRED: pass parent_receipt_ids OR set payload.top_level_intent=true with reason",
+            "remediation": "Pass parent_receipt_ids=[...] or declare top_level_intent=True",
+        }
     if parent_receipt_ids:
         receipt["parent_receipt_ids"] = parent_receipt_ids
     if parent_receipt_hashes:

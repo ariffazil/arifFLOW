@@ -33,6 +33,7 @@ _ENTITY_CLASSES = {}
 _ENTITY_CLASS_FILE = "/root/arifFlow/config/entity_classes.yaml"
 try:
     import yaml as _yaml  # optional dep; falls back to empty if missing
+
     with open(_ENTITY_CLASS_FILE) as _f:
         _raw = _yaml.safe_load(_f) or {}
     for _cls, _actors in _raw.items():
@@ -164,7 +165,11 @@ TOOLS = [
             "latencies scar→policy, policy→invoice, belief lifetime. v1 reports "
             "distributions only — thresholds not invented (measure first)."
         ),
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
     },
     {
         "name": "flow_consequences",
@@ -352,7 +357,17 @@ def call_tool(name: str, args: dict) -> dict:
         classified = {}
         class_totals = {}
         for actor_id, data in per_actor.items():
-            entity_class = _ENTITY_CLASSES.get(actor_id, "unknown")
+            # RG-CC (2026-09-17 FI-008): case-insensitive lookup. Doctrine forbids
+            # case-variant copies (anti-entropy rules). YAML keeps native case
+            # for human readability; runtime lookup normalizes.
+            entity_class = _ENTITY_CLASSES.get(actor_id)
+            if entity_class is None:
+                for _k, _v in _ENTITY_CLASSES.items():
+                    if _k.lower() == actor_id.lower():
+                        entity_class = _v
+                        break
+            if entity_class is None:
+                entity_class = "unknown"
             entry = {
                 "entity_class": entity_class,
                 "execute": data.get("execute", 0),
@@ -361,7 +376,8 @@ def call_tool(name: str, args: dict) -> dict:
                 "held": data.get("held", False),
                 "diagnosis": data.get("diagnosis", "?"),
                 "verdict": data.get("verdict", "?"),
-                "consequence_bearing": entity_class in ("human_agent", "interactive_session"),
+                "consequence_bearing": entity_class
+                in ("human_agent", "interactive_session"),
             }
             classified[actor_id] = entry
             if entity_class not in class_totals:
@@ -431,7 +447,20 @@ def call_tool(name: str, args: dict) -> dict:
         # Graph edge fields (2026-09-12) — only include when set/non-empty
         if args.get("routed_organ"):
             receipt["routed_organ"] = args["routed_organ"]
-        if args.get("parent_receipt_ids"):
+        # RG-OM (2026-09-17 FI-008 / F13): parent_receipt_ids mandatory unless explicit
+        # top_level_intent. F2: orphan ratio 71% (5/7 events) in arifFlow ledger.
+        # Defect upstream of lineage system; lineage CAN reconstruct chains when
+        # parents are set (verified: 2207231e spans arifOS→arifFlow→AAA, 5 deep).
+        parent_provided = bool(args.get("parent_receipt_ids"))
+        payload_dict = args.get("payload") if isinstance(args.get("payload"), dict) else {}
+        top_level_claim = bool(args.get("top_level_intent") or payload_dict.get("top_level_intent"))
+        if not parent_provided and not top_level_claim:
+            return {
+                "http_status": 400,
+                "error": "PARENT_REQUIRED: pass parent_receipt_ids OR set top_level_intent=true with reason",
+                "remediation": "Pass parent_receipt_ids=[...] or declare top_level_intent=True",
+            }
+        if parent_provided:
             receipt["parent_receipt_ids"] = args["parent_receipt_ids"]
         if args.get("parent_receipt_hashes"):
             receipt["parent_receipt_hashes"] = args["parent_receipt_hashes"]
