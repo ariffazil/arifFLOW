@@ -488,6 +488,13 @@ fn handle_client(
                     .primary_pathology()
                     .map(|d| d.failure().to_string())
                     .unwrap_or_else(|| "NONE".to_string());
+                // RED-010: gate the headline diagnosis on G calibration — the
+                // constitutional alarm name is not emitted while G is uncalibrated.
+                let diagnosis_label = if primary_pathology == "GOVERNANCE_COLLAPSE" {
+                    "HEURISTIC_ADVISORY".to_string()
+                } else {
+                    primary_pathology.clone()
+                };
                 let collapse_pairs: Vec<serde_json::Value> = indep
                     .collapse_pairs()
                     .iter()
@@ -502,14 +509,18 @@ fn handle_client(
 
                 let body = serde_json::json!({
                     "status": "ok-v3-vector",
+                    // SPEC STEP 10 (RETIRE SCALAR): the canonical vector is the
+                    // headline; the deprecated scalar is demoted to legacy_* fields.
+                    "verdict": constellation.clone(),
+                    "diagnosis": diagnosis_label,
                     "fq": {
                         "quotient": fq.quotient,
-                        "verdict": format!("{}", fq.verdict),
+                        "legacy_verdict": format!("{}", fq.verdict),
                         "execute_count": fq.execute_count,
                         "verify_count": fq.verify_count,
                         "barrier_count": fq.barrier_count,
-                        "diagnosis": diagnosis,
-                        "scalar_fq_note": "Deprecated as health indicator — use vector.diagnosis.",
+                        "legacy_diagnosis": diagnosis,
+                        "scalar_fq_note": "Deprecated as health indicator — use top-level verdict (vector constellation).",
                         // ── FQ VECTOR (per-actor) ──
                         "per_actor": per_actor,
                         "metric_frame": {

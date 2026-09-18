@@ -419,11 +419,14 @@ impl InvariantEnforcer {
 
     /// Ingest a receipt and update actor state.
     pub fn ingest(&mut self, receipt: &FlowReceipt) {
-        let actor_id = receipt.actor_id.clone();
+        // RED-002: canonicalize actor identity — case-variant IDs are ONE actor
+        // ("A-FORGE" ≡ "a-forge"). Original case is preserved on the receipt;
+        // the FQ state key is canonical.
+        let actor_id = receipt.actor_id.to_ascii_lowercase();
         let entry = self
             .actors
-            .entry(actor_id)
-            .or_insert_with(|| ActorFlowState::new(receipt.actor_id.clone()));
+            .entry(actor_id.clone())
+            .or_insert_with(|| ActorFlowState::new(actor_id));
         entry.ingest(receipt);
     }
 

@@ -414,6 +414,13 @@ impl VectorStore {
             let (h, fb, _) = self.health(dim);
             let (band, pathological) = band_of(h);
             let st = self.dims.get(&dim);
+            // RED-010: surface G's calibration state so consumers can see the
+            // constitutional alarm is gated on an uncalibrated heuristic.
+            let calibration = if dim == Dimension::G {
+                serde_json::json!(G_CALIBRATION_STATE)
+            } else {
+                serde_json::Value::Null
+            };
             out.insert(
                 dim.code().to_string(),
                 serde_json::json!({
@@ -425,6 +432,7 @@ impl VectorStore {
                     "epistemic": st.map_or("UNMEASURED".to_string(), |s| s.epistemology.code().to_string()),
                     "value": st.map_or(serde_json::Value::Null, |s| serde_json::json!(s.value)),
                     "producer": st.map_or(serde_json::Value::Null, |s| serde_json::json!(s.producer)),
+                    "calibration": calibration,
                 }),
             );
         }
@@ -560,15 +568,23 @@ impl VectorStore {
         // Pathologies present among wired dims.
         if pathological.len() == 1 && unwired_count == 0 {
             // Single pathology, all wired → existing named constellation.
-            return pathological[0].failure().into();
+            let d = pathological[0];
+            // RED-010: uncalibrated G is advisory, not a constitutional alarm.
+            if d == Dimension::G && !G_CALIBRATED {
+                return "HEURISTIC_ADVISORY".into();
+            }
+            return d.failure().into();
         }
 
         // Either multi-pathology, OR pathology + unwired dims.
         // Prefix with PARTIAL_WIRING when unwired dims are present so the
         // diagnosis is honest about incomplete coverage.
-        let primary = self
-            .primary_pathology()
-            .map_or("UNKNOWN".to_string(), |d| d.failure().to_string());
+        // RED-010: uncalibrated G is advisory, not a constitutional alarm.
+        let primary = match self.primary_pathology() {
+            Some(Dimension::G) if !G_CALIBRATED => "HEURISTIC_ADVISORY".to_string(),
+            Some(d) => d.failure().to_string(),
+            None => "UNKNOWN".to_string(),
+        };
         if unwired_count > 0 {
             return format!("PARTIAL_WIRING:{}", primary);
         }
@@ -607,6 +623,14 @@ fn band_of(h: f64) -> (&'static str, bool) {
         ("PATHOLOGICAL", true)
     }
 }
+
+// RED-010: G (governance) calibration state.
+// A-FORGE `forge_evaluate` declares G as "PHASE 1 HEURISTIC,
+// calibration_required: true". Until G is calibrated, its pathological band
+// MUST NOT trigger the constitutional alarm `GOVERNANCE_COLLAPSE` — it is
+// advisory only and reports `HEURISTIC_ADVISORY`.
+const G_CALIBRATED: bool = false;
+const G_CALIBRATION_STATE: &str = "PHASE_1_HEURISTIC_UNCALIBRATED";
 
 // ── Independence Monitor (INV-3, spec §1.1) ──────────────────────────────
 
