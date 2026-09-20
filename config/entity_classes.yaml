@@ -26,6 +26,8 @@ human_agent:
   - claude-code
   - opencode
   - grok
+  - GROK
+  # 2026-09-20: live ACT token actor is `GROK`; yaml match is case-sensitive.
   - FI-007
   - fi-007
   - hermes
