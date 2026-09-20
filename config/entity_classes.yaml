@@ -28,6 +28,8 @@ human_agent:
   - grok
   - GROK
   # 2026-09-20: live ACT token actor is `GROK`; yaml match is case-sensitive.
+  - grok-build
+  # 2026-09-20: grok-build ≡ FI-007 ≡ GROK (kernel identity.py). Launched harness, not a daemon.
   - FI-007
   - fi-007
   - hermes
@@ -54,7 +56,6 @@ interactive_session:
 daemon:
   - aed-v1
   - orchestrator-v1
-  - grok-build
 
 # --- Infrastructure Services (no consequence) ---
 infrastructure:
