@@ -26,12 +26,20 @@ human_agent:
   - claude-code
   - opencode
   - grok
+  - FI-007
+  - fi-007
+  - hermes
   - hermes-asi
   - hermes-prime
   - 333-AGI
   - FI-009
   - antigravity
   - agy
+# 2026-09-20 FI-007: live receipts use actor_id `hermes` and `fi-007`.
+# `hermes-asi` was listed; the ledger name is `hermes` → entity_class=unknown,
+# consequence_bearing=false, metabolic_state UNKNOWN_ACTOR. Alias only.
+# Does not reclassify hermes-cron (infrastructure). YAML is loaded at MCP
+# process start — live report stays stale until that process recycles.
 
 # --- Interactive Sessions (sometimes consequence-bearing) ---
 interactive_session:
