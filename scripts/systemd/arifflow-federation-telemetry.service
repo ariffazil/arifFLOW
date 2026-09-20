@@ -1,0 +1,14 @@
+[Unit]
+Description=arifFlow federation telemetry forward — tail receipt ledger into /var/lib/arifos/metrics/tool_invocations.jsonl (Tuas 2)
+After=network-online.target arifflow.service
+Wants=arifflow.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /root/arifFlow/scripts/emit_federation_telemetry.py
+Nice=10
+# Reads the arifFlow receipt ledger READ-ONLY and appends to the shared
+# federation invocation log. It never writes to receipts.jsonl or VAULT999.
+ProtectSystem=full
+ProtectHome=false
+ReadWritePaths=/var/lib/arifflow /var/lib/arifos/metrics /tmp

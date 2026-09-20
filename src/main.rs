@@ -24,7 +24,10 @@
 use arifflow::channel::ChannelMode;
 use arifflow::governance::Vault999Sealer;
 use arifflow::governance::invariants::InvariantEnforcer;
-use arifflow::receipt::{FlowReceipt, ReceiptStore};
+use arifflow::receipt::{
+    ExplanationClass, FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE, FLOW_INVARIANT_EXPLANATION_CLASS,
+    FlowReceipt, ReceiptStore,
+};
 use arifflow::scheduler::{FlowNode, SuperStepScheduler, TopologyKind, VerdictClass};
 use arifflow::vector::{Dimension, Epistemology, IndependenceMonitor, VectorStore};
 use arifflow::bridge::{ArifOSGovernanceBridge, AForgeExecutorBridge, ExecutionRequest};
@@ -567,6 +570,17 @@ fn handle_client(
                         "hold_count": enf.hold_count,
                         "throttle_count": enf.throttle_count,
                         "restricted_actors": restricted,
+                        // CM-1 (2026-09-19) — explanatory-class gate (F2 + F3).
+                        // Reported as observation: how many execution-class
+                        // receipts arifFlow refused to transmit, under which
+                        // named code, and who owns the verdict.
+                        "explanation_class_gate": {
+                            "code": FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE,
+                            "invariant": FLOW_INVARIANT_EXPLANATION_CLASS,
+                            "refusals": enf.explanation_refusals,
+                            "last_violation": enf.last_explanation_violation,
+                            "verdict_owner": "claim_kernel",
+                        },
                     },
                     "receipts": store.len(),
                     "uptime_ms": start_time.elapsed().as_millis() as u64,
@@ -757,6 +771,59 @@ fn handle_client(
                 match extract_body(&request) {
                     Some(raw_json) => match serde_json::from_str::<FlowReceipt>(raw_json.trim()) {
                         Ok(mut receipt) => {
+                            // ── CM-1 (2026-09-19): explanatory-class gate (F2 + F3) ──
+                            // Receipt-validation point. arifFlow does not classify the
+                            // claim (claim_kernel owns that verdict, on disk at
+                            // /root/AAA/lib/claim_kernel/claim_kernel.py) — it refuses to
+                            // transmit an execution-class receipt whose declared class
+                            // cannot justify a mutation. Refusal is a flow-plane
+                            // violation, reported with the named code and never stored.
+                            let gate = receipt.explanation_gate();
+                            if gate.is_refused() {
+                                let mut enf = enforcer.lock().unwrap();
+                                let check = enf.note_explanation_refusal(&receipt, &gate);
+                                drop(enf);
+                                eprintln!(
+                                    "[arifFlow] EXPLANATION-CLASS REFUSAL {} receipt={} actor={} class={}",
+                                    FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE,
+                                    receipt.receipt_id,
+                                    receipt.actor_id,
+                                    gate.explanation_class
+                                        .map(|c| c.code())
+                                        .unwrap_or("UNKNOWN")
+                                );
+                                let body = serde_json::json!({
+                                    "status": "refused",
+                                    "refused": true,
+                                    "code": FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE,
+                                    "violation": "flow-plane",
+                                    "invariant": FLOW_INVARIANT_EXPLANATION_CLASS,
+                                    "invariant_enforced": format!(
+                                        "{}",
+                                        arifflow::governance::FlowInvariant::F3_ObserveNeverInterpret.name()
+                                    ),
+                                    "verdict_owner": "claim_kernel",
+                                    "actor": receipt.actor_id,
+                                    "step_type": format!("{}", receipt.step_type),
+                                    "receipt_id": receipt.receipt_id.to_string(),
+                                    "explanation_class": gate.explanation_class.map(|c| c.code()),
+                                    "explanation_schema": gate.schema,
+                                    "reason": gate.reason,
+                                    "stored": false,
+                                    "enforcement": {
+                                        "invariant": format!("{:?}", check.invariant),
+                                        "status": format!("{:?}", check.status),
+                                        "reason": check.reason,
+                                    },
+                                })
+                                .to_string();
+                                let response = format!(
+                                    "HTTP/1.1 422 Unprocessable Entity\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                    body.len(), body
+                                ).into_bytes();
+                                let _ = stream.write_all(&response);
+                                return;
+                            }
                             // RG-PH (2026-09-13): daemon stamps the canonical
                             // JCS body hash server-side — client-supplied values
                             // are recomputed, never trusted. Fail-soft on
@@ -890,6 +957,15 @@ fn handle_client(
                                     "formula_version": receipt.formula_version,
                                     "formula_hash": receipt.formula_hash,
                                     "witness_organs": receipt.witness_organs,
+                                },
+                                // CM-1: the gate's decision is reported whether
+                                // the class was absent (LEGACY_UNTAGGED), eligible,
+                                // or not applicable — omission stays observable.
+                                "explanation_gate": {
+                                    "outcome": gate.outcome_code,
+                                    "class": gate.explanation_class.map(|c| c.code()),
+                                    "schema": gate.schema,
+                                    "code": gate.code,
                                 },
                                 "receipts": store.len(),
                             })
@@ -1033,9 +1109,49 @@ fn handle_client(
                         #[derive(Deserialize)]
                         struct CheckRequest {
                             actor_id: String,
+                            // CM-1 (2026-09-19, additive): optional explanatory class of
+                            // the intended action. Requests that omit it behave exactly
+                            // as before. Source of the vocabulary: claim_kernel at
+                            // /root/AAA/lib/claim_kernel/claim_kernel.py.
+                            #[serde(default)]
+                            explanation_class: Option<ExplanationClass>,
+                            #[serde(default)]
+                            explanation_schema: Option<String>,
                         }
                         match serde_json::from_str::<CheckRequest>(raw_json.trim()) {
                             Ok(req) => {
+                                // CM-1: request-time refusal. A declared class that
+                                // cannot justify a mutation is refused BEFORE the
+                                // execute, mirroring the /ingest receipt check. This is
+                                // still an observation about a transmitted class — the
+                                // claim itself is never classified here.
+                                if let Some(class) = req.explanation_class
+                                    && !class.is_action_eligible()
+                                {
+                                    let body = serde_json::json!({
+                                        "actor": req.actor_id,
+                                        "allowed": false,
+                                        "action": "Hold",
+                                        "code": FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE,
+                                        "violation": "flow-plane",
+                                        "invariant": FLOW_INVARIANT_EXPLANATION_CLASS,
+                                        "verdict_owner": "claim_kernel",
+                                        "explanation_class": class.code(),
+                                        "explanation_schema": req.explanation_schema,
+                                        "reason": format!(
+                                            "{} is not action-eligible — refused before execute; \
+                                             MEASURED | MECHANISM | PATTERN may justify a mutation",
+                                            class
+                                        ),
+                                    })
+                                    .to_string();
+                                    let response = format!(
+                                        "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                        body.len(), body
+                                    ).into_bytes();
+                                    let _ = stream.write_all(&response);
+                                    return;
+                                }
                                 let enf = enforcer.lock().unwrap();
                                 let (allowed, reason, action) = enf.check_actor(&req.actor_id);
                                 let body = serde_json::json!({
@@ -1043,6 +1159,7 @@ fn handle_client(
                                     "allowed": allowed,
                                     "reason": reason,
                                     "action": format!("{:?}", action),
+                                    "explanation_class": req.explanation_class.map(|c| c.code()),
                                 });
                                 if allowed {
                                     http_ok(&body.to_string())

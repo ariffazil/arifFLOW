@@ -1,0 +1,13 @@
+[Unit]
+Description=arifFlow federation telemetry forward timer — every 60s (receipt-tail -> Tuas 2)
+After=network-online.target arifflow.service
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Persistent=true
+Unit=arifflow-federation-telemetry.service
+
+[Install]
+WantedBy=timers.target

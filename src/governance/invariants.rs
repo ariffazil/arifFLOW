@@ -15,7 +15,11 @@
 // execution invariants (A1-A6) enforced in scheduler.rs.
 
 use crate::governance::cooling::{Convergence, CoolingEntry, CoolingLedger, DriftSeverity};
-use crate::receipt::{FlowQuotient, FlowReceipt, FlowVerdict, ReceiptStore, RiskClass};
+use crate::receipt::{
+    ExplanationClass, ExplanationGate, FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE,
+    FLOW_INVARIANT_EXPLANATION_CLASS, FlowQuotient, FlowReceipt, FlowVerdict, ReceiptStore,
+    RiskClass,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -401,6 +405,19 @@ pub struct InvariantEnforcer {
     pub hold_count: u64,
     /// Count of THROTTLE signals emitted
     pub throttle_count: u64,
+    /// CM-1 (2026-09-19): execution-class receipts REFUSED by the
+    /// explanatory-class gate (F2/F3). arifFlow reports the refusal; it does
+    /// not classify the claim (that is claim_kernel authority, on disk at
+    /// /root/AAA/lib/claim_kernel/claim_kernel.py) and it does not hold the
+    /// actor for it. Surfaced by the daemon status surface reported in
+    /// /root/arifFlow/src/main.rs.
+    pub explanation_refusals: u64,
+    /// Most recent explanatory-class refusal, for the daemon status surface
+    /// and the enforcement report (see /root/arifFlow/src/main.rs).
+    pub last_explanation_violation: Option<InvariantCheck>,
+    /// Refusals recorded since the last enforcement cycle — surfaced in the
+    /// next report, then drained.
+    pub pending_explanation_violations: Vec<InvariantCheck>,
 }
 
 impl InvariantEnforcer {
@@ -414,7 +431,69 @@ impl InvariantEnforcer {
             cycle_count: 0,
             hold_count: 0,
             throttle_count: 0,
+            explanation_refusals: 0,
+            last_explanation_violation: None,
+            pending_explanation_violations: Vec::new(),
         }
+    }
+
+    /// CM-1 (2026-09-19) — record a REFUSED execution-class receipt as a
+    /// flow-plane violation under the named code
+    /// `F3_EXPLANATION_CLASS_INELIGIBLE` (F2 + F3).
+    ///
+    /// The actor is deliberately NOT held here. Holding an actor because of
+    /// the class of its justification would be judging the claim — exactly
+    /// what F2 forbids. The refusal IS the whole enforcement: the receipt does
+    /// not transit. Classification authority stays with the claim_kernel.
+    pub fn note_explanation_refusal(
+        &mut self,
+        receipt: &FlowReceipt,
+        gate: &ExplanationGate,
+    ) -> InvariantCheck {
+        let class = gate
+            .explanation_class
+            .unwrap_or(ExplanationClass::Unclassified);
+        let code = gate
+            .code
+            .clone()
+            .unwrap_or_else(|| FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE.to_string());
+        let schema = gate.schema.clone().unwrap_or_else(|| "none".to_string());
+
+        // NOTE: the reason string intentionally avoids the `Actor '<id>'`
+        // token used by Step 3 of `enforce()` — refusals must not be
+        // converted into actor HOLDs (F2: checkpoint, never judge).
+        let check = InvariantCheck::new(
+            FlowInvariant::F3_ObserveNeverInterpret,
+            InvariantStatus::Hold,
+            format!(
+                "{code}: receipt {} actor={} step={} class={} schema={} — execution-class \
+                 justification is not action-eligible; transmission refused",
+                receipt.receipt_id, receipt.actor_id, receipt.step_type, class, schema
+            ),
+            format!(
+                "gate=REFUSED invariant={} verdict_owner=claim_kernel arifFlow=transmit-only \
+                 step_type={} receipt={}",
+                FLOW_INVARIANT_EXPLANATION_CLASS, receipt.step_type, receipt.receipt_id
+            ),
+        );
+
+        self.explanation_refusals += 1;
+        self.last_explanation_violation = Some(check.clone());
+        self.pending_explanation_violations.push(check.clone());
+
+        self.cooling_ledger.record(CoolingEntry::new(
+            self.cycle_count,
+            format!("REFUSED {code}: {class} justification on execution-class step"),
+            format!(
+                "arifFlow refused to transmit receipt {} from actor {}",
+                receipt.receipt_id, receipt.actor_id
+            ),
+            Convergence::Diverging,
+            DriftSeverity::High,
+            "arifFlow/invariants",
+        ));
+
+        check
     }
 
     /// Ingest a receipt and update actor state.
@@ -565,6 +644,16 @@ impl InvariantEnforcer {
             "Architecture: arifFlow schedules organs, never merges them",
             "Organs are independent: GEOX, WEALTH, WELL, HERMES",
         ));
+
+        // ── Step 2b: Explanation-class refusals since the last cycle (CM-1) ──
+        // Reported, never used to hold the actor: these checks carry no
+        // `Actor '<id>'` token, so Step 3 cannot convert them into HOLDs
+        // (F2: arifFlow checkpoints, it does not judge the claim).
+        if !self.pending_explanation_violations.is_empty() {
+            let drained: Vec<InvariantCheck> =
+                self.pending_explanation_violations.drain(..).collect();
+            checks.extend(drained);
+        }
 
         // ── Step 3: Apply actions ──
         // Update actor throttle/hold state based on checks.
@@ -908,5 +997,103 @@ mod tests {
         assert_eq!(t.stuck_threshold, 0.5);
         assert_eq!(t.overheat_threshold, 10.0);
         assert_eq!(t.max_consecutive_executes, 5);
+    }
+
+    // ── CM-1 explanatory-class refusals (2026-09-19) ─────────────────────
+
+    fn narrative_execute_receipt() -> FlowReceipt {
+        FlowReceipt::new_first(
+            "333-AGI",
+            "s-cm1",
+            StepType::Execute,
+            EpistemicLabel::Specification,
+            1_000,
+        )
+        .with_explanation_class(ExplanationClass::Narrative)
+        .with_explanation_schema(crate::receipt::EXPLANATION_SCHEMA_V1)
+    }
+
+    /// A refused execution-class receipt is reported as an F3 flow-plane
+    /// violation under the named code — and the ACTOR IS NOT HELD, because
+    /// holding an actor for the class of its justification would be judging.
+    #[test]
+    fn test_explanation_refusal_reported_as_flow_plane_violation() {
+        let mut enforcer = InvariantEnforcer::default();
+        let receipt = narrative_execute_receipt();
+        let gate = receipt.explanation_gate();
+        assert!(gate.is_refused());
+
+        let check = enforcer.note_explanation_refusal(&receipt, &gate);
+        assert_eq!(check.invariant, FlowInvariant::F3_ObserveNeverInterpret);
+        assert_eq!(check.status, InvariantStatus::Hold);
+        assert!(
+            check
+                .reason
+                .contains(crate::receipt::FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE),
+            "reason must carry the named code: {}",
+            check.reason
+        );
+        assert!(check.reason.contains("NARRATIVE"));
+        assert!(
+            check.evidence.contains("verdict_owner=claim_kernel"),
+            "evidence must state who owns the verdict: {}",
+            check.evidence
+        );
+        assert_eq!(enforcer.explanation_refusals, 1);
+
+        // F2: no actor HOLD is manufactured from a refusal.
+        let (allowed, _, action) = enforcer.check_actor("333-agi");
+        assert!(allowed, "refusal must not hold the actor");
+        assert_eq!(action, EnforcerAction::Allow);
+        assert!(!enforcer.actors.contains_key("333-agi"));
+    }
+
+    /// The refusal surfaces in the next enforcement report, then drains.
+    #[test]
+    fn test_explanation_refusal_surfaces_in_enforce_report() {
+        let mut enforcer = InvariantEnforcer::default();
+        let receipt = narrative_execute_receipt();
+        let gate = receipt.explanation_gate();
+        enforcer.note_explanation_refusal(&receipt, &gate);
+
+        let report = enforcer.enforce();
+        let surfaced = report.checks.iter().any(|c| {
+            c.reason
+                .contains(crate::receipt::FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE)
+        });
+        assert!(
+            surfaced,
+            "enforcement report must carry the refusal under the named code"
+        );
+        assert!(enforcer.pending_explanation_violations.is_empty());
+        assert_eq!(report.overall_status, InvariantStatus::Hold);
+
+        // Second cycle: nothing pending, so the refusal is not double-counted.
+        let report_2 = enforcer.enforce();
+        assert!(!report_2.checks.iter().any(|c| {
+            c.reason
+                .contains(crate::receipt::FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE)
+        }));
+        assert_eq!(enforcer.explanation_refusals, 1);
+    }
+
+    /// Eligible classes never produce a refusal record.
+    #[test]
+    fn test_eligible_class_produces_no_refusal() {
+        let mut enforcer = InvariantEnforcer::default();
+        let receipt = FlowReceipt::new_first(
+            "A-FORGE",
+            "s-cm1",
+            StepType::Execute,
+            EpistemicLabel::Specification,
+            1_000,
+        )
+        .with_explanation_class(ExplanationClass::Mechanism)
+        .with_explanation_schema(crate::receipt::EXPLANATION_SCHEMA_V1);
+        let gate = receipt.explanation_gate();
+        assert_eq!(gate.outcome_code, "ELIGIBLE");
+        assert!(gate.is_accepted());
+        assert_eq!(enforcer.explanation_refusals, 0);
+        assert!(enforcer.last_explanation_violation.is_none());
     }
 }

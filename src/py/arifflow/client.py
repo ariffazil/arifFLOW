@@ -20,6 +20,7 @@ import json
 import os
 from dataclasses import dataclass
 from typing import Optional
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
@@ -29,6 +30,11 @@ class CheckResult:
     allowed: bool
     reason: str
     action: str  # "Allow" | "Throttle" | "Hold" | "Void"
+    # CM-1 (2026-09-19, additive): named flow-plane violation code, present
+    # when the daemon refused for a reason other than FQ state (e.g.
+    # F3_EXPLANATION_CLASS_INELIGIBLE), plus the class that was declared.
+    code: str = ""
+    explanation_class: Optional[str] = None
 
 
 @dataclass
@@ -37,6 +43,13 @@ class IngestResult:
     status: str
     fq: float
     fq_verdict: str
+    # CM-1 (2026-09-19, additive): a REFUSED receipt (HTTP 422) is a verdict,
+    # not an outage. `refused` mirrors `status == "refused"`; `code` carries
+    # the named flow-plane violation code.
+    refused: bool = False
+    code: str = ""
+    reason: str = ""
+    explanation_class: Optional[str] = None
 
 
 class ArifFlowClient:
@@ -85,6 +98,25 @@ class ArifFlowClient:
         try:
             with urlopen(req, timeout=5) as resp:
                 return json.loads(resp.read())
+        except HTTPError as e:
+            # The daemon ANSWERED. A governance refusal (403 HOLD on /check,
+            # 422 explanation-class refusal on /ingest) is a verdict, not an
+            # outage — collapsing it into "unreachable" would erase the named
+            # code. State-transition discipline: REFUSED != UNREACHABLE.
+            payload: dict
+            try:
+                payload = json.loads(e.read())
+            except Exception:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {"error": str(payload)}
+            payload.setdefault("status", "http_error")
+            payload.setdefault("error", f"HTTP {e.code}")
+            payload.setdefault("reason", payload.get("error") or f"HTTP {e.code}")
+            payload.setdefault("allowed", False)
+            payload.setdefault("action", "Hold")
+            payload["http_status"] = e.code
+            return payload
         except Exception as e:
             # arifFlow unreachable — FAIL CLOSED (governance unavailable, do not proceed)
             # Emergency override: ARIFLOW_FAIL_OPEN=true bypasses AND emits governance receipt
@@ -109,18 +141,44 @@ class ArifFlowClient:
                 "action": "Hold",
             }
 
-    def check(self, actor_id: str) -> CheckResult:
+    def check(
+        self,
+        actor_id: str,
+        explanation_class: Optional[str] = None,
+        explanation_schema: Optional[str] = None,
+    ) -> CheckResult:
         """Check if an actor is allowed to execute.
 
         Agents MUST call this before any mutation action.
         Returns CheckResult with allowed=False if blocked by invariants.
+
+        CM-1 (2026-09-19, additive): declare the explanatory class of the
+        intended action (MEASURED | MECHANISM | PATTERN | NARRATIVE |
+        UNCLASSIFIED). If it is not action-eligible the daemon refuses BEFORE
+        the execute (allowed=False, action="Hold",
+        code="F3_EXPLANATION_CLASS_INELIGIBLE"). Omit it and the call behaves
+        exactly as before. arifFlow never classifies the claim itself — it
+        transmits the class you declared; classification belongs to
+        claim_kernel (`python3 /root/AAA/lib/claim_kernel/claim_kernel.py`).
         """
-        data = self._post("/check", {"actor_id": actor_id})
+        if explanation_class is None:
+            data = self._post("/check", {"actor_id": actor_id})
+        else:
+            data = self._post(
+                "/check",
+                {
+                    "actor_id": actor_id,
+                    "explanation_class": explanation_class,
+                    "explanation_schema": explanation_schema,
+                },
+            )
         return CheckResult(
             actor=data.get("actor", actor_id),
             allowed=data.get("allowed", False),
             reason=data.get("reason", "unknown"),
             action=data.get("action", "Allow"),
+            code=data.get("code", ""),
+            explanation_class=data.get("explanation_class"),
         )
 
     def ingest(
@@ -135,12 +193,22 @@ class ArifFlowClient:
         payload: Optional[dict] = None,
         intent_reason: Optional[str] = None,
         expected_outcome: Optional[str] = None,
+        explanation_class: Optional[str] = None,
+        explanation_schema: Optional[str] = None,
     ) -> IngestResult:
         """Ingest a flow receipt into arifFlow.
 
         Called after every Execute or Verify step.
         T2-1: intent_reason + expected_outcome enable the WHY bridge —
         governance without reading source code.
+
+        CM-1 (2026-09-19, additive): an execution-class receipt declaring
+        NARRATIVE or UNCLASSIFIED is REFUSED by the daemon (HTTP 422,
+        code="F3_EXPLANATION_CLASS_INELIGIBLE") and never stored. Send
+        explanation_schema="claim_kernel/v1" on NEW execution receipts so the
+        gate applies fail-closed; omitted fields keep legacy behaviour
+        (status "ingested", gate outcome LEGACY_UNTAGGED). The class itself is
+        produced by claim_kernel — the client only forwards it.
         """
         import uuid
         from datetime import datetime, timezone
@@ -163,14 +231,23 @@ class ArifFlowClient:
             receipt["intent_reason"] = intent_reason
         if expected_outcome:
             receipt["expected_outcome"] = expected_outcome
+        if explanation_class is not None:
+            receipt["explanation_class"] = explanation_class
+        if explanation_schema is not None:
+            receipt["explanation_schema"] = explanation_schema
 
         data = self._post("/ingest", receipt)
         fq = data.get("fq", {})
+        status = data.get("status", "unknown")
         return IngestResult(
             actor=data.get("actor", actor_id),
-            status=data.get("status", "unknown"),
+            status=status,
             fq=fq.get("quotient", 0.0),
             fq_verdict=fq.get("verdict", "UNKNOWN"),
+            refused=bool(data.get("refused", status == "refused")),
+            code=data.get("code", ""),
+            reason=data.get("reason", data.get("error", "")),
+            explanation_class=data.get("explanation_class"),
         )
 
     def release(self, actor_id: str) -> dict:
@@ -205,9 +282,18 @@ def get_client() -> ArifFlowClient:
     return _default_client
 
 
-def check(actor_id: str) -> CheckResult:
-    """Convenience: check if actor is allowed to execute."""
-    return get_client().check(actor_id)
+def check(
+    actor_id: str,
+    explanation_class: Optional[str] = None,
+    explanation_schema: Optional[str] = None,
+) -> CheckResult:
+    """Convenience: check if actor is allowed to execute.
+
+    CM-1 (2026-09-19, additive): pass `explanation_class` to have the daemon
+    refuse an ineligible class BEFORE the execute. Omit it for legacy
+    behaviour.
+    """
+    return get_client().check(actor_id, explanation_class, explanation_schema)
 
 
 def ingest(

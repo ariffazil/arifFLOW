@@ -121,6 +121,266 @@ impl fmt::Display for EpistemicLabel {
     }
 }
 
+// ── Explanation Class (CM-1, 2026-09-19) ─────────────────────────────────
+//
+// claim_kernel explanatory-class transmission.
+//
+// F2 (Checkpoint, Never Judge) + F3 (Observe, Never Interpret): arifFlow does
+// NOT classify a claim. It receives the class the SENDER declared and applies
+// exactly one mechanical rule — an execution-class receipt (Execute | Seal |
+// Merge) whose justification class is not action-eligible (NARRATIVE,
+// UNCLASSIFIED) is REFUSED at the receipt-validation point and reported as a
+// flow-plane violation under the named code
+// `F3_EXPLANATION_CLASS_INELIGIBLE`.
+//
+// This is a TRANSMISSION rule, not a truth rule. A NARRATIVE claim may be
+// true, valuable and worth reading and still carry zero explanatory power: it
+// may be published, it may never transit as the SOLE justification for a
+// mutation. Classification authority belongs to the claim_kernel
+// (`/root/AAA/lib/claim_kernel`, invoked by the organ that authored the
+// claim); arifFlow only transmits the verdict — it never authors one.
+//
+// Additive + backward compatible (schema marker `explanation_schema`):
+//   - BOTH fields absent            → legacy v1 receipt. Observed as
+//     `LegacyUntagged`, accepted. Stored history is never retro-invalidated.
+//   - `explanation_schema` present, class absent → a NEW receipt that opted
+//     into the gate with an undeclared class → treated as UNCLASSIFIED →
+//     REFUSED (fail-closed).
+//   - Both fields are omitted from serialization when `None`, so legacy
+//     chains stay byte-stable (`hash()` = SHA3-256 of canonical JSON).
+
+/// Schema marker that opts a receipt into the explanatory-class gate.
+/// Value mirrors the claim_kernel schema id.
+pub const EXPLANATION_SCHEMA_V1: &str = "claim_kernel/v1";
+
+/// Named flow-plane violation code emitted when arifFlow refuses to transmit
+/// an execution-class receipt whose justification class is not action-eligible.
+pub const FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE: &str = "F3_EXPLANATION_CLASS_INELIGIBLE";
+
+/// Flow-plane invariant pair the refusal is reported under.
+pub const FLOW_INVARIANT_EXPLANATION_CLASS: &str = "F2+F3";
+
+/// Explanatory class of a claim's justification — transmitted, never authored
+/// here. Mirrors the claim_kernel class set exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExplanationClass {
+    /// A number with a source. Not an explanation, but action-eligible.
+    Measured,
+    /// A testable cause with a stated pathway.
+    Mechanism,
+    /// Recurs across cases; cause contested.
+    Pattern,
+    /// No mechanism, no measure, not falsifiable. Publishable, never the sole
+    /// justification for a mutation.
+    Narrative,
+    /// Undeclared — fails closed.
+    Unclassified,
+}
+
+impl ExplanationClass {
+    /// All classes, in claim_kernel order.
+    pub const ALL: [ExplanationClass; 5] = [
+        Self::Measured,
+        Self::Mechanism,
+        Self::Pattern,
+        Self::Narrative,
+        Self::Unclassified,
+    ];
+
+    /// Classes that may justify a mutation (claim_kernel ACTION_ELIGIBLE_CLASSES).
+    pub const ACTION_ELIGIBLE: [ExplanationClass; 3] =
+        [Self::Measured, Self::Mechanism, Self::Pattern];
+
+    /// Canonical uppercase code used on the wire and in receipts.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Measured => "MEASURED",
+            Self::Mechanism => "MECHANISM",
+            Self::Pattern => "PATTERN",
+            Self::Narrative => "NARRATIVE",
+            Self::Unclassified => "UNCLASSIFIED",
+        }
+    }
+
+    /// True when this class may be the sole justification for a mutation.
+    pub fn is_action_eligible(&self) -> bool {
+        matches!(self, Self::Measured | Self::Mechanism | Self::Pattern)
+    }
+
+    /// Parse a class from a wire string. Case-insensitive; unknown → None
+    /// (callers fail closed rather than guessing a class).
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_uppercase().as_str() {
+            "MEASURED" => Some(Self::Measured),
+            "MECHANISM" => Some(Self::Mechanism),
+            "PATTERN" => Some(Self::Pattern),
+            "NARRATIVE" => Some(Self::Narrative),
+            "UNCLASSIFIED" => Some(Self::Unclassified),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for ExplanationClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.code())
+    }
+}
+
+impl Serialize for ExplanationClass {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.code())
+    }
+}
+
+impl<'de> Deserialize<'de> for ExplanationClass {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        ExplanationClass::parse(&raw).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "unknown explanation_class '{}' — expected one of MEASURED|MECHANISM|PATTERN|NARRATIVE|UNCLASSIFIED",
+                raw
+            ))
+        })
+    }
+}
+
+/// What the explanatory-class gate decided for one receipt (or one declared
+/// intent, pre-execute).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ExplanationGateOutcome {
+    /// Step is not execution-class — the gate does not apply.
+    NotApplicable,
+    /// No class, no schema marker: legacy v1 receipt. Accepted as observed.
+    LegacyUntagged,
+    /// Declared class is action-eligible (MEASURED | MECHANISM | PATTERN).
+    Eligible,
+    /// Ineligible class on an execution-class step — transmission REFUSED.
+    Refused,
+}
+
+impl ExplanationGateOutcome {
+    /// Machine-readable mirror of the outcome (stable on the wire).
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NotApplicable => "NOT_APPLICABLE",
+            Self::LegacyUntagged => "LEGACY_UNTAGGED",
+            Self::Eligible => "ELIGIBLE",
+            Self::Refused => "REFUSED",
+        }
+    }
+}
+
+/// The gate's decision — a report, not a verdict. arifFlow states what it
+/// accepted or refused to transmit; it never states whether the claim is true.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExplanationGate {
+    /// What the gate decided.
+    pub outcome: ExplanationGateOutcome,
+    /// Machine-readable outcome mirror.
+    pub outcome_code: String,
+    /// Effective class: declared, or UNCLASSIFIED for an opted-in receipt that
+    /// omitted the class. `None` only for legacy untagged receipts.
+    pub explanation_class: Option<ExplanationClass>,
+    /// Schema marker as received, if any.
+    pub schema: Option<String>,
+    /// Named flow-plane violation code — `Some` only when `Refused`.
+    pub code: Option<String>,
+    /// Flow-plane invariants the refusal is reported under — `Some` iff Refused.
+    pub invariant: Option<String>,
+    /// Human-readable observation.
+    pub reason: String,
+}
+
+impl ExplanationGate {
+    /// True when arifFlow refused to transmit this receipt.
+    pub fn is_refused(&self) -> bool {
+        self.outcome == ExplanationGateOutcome::Refused
+    }
+
+    /// True when the receipt was accepted (eligible, legacy, or not applicable).
+    pub fn is_accepted(&self) -> bool {
+        !self.is_refused()
+    }
+}
+
+/// Pure gate decision — shared by the receipt-validation point (`/ingest`,
+/// `ReceiptStore::push_chain_aware`) and the pre-execute checkpoint (`/check`).
+///
+/// arifFlow performs no inference here: `class` and `schema` are what the
+/// sender transmitted.
+pub fn explanation_gate_decision(
+    step_type: &StepType,
+    class: Option<ExplanationClass>,
+    schema: Option<&str>,
+) -> ExplanationGate {
+    let base = |outcome: ExplanationGateOutcome,
+                effective: Option<ExplanationClass>,
+                reason: String| ExplanationGate {
+        outcome,
+        outcome_code: outcome.code().to_string(),
+        explanation_class: effective,
+        schema: schema.map(|s| s.to_string()),
+        code: None,
+        invariant: None,
+        reason,
+    };
+
+    if !step_type.is_execution() {
+        return base(
+            ExplanationGateOutcome::NotApplicable,
+            class,
+            format!(
+                "step_type {} is not execution-class — explanatory-class gate not applicable \
+                 ({} and {} gate only Execute | Seal | Merge)",
+                step_type, FLOW_INVARIANT_EXPLANATION_CLASS, FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE
+            ),
+        );
+    }
+
+    let effective = match (class, schema) {
+        (Some(c), _) => c,
+        // Opted into the gate (schema marker present) but declared no class.
+        (None, Some(_)) => ExplanationClass::Unclassified,
+        // Legacy v1 receipt: no class, no marker. Observed, not judged.
+        (None, None) => {
+            return base(
+                ExplanationGateOutcome::LegacyUntagged,
+                None,
+                "legacy receipt: no explanation_class and no explanation_schema — \
+                 accepted as observed; stored history is never retro-invalidated"
+                    .to_string(),
+            );
+        }
+    };
+
+    if effective.is_action_eligible() {
+        return base(
+            ExplanationGateOutcome::Eligible,
+            Some(effective),
+            format!(
+                "explanation_class {} is action-eligible (MEASURED | MECHANISM | PATTERN)",
+                effective
+            ),
+        );
+    }
+
+    let mut gate = base(
+        ExplanationGateOutcome::Refused,
+        Some(effective),
+        format!(
+            "explanation_class {} is not action-eligible — refused as the sole justification \
+             for an execution-class step. A narrative or undeclared class may be published; \
+             it may not justify a mutation. Classification authority: claim_kernel.",
+            effective
+        ),
+    );
+    gate.code = Some(FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE.to_string());
+    gate.invariant = Some(FLOW_INVARIANT_EXPLANATION_CLASS.to_string());
+    gate
+}
+
 // ── Evidence Origin (D3, 2026-09-16) ─────────────────────────────────────
 
 /// Source axis for reconciliation evidence — **where** an evidence claim
@@ -710,6 +970,20 @@ pub struct FlowReceipt {
     /// (`hash()` = SHA3-256 of canonical JSON) is byte-stable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence_refs: Vec<EvidenceRef>,
+    // ── Explanation Class (CM-1, 2026-09-19) ──
+    /// Explanatory class of this step's justification, as DECLARED BY THE
+    /// SENDER (claim_kernel vocabulary). arifFlow transmits it; it never
+    /// infers it. Additive: absent in v1 receipts (legacy) and omitted from
+    /// serialization when `None`, so legacy hash chains stay byte-stable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation_class: Option<ExplanationClass>,
+    /// Opt-in marker for the explanatory-class gate (`claim_kernel/v1`).
+    /// Present on NEW receipts: a new execution-class receipt that carries the
+    /// marker but no class is treated as UNCLASSIFIED and refused. Absent on
+    /// legacy receipts → observed as `LEGACY_UNTAGGED`, accepted, and stored
+    /// history is never retro-invalidated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation_schema: Option<String>,
 }
 
 impl FlowReceipt {
@@ -787,6 +1061,8 @@ impl FlowReceipt {
             flow_block: None,
             projection_block: None,
             evidence_refs: Vec::new(),
+            explanation_class: None,
+            explanation_schema: None,
         }
     }
 
@@ -837,6 +1113,8 @@ impl FlowReceipt {
             flow_block: None,
             projection_block: None,
             evidence_refs: Vec::new(),
+            explanation_class: None,
+            explanation_schema: None,
         }
     }
 
@@ -950,6 +1228,33 @@ impl FlowReceipt {
         self.evidence_refs = evidence;
         self
     }
+
+    /// Declare the explanatory class of this step's justification (CM-1).
+    /// The value is transmitted as declared — arifFlow never infers it.
+    pub fn with_explanation_class(mut self, class: ExplanationClass) -> Self {
+        self.explanation_class = Some(class);
+        self
+    }
+
+    /// Mark this receipt as opting into the explanatory-class gate (CM-1).
+    /// Use `EXPLANATION_SCHEMA_V1` for the current claim_kernel schema.
+    pub fn with_explanation_schema(mut self, schema: impl Into<String>) -> Self {
+        self.explanation_schema = Some(schema.into());
+        self
+    }
+
+    /// Apply the explanatory-class gate to THIS receipt (F2 + F3).
+    ///
+    /// Reports the decision; the caller decides what to do with a refusal
+    /// (`is_refused()`). arifFlow never classifies the claim itself — it only
+    /// observes whether the transmitted class may justify a mutation.
+    pub fn explanation_gate(&self) -> ExplanationGate {
+        explanation_gate_decision(
+            &self.step_type,
+            self.explanation_class,
+            self.explanation_schema.as_deref(),
+        )
+    }
 }
 
 // ── Chain Verification ───────────────────────────────────────────────────
@@ -1027,10 +1332,36 @@ impl ReceiptStore {
     /// [OBS] 2026-08-10 — replaces push_force in daemon ingest to catch malformed hash chains
     /// without requiring all clients to track chains. Acceptance rules:
     ///
+    /// 0. CM-1 (2026-09-19) — explanatory-class gate (F2/F3): an
+    ///    execution-class receipt (Execute | Seal | Merge) whose declared
+    ///    `explanation_class` is NARRATIVE or UNCLASSIFIED is REFUSED and
+    ///    reported under the named code `F3_EXPLANATION_CLASS_INELIGIBLE`.
+    ///    Legacy receipts (no `explanation_class`, no `explanation_schema`)
+    ///    are observed as `LEGACY_UNTAGGED` and accepted — stored history is
+    ///    never retro-invalidated. `push_force` (startup replay /
+    ///    observability) deliberately bypasses this gate.
     /// 1. If receipt has `previous_receipt_hash`, search store for a receipt whose hash
     ///    equals that value. Found → accept (chain valid). Not found → reject.
     /// 2. If receipt has no `previous_receipt_hash` → accept (new chain start, multi-session compatible).
     pub fn push_chain_aware(&mut self, receipt: FlowReceipt) -> Result<(), String> {
+        // Rule 0 — explanatory-class gate. Cheap, local, no store lookups:
+        // evaluated before chain checks so the refusal is never masked.
+        let gate = receipt.explanation_gate();
+        if gate.is_refused() {
+            return Err(format!(
+                "{}: {} (receipt {}, actor {}, step {}, class {})",
+                gate.code
+                    .as_deref()
+                    .unwrap_or(FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE),
+                gate.reason,
+                receipt.receipt_id,
+                receipt.actor_id,
+                receipt.step_type,
+                gate.explanation_class
+                    .map(|c| c.code())
+                    .unwrap_or("UNKNOWN"),
+            ));
+        }
         if let Some(ref prev_hash) = receipt.previous_receipt_hash {
             // Client claims this is chained — verify the predecessor exists in our store.
             let found = self.receipts.iter().any(|r| r.hash() == *prev_hash);
@@ -2733,6 +3064,286 @@ mod tests {
         let wire = serde_json::to_string(&v2).expect("reserialize v2");
         let back: FlowReceipt = serde_json::from_str(&wire).expect("reparses");
         assert_eq!(back.evidence_refs, v2.evidence_refs);
+    }
+
+    // ── CM-1 explanatory-class gate (2026-09-19) ─────────────────────────
+    // F2 (checkpoint, never judge) + F3 (observe, never interpret): arifFlow
+    // transmits the class the sender declared and REFUSES an execution-class
+    // receipt whose justification is NARRATIVE or UNCLASSIFIED.
+
+    fn execute_receipt(actor: &str) -> FlowReceipt {
+        FlowReceipt::new_first(
+            actor,
+            "s-cm1",
+            StepType::Execute,
+            EpistemicLabel::Specification,
+            1_000,
+        )
+    }
+
+    /// Execute + NARRATIVE (opted in) → REFUSED with the named code, and the
+    /// store refuses to accept the receipt at all.
+    #[test]
+    fn test_explanation_gate_refuses_narrative_execute() {
+        let receipt = execute_receipt("333-AGI")
+            .with_explanation_class(ExplanationClass::Narrative)
+            .with_explanation_schema(EXPLANATION_SCHEMA_V1);
+
+        let gate = receipt.explanation_gate();
+        assert_eq!(gate.outcome, ExplanationGateOutcome::Refused);
+        assert!(gate.is_refused());
+        assert!(!gate.is_accepted());
+        assert_eq!(gate.outcome_code, "REFUSED");
+        assert_eq!(
+            gate.code.as_deref(),
+            Some(FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE)
+        );
+        assert_eq!(
+            gate.invariant.as_deref(),
+            Some(FLOW_INVARIANT_EXPLANATION_CLASS)
+        );
+        assert_eq!(gate.explanation_class, Some(ExplanationClass::Narrative));
+
+        let mut store = ReceiptStore::new(32);
+        let err = store
+            .push_chain_aware(receipt)
+            .expect_err("NARRATIVE execute receipt must be refused");
+        assert!(
+            err.contains(FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE),
+            "refusal must carry the named code, got: {err}"
+        );
+        assert!(err.contains("NARRATIVE"), "got: {err}");
+        assert_eq!(store.len(), 0, "refused receipt must not be stored");
+    }
+
+    /// Execute + UNCLASSIFIED, both explicit and via the opt-in marker with
+    /// the class omitted → both REFUSED (fail-closed).
+    #[test]
+    fn test_explanation_gate_refuses_unclassified_execute() {
+        let explicit = execute_receipt("333-AGI")
+            .with_explanation_class(ExplanationClass::Unclassified)
+            .with_explanation_schema(EXPLANATION_SCHEMA_V1);
+        let gate = explicit.explanation_gate();
+        assert_eq!(gate.outcome, ExplanationGateOutcome::Refused);
+        assert_eq!(gate.explanation_class, Some(ExplanationClass::Unclassified));
+
+        // NEW receipt that opted into the gate but declared no class —
+        // missing class is UNCLASSIFIED here.
+        let opted_in_undeclared =
+            execute_receipt("333-AGI").with_explanation_schema(EXPLANATION_SCHEMA_V1);
+        let gate = opted_in_undeclared.explanation_gate();
+        assert_eq!(gate.outcome, ExplanationGateOutcome::Refused);
+        assert_eq!(gate.explanation_class, Some(ExplanationClass::Unclassified));
+
+        let mut store = ReceiptStore::new(32);
+        assert!(store.push_chain_aware(opted_in_undeclared).is_err());
+        assert_eq!(store.len(), 0);
+    }
+
+    /// Execute + MECHANISM → accepted.
+    #[test]
+    fn test_explanation_gate_accepts_mechanism_execute() {
+        let receipt = execute_receipt("A-FORGE")
+            .with_explanation_class(ExplanationClass::Mechanism)
+            .with_explanation_schema(EXPLANATION_SCHEMA_V1);
+
+        let gate = receipt.explanation_gate();
+        assert_eq!(gate.outcome, ExplanationGateOutcome::Eligible);
+        assert!(gate.is_accepted());
+        assert_eq!(gate.outcome_code, "ELIGIBLE");
+        assert!(gate.code.is_none());
+        assert!(gate.invariant.is_none());
+        assert_eq!(gate.explanation_class, Some(ExplanationClass::Mechanism));
+
+        let mut store = ReceiptStore::new(32);
+        store
+            .push_chain_aware(receipt)
+            .expect("MECHANISM execute receipt must be accepted");
+        assert_eq!(store.len(), 1);
+    }
+
+    /// MEASURED and PATTERN are action-eligible too (claim_kernel parity).
+    #[test]
+    fn test_explanation_gate_accepts_measured_and_pattern() {
+        for class in [ExplanationClass::Measured, ExplanationClass::Pattern] {
+            let receipt = execute_receipt("555-ASI").with_explanation_class(class);
+            let gate = receipt.explanation_gate();
+            assert_eq!(
+                gate.outcome,
+                ExplanationGateOutcome::Eligible,
+                "{class} must be action-eligible"
+            );
+        }
+        assert!(ExplanationClass::Measured.is_action_eligible());
+        assert!(ExplanationClass::Mechanism.is_action_eligible());
+        assert!(ExplanationClass::Pattern.is_action_eligible());
+        assert!(!ExplanationClass::Narrative.is_action_eligible());
+        assert!(!ExplanationClass::Unclassified.is_action_eligible());
+        assert_eq!(ExplanationClass::ACTION_ELIGIBLE.len(), 3);
+    }
+
+    /// Legacy receipt WITHOUT the field still parses, is observed as
+    /// LEGACY_UNTAGGED, and is accepted — stored history is not
+    /// retro-invalidated. Verified against the committed v1 golden fixture
+    /// (a real stored-shape Execute receipt with no explanation keys).
+    #[test]
+    fn test_legacy_receipt_without_field_parses_and_is_accepted() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/evidence-origin");
+        let legacy_bytes = std::fs::read_to_string(dir.join("receipt-v1-legacy.json"))
+            .expect("legacy fixture exists");
+        let legacy: FlowReceipt =
+            serde_json::from_str(&legacy_bytes).expect("legacy v1 receipt parses");
+        assert_eq!(legacy.step_type, StepType::Execute);
+        assert!(legacy.explanation_class.is_none());
+        assert!(legacy.explanation_schema.is_none());
+
+        let gate = legacy.explanation_gate();
+        assert_eq!(gate.outcome, ExplanationGateOutcome::LegacyUntagged);
+        assert!(gate.is_accepted());
+        assert_eq!(gate.outcome_code, "LEGACY_UNTAGGED");
+        assert!(gate.code.is_none());
+
+        let mut store = ReceiptStore::new(32);
+        store
+            .push_chain_aware(legacy.clone())
+            .expect("legacy receipt must still be accepted");
+        assert_eq!(store.len(), 1);
+
+        // Additive proof: the new fields never appear in legacy wire output,
+        // so `hash()` (SHA3-256 of canonical JSON) is byte-stable.
+        let wire = serde_json::to_string(&legacy).expect("reserialize legacy");
+        assert!(
+            !wire.contains("explanation"),
+            "legacy serialization must not gain explanation keys: {wire}"
+        );
+        let reparsed: FlowReceipt = serde_json::from_str(&wire).expect("legacy wire reparses");
+        assert_eq!(reparsed.hash(), legacy.hash());
+    }
+
+    /// The gate applies to execution-class steps only — Verify / Route / Cool
+    /// observations keep flowing (arifFlow does not extend it by inference).
+    #[test]
+    fn test_explanation_gate_not_applicable_to_non_execution_steps() {
+        let verify = FlowReceipt::new_first(
+            "555-ASI",
+            "s-cm1",
+            StepType::Verify,
+            EpistemicLabel::Derivation,
+            500,
+        )
+        .with_explanation_class(ExplanationClass::Narrative);
+
+        let gate = verify.explanation_gate();
+        assert_eq!(gate.outcome, ExplanationGateOutcome::NotApplicable);
+        assert!(gate.is_accepted());
+
+        let mut store = ReceiptStore::new(32);
+        store
+            .push_chain_aware(verify)
+            .expect("non-execution step is not gated");
+        assert_eq!(store.len(), 1);
+    }
+
+    /// Wire contract: case-insensitive parse, uppercase canonical code,
+    /// unknown class strings are rejected (fail-closed, never guessed).
+    #[test]
+    fn test_explanation_class_wire_contract() {
+        assert_eq!(
+            ExplanationClass::parse("mechanism"),
+            Some(ExplanationClass::Mechanism)
+        );
+        assert_eq!(
+            ExplanationClass::parse(" Narrative "),
+            Some(ExplanationClass::Narrative)
+        );
+        assert_eq!(ExplanationClass::parse("VIBES"), None);
+        assert_eq!(ExplanationClass::Mechanism.code(), "MECHANISM");
+        assert_eq!(
+            serde_json::to_string(&ExplanationClass::Unclassified).unwrap(),
+            "\"UNCLASSIFIED\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ExplanationClass>("\"narrative\"").unwrap(),
+            ExplanationClass::Narrative
+        );
+        let err = serde_json::from_str::<ExplanationClass>("\"because-i-say-so\"")
+            .expect_err("unknown class must fail to parse");
+        assert!(err.to_string().contains("unknown explanation_class"));
+    }
+
+    /// A receipt carrying the field keeps every other byte of its shape —
+    /// additive, no removals.
+    #[test]
+    fn test_explanation_class_round_trip_is_additive() {
+        let receipt = execute_receipt("888-APEX")
+            .with_explanation_class(ExplanationClass::Mechanism)
+            .with_explanation_schema(EXPLANATION_SCHEMA_V1);
+        let wire = serde_json::to_string(&receipt).unwrap();
+        assert!(
+            wire.contains("\"explanation_class\":\"MECHANISM\""),
+            "{wire}"
+        );
+        assert!(
+            wire.contains("\"explanation_schema\":\"claim_kernel/v1\""),
+            "{wire}"
+        );
+        let back: FlowReceipt = serde_json::from_str(&wire).unwrap();
+        assert_eq!(back.explanation_class, Some(ExplanationClass::Mechanism));
+        assert_eq!(
+            back.explanation_schema.as_deref(),
+            Some(EXPLANATION_SCHEMA_V1)
+        );
+        assert_eq!(back.hash(), receipt.hash());
+    }
+
+    /// Backward-compat against REAL stored history: the first 2,000 receipts
+    /// of the live ledger (`/var/lib/arifflow/receipts.jsonl`) still parse and
+    /// NOT ONE is retro-refused by the new gate. Skips (does not fail) when
+    /// the ledger is absent, so CI on a clean host stays green.
+    #[test]
+    fn test_stored_ledger_not_retro_invalidated() {
+        use std::io::{BufRead, BufReader};
+
+        let path = Path::new("/var/lib/arifflow/receipts.jsonl");
+        let Ok(file) = std::fs::File::open(path) else {
+            eprintln!("[skip] {path:?} absent — no stored history to check");
+            return;
+        };
+
+        let (mut lines, mut parsed, mut refused, mut untagged) = (0u64, 0u64, 0u64, 0u64);
+        for line in BufReader::new(file).lines().take(2_000) {
+            let Ok(line) = line else { break };
+            if line.trim().is_empty() {
+                continue;
+            }
+            lines += 1;
+            match serde_json::from_str::<FlowReceipt>(&line) {
+                Ok(receipt) => {
+                    parsed += 1;
+                    let gate = receipt.explanation_gate();
+                    if gate.is_refused() {
+                        refused += 1;
+                        eprintln!(
+                            "refused stored receipt {} ({})",
+                            receipt.receipt_id, gate.outcome_code
+                        );
+                    }
+                    if gate.outcome == ExplanationGateOutcome::LegacyUntagged {
+                        untagged += 1;
+                    }
+                }
+                Err(e) => panic!("stored receipt line failed to parse: {e}"),
+            }
+        }
+
+        eprintln!(
+            "stored history sample: lines={lines} parsed={parsed} legacy_untagged={untagged} refused={refused}"
+        );
+        assert_eq!(lines, parsed, "every stored receipt must still parse");
+        assert_eq!(
+            refused, 0,
+            "no stored receipt may be retro-refused by the newer gate"
+        );
     }
 }
 

@@ -97,5 +97,115 @@ class TestFailClosedDefault(unittest.TestCase):
             os.environ.pop("ARIFLOW_FAIL_OPEN", None)
 
 
+class TestExplanationClassRefusal(unittest.TestCase):
+    """CM-1 (2026-09-19): a governance refusal is a VERDICT, not an outage.
+
+    The daemon refuses an execution-class receipt whose declared
+    explanation_class is NARRATIVE / UNCLASSIFIED with HTTP 422 and the named
+    code F3_EXPLANATION_CLASS_INELIGIBLE. The client must surface that code
+    instead of collapsing the answer into 'unreachable' (fail-closed).
+    """
+
+    def _http_error(self, code, payload):
+        import json as _json
+        from email.message import Message
+        from io import BytesIO
+        from urllib.error import HTTPError
+
+        return HTTPError(
+            url="http://127.0.0.1:7073/ingest",
+            code=code,
+            msg="refused",
+            hdrs=Message(),
+            fp=BytesIO(_json.dumps(payload).encode()),
+        )
+
+    @patch("client.urlopen")
+    def test_ingest_refusal_surfaces_named_code(self, mock_urlopen):
+        mock_urlopen.side_effect = self._http_error(
+            422,
+            {
+                "status": "refused",
+                "refused": True,
+                "code": "F3_EXPLANATION_CLASS_INELIGIBLE",
+                "violation": "flow-plane",
+                "invariant": "F2+F3",
+                "verdict_owner": "claim_kernel",
+                "actor": "333-AGI",
+                "explanation_class": "NARRATIVE",
+                "reason": "explanation_class NARRATIVE is not action-eligible",
+            },
+        )
+
+        client = ArifFlowClient(base_url="http://127.0.0.1:7073")
+        result = client.ingest(
+            "333-AGI",
+            "s-cm1",
+            "Execute",
+            "Observation",
+            1000,
+            explanation_class="NARRATIVE",
+            explanation_schema="claim_kernel/v1",
+        )
+
+        self.assertTrue(result.refused)
+        self.assertEqual(result.status, "refused")
+        self.assertEqual(result.code, "F3_EXPLANATION_CLASS_INELIGIBLE")
+        self.assertEqual(result.explanation_class, "NARRATIVE")
+        self.assertIn("not action-eligible", result.reason)
+
+    @patch("client.urlopen")
+    def test_check_refusal_surfaces_named_code(self, mock_urlopen):
+        mock_urlopen.side_effect = self._http_error(
+            403,
+            {
+                "actor": "333-AGI",
+                "allowed": False,
+                "action": "Hold",
+                "code": "F3_EXPLANATION_CLASS_INELIGIBLE",
+                "explanation_class": "UNCLASSIFIED",
+                "reason": "UNCLASSIFIED is not action-eligible",
+            },
+        )
+
+        client = ArifFlowClient(base_url="http://127.0.0.1:7073")
+        result = client.check("333-AGI", explanation_class="UNCLASSIFIED")
+
+        self.assertFalse(result.allowed)
+        self.assertEqual(result.action, "Hold")
+        self.assertEqual(result.code, "F3_EXPLANATION_CLASS_INELIGIBLE")
+
+    @patch("client.urlopen")
+    def test_legacy_check_sends_no_explanation_field(self, mock_urlopen):
+        """Backward compat: legacy calls transmit only actor_id."""
+        import json as _json
+
+        captured = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return _json.dumps(
+                    {"actor": "333-AGI", "allowed": True, "reason": "OK", "action": "Allow"}
+                ).encode()
+
+        def fake_urlopen(req, timeout=None):
+            captured["body"] = _json.loads(req.data.decode())
+            return _Resp()
+
+        mock_urlopen.side_effect = fake_urlopen
+
+        client = ArifFlowClient(base_url="http://127.0.0.1:7073")
+        result = client.check("333-AGI")
+
+        self.assertTrue(result.allowed)
+        self.assertEqual(captured["body"], {"actor_id": "333-AGI"})
+
+
 if __name__ == "__main__":
     unittest.main()
