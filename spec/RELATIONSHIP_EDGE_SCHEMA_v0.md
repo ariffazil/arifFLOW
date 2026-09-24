@@ -52,7 +52,9 @@ applies to relationships), RG-7 consequence attribution.
 
 Source: Five Living Forces (agy architecture doc, sha e2173f9a…). Canonization discipline
 applied per term (4 tests: semantic delta · operational delta · testability · non-overlap).
-**All five are CANDIDATE vocabulary** — canon promotion = F13. Rule: a force edge is a
+**All five PROMOTED TO CANON 2026-09-25 (F13_RATIFIED_CHAT):**
+`/root/AAA/canon/FIVE-LIVING-FORCES.md` (sha256 4130c517…, canon-mutate receipt 76aeb1e3).
+Rule: a force edge is a
 **pointer into its existing organ home**, never a copy (helix pointer pattern).
 
 | Force | Semantic delta | Required field (operational) | Organ home (non-overlap) | Test |
