@@ -1,15 +1,17 @@
-# RELATIONSHIP_EDGE_SCHEMA_v0.1 — P1: Relationship Edges as Reality Graph Receipts
+# RELATIONSHIP_EDGE_SCHEMA_v0.2 — P1: Relationship Edges as Reality Graph Receipts
 
-> **Status:** v0.1 — P1.2 force vocabulary added (F13 binary 2026-09-24 chat:
-> "buat P1.2, Five Living Forces sebagai predicate vocabulary").
+> **Status:** v0.2 — daemon-side orphan gate absorbed (observed live 2026-09-25,
+> F13 cue "kemas kini spec v0.2"): daemon now REJECTS orphan receipts and enforces
+> lane-root declaration (§4, §5). v0.1 — P1.2 force vocabulary (F13 binary 2026-09-24
+> chat: "buat P1.2, Five Living Forces sebagai predicate vocabulary").
 > v0 — F13 binary approved 2026-09-24 chat ("1 — bina P1 atas RG receipts").
-> **Owner schema:** FI-003 (builder) · Substrate owner: arifFlow daemon (no daemon change in v0).
+> **Owner schema:** FI-003 (builder) · Substrate owner: arifFlow daemon.
 > **Authority evidence:** F13 chat binaries + `/root/forge_work/2026-09-24-FI-003-small-world-helix-realitygraph-linkage.md`.
 > **Absorbed:** parallel-lane v2 audit (`parent_assertion_ids`, write-permission matrix, identity
 > capability levels, witnessing≠claiming) · "Genesis" 5-frame analysis (as QUERY FRAMES, not a
 > new graph name — canon: agents may not mint Reality Graph aliases) · Five Living Forces
 > (`SOVEREIGN-HUMAN-REALITY-MEMORY-ARCHITECTURE.md`, sha256 e2173f9a…) as `force:*` predicate
-> vocabulary (§2b, P1.2).
+> vocabulary (§2b, P1.2) · daemon PARENT_REQUIRED gate (v0.2, live-observed).
 
 ---
 
@@ -66,11 +68,11 @@ Rule: a force edge is a
 | `open_questions` | human-owned unresolved tension ≠ system open loop | `--chron-ref` OR `--parent` | CHRON events / kernel `open_loops_888_HOLD` | no anchor → refuse |
 
 Emitter: `--force <name>` + `--scar-ref/--chron-ref/--valid-until`. Force rides in
-`payload.relationship_edge.force`. Guards are client-side v0 (same as §3); daemon
-validation = v1. **F5 hard rule unchanged:** private human forces stay ZKPC
+`payload.relationship_edge.force`. Guards are client-side (§3); daemon enforces
+receipt STRUCTURE only (§4). **F5 hard rule unchanged:** private human forces stay ZKPC
 (SHADOW_CATEGORY_ONLY or CONTENT_SEALED).
 
-## 3. Hard rules (client-enforced in `relationship_edge_emit.py`; daemon validation = v1)
+## 3. Hard rules (client-enforced in `relationship_edge_emit.py`; daemon enforces STRUCTURE — see §4 — semantics still client-side)
 
 - **R1** Relationship may contextualize authority, never confer it. `authority_implication` is forced `none` unless `q_frame=authority` with `grant_ref` present.
 - **R2** No relationship from name overlap — `basis=inferred`-class assertions require an explicit witness and are auto-banded SPECULATIVE.
@@ -83,7 +85,13 @@ validation = v1. **F5 hard rule unchanged:** private human forces stay ZKPC
 ## 4. What v0 does NOT do
 
 - No personal-edge seeding without owner testimony (P-axis mutations await Hermes-owner/F13 direct testimony).
-- No daemon-side schema validation (receipts still accept arbitrary payloads — v0 guards are client-side only; treat emitted edges as SPEC-grade until v1).
+- **No daemon-side SEMANTIC validation of edge fields** (q_frame/predicate/witness/zkpc correctness
+  remains client-side guard duty; a malicious client could still POST a structurally valid receipt
+  whose edge payload violates R1–R7 — treat cross-FI edges as SPEC-grade until C4 independence, §6 L5).
+  **Daemon-side STRUCTURAL validation is LIVE (v0.2, observed 2026-09-25):** the daemon rejects
+  orphan receipts — `400 PARENT_REQUIRED: pass parent_receipt_ids OR set
+  payload.top_level_intent=true with reason`. A lane root must declare its intent honestly;
+  fabricating a parent id/hash is refused by hash verification ("refusing to record a false because").
 - No topology metrics (P2), no plasticity ledger (P3).
 
 ## 5. Emitter
@@ -93,12 +101,17 @@ edge state `/root/.local/share/arifflow/edges/<lane>.last`, capture daemon respo
 write `receipt_id jcs_body_hash` only on `"status":"ingested"` (a rejected receipt can
 never become a parent). `--dry-run` prints without POST.
 
+Lane roots (v0.2): first receipt on a new lane passes no parent — daemon requires
+`payload.top_level_intent=true` + `top_level_intent_reason` (honest lane-root declaration,
+never a fabricated edge). Recorded lane roots: `p1-relationship-edges.last` (bootstrap
+1a3e68e1…), `hook-verification-20260925.last` (3dbbc805…, ledger receipt #1000).
+
 ## 6. Verification ladder (F2)
 
 | Level | Test | Status |
 |---|---|---|
-| 1 | Emitter dry-run renders schema-valid receipt | build gate |
-| 2 | Live ingest 200 + `status:ingested` + `jcs_body_hash` returned | build gate |
-| 3 | Edge state file written with id+hash | build gate |
-| 4 | `/lineage` traversal reaches the edge from a parent | v1 (needs organic parent) |
+| 1 | Emitter dry-run renders schema-valid receipt | PASS |
+| 2 | Live ingest 200 + `status:ingested` + `jcs_body_hash` returned | PASS (4 receipts live: 1a3e68e1 → 4b302338 → 6c756fd0; 3dbbc805) |
+| 3 | Edge state file written with id+hash | PASS (p1-relationship-edges.last, hook-verification-20260925.last) |
+| 4 | `/lineage` traversal reaches the edge from a parent | pending (needs lineage query against organic chain) |
 | 5 | Independent FI re-emit + cross-check | pending (C4 independence) |
