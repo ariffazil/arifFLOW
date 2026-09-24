@@ -368,6 +368,33 @@ def format_digest():
         }
     )
 
+    # Alibaba Quota Sentinel telemetry (Cliff: 2026-09-29)
+    quota_ledger = "/root/AAA/state/alibaba_quota_ledger.json"
+    if os.path.exists(quota_ledger):
+        try:
+            with open(quota_ledger) as f:
+                qdata = json.load(f)
+            q_models = qdata.get("models", {})
+            q_exhausted = [m for m, v in q_models.items() if v.get("status") == "EXHAUSTED"]
+            n_audio = sum(1 for m, v in q_models.items() if v.get("group") == "Audio")
+            n_vision = sum(1 for m, v in q_models.items() if v.get("group") == "Vision")
+            n_multi = sum(1 for m, v in q_models.items() if v.get("group") == "Multimodal")
+            events.append({
+                "type": "QUOTA_SENTINEL",
+                "summary": f"Alibaba Quota Sentinel: {len(q_models)} models tracked, 5d to cliff (2026-09-29), {len(q_exhausted)} exhausted",
+                "details": {
+                    "Cliff Date": "2026-09-29 (Free Singapore Quotas)",
+                    "Audio Pool": f"{n_audio} models (~140h free ASR)",
+                    "Vision Pool": f"{n_vision} models",
+                    "Multimodal Pool": f"{n_multi} models",
+                    "Exhausted Models": ", ".join(q_exhausted[:5]) if q_exhausted else "none",
+                    "Auto-Stop Invariant": "ACTIVE (Free quota only, RM0 floor)",
+                },
+                "priority": 3,
+            })
+        except Exception:
+            pass
+
     # Human return block (sleep-as-joy + 3 baik) fires nightly regardless
     joy = human_joy_block()
 
