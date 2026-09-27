@@ -26,7 +26,7 @@ use arifflow::governance::Vault999Sealer;
 use arifflow::governance::invariants::InvariantEnforcer;
 use arifflow::receipt::{
     ExplanationClass, FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE, FLOW_INVARIANT_EXPLANATION_CLASS,
-    FlowReceipt, ReceiptStore,
+    FlowReceipt, ReceiptStore, StepType,
 };
 use arifflow::scheduler::{FlowNode, SuperStepScheduler, TopologyKind, VerdictClass};
 use arifflow::vector::{Dimension, Epistemology, IndependenceMonitor, VectorStore};
@@ -940,6 +940,33 @@ fn handle_client(
                             }
                             // Ingest into invariant enforcer
                             enf.ingest(&receipt);
+                            // [AUTO-RELEASE 2026-09-25 FI-008 — F13 directive "scan what
+                            // hold is breaking the flow"] The hold protocol (AGENTS.md
+                            // §Invariant Enforcement) defines the release condition as
+                            // "after verification receipt" — but no lane ever called
+                            // POST /release, so `held` was a one-way ratchet: measured at
+                            // scan time hold_count=35,812 vs cycle_count=3,569, with
+                            // healthy actors locked (333-agi FQ=1.92 HELD) while a
+                            // genuinely STUCK actor (qwen-code FQ=0.4) sailed unheld.
+                            // A Verify receipt now clears the hold itself — the loop the
+                            // protocol always specified. enf.ingest() already resets the
+                            // consecutive-counter on Verify, so this adds ONLY the
+                            // held/throttled flag clear. POST /release remains for manual
+                            // and future SCT-gated governance (deferred to F13, 2026-08-10 note).
+                            if receipt.step_type == StepType::Verify {
+                                let was_held = enf
+                                    .actors
+                                    .get(&receipt.actor_id)
+                                    .map(|s| s.held || s.throttled)
+                                    .unwrap_or(false);
+                                if was_held {
+                                    enf.release_hold(&receipt.actor_id);
+                                    eprintln!(
+                                        "[arifFlow] AUTO-RELEASE: hold cleared for {} on Verify receipt {}",
+                                        receipt.actor_id, receipt.receipt_id
+                                    );
+                                }
+                            }
                             let fq = store.flow_quotient(20);
                             let body = serde_json::json!({
                                 "status": "ingested",
