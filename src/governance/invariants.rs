@@ -651,7 +651,7 @@ impl InvariantEnforcer {
         // (F2: arifFlow checkpoints, it does not judge the claim).
         if !self.pending_explanation_violations.is_empty() {
             let drained: Vec<InvariantCheck> =
-                self.pending_explanation_violations.drain(..).collect();
+                std::mem::take(&mut self.pending_explanation_violations);
             checks.extend(drained);
         }
 
@@ -1080,7 +1080,7 @@ mod tests {
     /// Eligible classes never produce a refusal record.
     #[test]
     fn test_eligible_class_produces_no_refusal() {
-        let mut enforcer = InvariantEnforcer::default();
+        let enforcer = InvariantEnforcer::default();
         let receipt = FlowReceipt::new_first(
             "A-FORGE",
             "s-cm1",

@@ -798,10 +798,7 @@ fn handle_client(
                                     "code": FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE,
                                     "violation": "flow-plane",
                                     "invariant": FLOW_INVARIANT_EXPLANATION_CLASS,
-                                    "invariant_enforced": format!(
-                                        "{}",
-                                        arifflow::governance::FlowInvariant::F3_ObserveNeverInterpret.name()
-                                    ),
+                                    "invariant_enforced": arifflow::governance::FlowInvariant::F3_ObserveNeverInterpret.name().to_string(),
                                     "verdict_owner": "claim_kernel",
                                     "actor": receipt.actor_id,
                                     "step_type": format!("{}", receipt.step_type),
@@ -1299,7 +1296,7 @@ Connection: close
                                     Err(e) => format!(
                                         "HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                                         serde_json::json!({"status":"aforge_bridge_error", "error": e}).to_string().len(),
-                                        serde_json::json!({"status":"aforge_bridge_error", "error": e}).to_string()
+                                        serde_json::json!({"status":"aforge_bridge_error", "error": e})
                                     ).into_bytes(),
                                 }
                             }
