@@ -97,8 +97,11 @@ impl AForgeExecutorBridge {
         );
 
         Ok(ExecutionResponse {
-            success: resp_json.get("status").and_then(|v| v.as_str())
-                .map(|s| s == "ok" || s == "healthy").unwrap_or(true),
+            success: resp_json
+                .get("status")
+                .and_then(|v| v.as_str())
+                .map(|s| s == "ok" || s == "healthy")
+                .unwrap_or(true),
             result_hash: *blake3::hash(result_str.as_bytes()).as_bytes(),
             receipt: format!(
                 "aforge_receipt_{}",

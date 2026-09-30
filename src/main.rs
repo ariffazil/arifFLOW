@@ -21,6 +21,7 @@
 //
 // DITEMPA BUKAN DIBERI — arifOS = law, arifFlow = flow, A-FORGE = hands
 
+use arifflow::bridge::{AForgeExecutorBridge, ArifOSGovernanceBridge, ExecutionRequest};
 use arifflow::channel::ChannelMode;
 use arifflow::governance::Vault999Sealer;
 use arifflow::governance::invariants::InvariantEnforcer;
@@ -30,7 +31,6 @@ use arifflow::receipt::{
 };
 use arifflow::scheduler::{FlowNode, SuperStepScheduler, TopologyKind, VerdictClass};
 use arifflow::vector::{Dimension, Epistemology, IndependenceMonitor, VectorStore};
-use arifflow::bridge::{ArifOSGovernanceBridge, AForgeExecutorBridge, ExecutionRequest};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -1301,11 +1301,14 @@ Connection: close
                                 }
                             }
                             Err(e) => http_bad_request(
-                                &serde_json::json!({"status":"invalid", "error": format!("{}", e)}).to_string(),
+                                &serde_json::json!({"status":"invalid", "error": format!("{}", e)})
+                                    .to_string(),
                             ),
                         }
                     }
-                    None => http_bad_request(r#"{"status":"error","message":"Empty body. Send {\"node_id\":\"...\"}"}"#),
+                    None => http_bad_request(
+                        r#"{"status":"error","message":"Empty body. Send {\"node_id\":\"...\"}"}"#,
+                    ),
                 }
             } else if request.starts_with("POST /enforce") {
                 // ── Manually trigger enforcement cycle ──
@@ -1427,7 +1430,9 @@ fn daemon_mode() {
     // Calls arifOS :8088/mcp (arif_init) to acquire a session + constitutional chain ID.
     // Failure is non-fatal: daemon continues with local-only mode.
     eprintln!("[arifFlow E1] Activating arifOS governance bridge at boot...");
-    match ArifOSGovernanceBridge::new().request_lease("arifflow-daemon", "E1_Phase_E_activation_2026-09-17") {
+    match ArifOSGovernanceBridge::new()
+        .request_lease("arifflow-daemon", "E1_Phase_E_activation_2026-09-17")
+    {
         Ok(lease) => {
             eprintln!(
                 "[arifFlow E1] arifOS bridge ONLINE: session_id={}, chain_id={}, scope={:?}",
@@ -1451,8 +1456,11 @@ fn daemon_mode() {
         .build()
         .ok()
         .and_then(|c| {
-            let url = std::env::var("AFORGE_URL").unwrap_or_else(|_| "http://127.0.0.1:7071".into());
-            c.get(format!("{}/health", url.trim_end_matches('/'))).send().ok()
+            let url =
+                std::env::var("AFORGE_URL").unwrap_or_else(|_| "http://127.0.0.1:7071".into());
+            c.get(format!("{}/health", url.trim_end_matches('/')))
+                .send()
+                .ok()
         });
     match aforge_health {
         Some(r) if r.status().is_success() => {
@@ -1465,9 +1473,9 @@ fn daemon_mode() {
             "[arifFlow E2] A-FORGE bridge DEGRADED: HTTP {} from :7071/health",
             r.status()
         ),
-        None => eprintln!(
-            "[arifFlow E2] A-FORGE bridge UNREACHABLE (daemon continues in local mode)"
-        ),
+        None => {
+            eprintln!("[arifFlow E2] A-FORGE bridge UNREACHABLE (daemon continues in local mode)")
+        }
     }
 
     // ── Auto-enforcement timer (audit 2026-08-10) ──
