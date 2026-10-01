@@ -53,16 +53,41 @@ interactive_session:
   - fi-003-anonymous
 
 # --- Background Daemons (indirect consequence, no FQ influence) ---
+# 2026-10-01 FI-003 backfill: patrol/loop emitters that were unlisted and so
+# resolved to "unknown" (excluded by accident). Grounded in their own ledger
+# rows, not their names — dynamic-gate (2775 Verify + 987 Seal, payload = FQ
+# drift dump), rsi-loop (981 Verify, null payload), agentic-web / atlas-sync
+# (drift-clean patrols), morning-briefing (Execute+Seal daily product loop).
 daemon:
   - aed-v1
   - orchestrator-v1
+  - 333-AGI/dynamic-gate
+  - hermes-rsi-loop
+  - 333-AGI/agentic-web
+  - 333-AGI/atlas-sync
+  - morning-briefing
 
 # --- Infrastructure Services (no consequence) ---
+# 2026-10-01 FI-003 coverage backfill (Reality Graph connectivity audit): actors
+# that were unlisted resolved to "unknown" at runtime and were excluded from
+# governance FQ by DEFAULT rather than by decision. Declaring them here changes
+# no number — unknown, daemon, infrastructure and synthetic all exclude — it
+# converts an accidental exclusion into a stated one, and shrinks the residue
+# where a genuine gap could hide. Each entry is grounded in its own ledger rows
+# (step_type mix + session shape), sampled 2026-10-01, not in its name.
 infrastructure:
   - hermes-cron
   - a-forge
+  # organ CHRON writing its own cycle results (sessions chron-loop-test-*)
+  - chron
+  # kernel emitting cooling overrides (session "cooling-override")
+  - arifos
 
 # --- Synthetic Generators (no reality, pure noise) ---
 synthetic:
   - p0-metabolize
   - reexamine
+  # external audit witness output (session "aforge-unbound")
+  - chatgpt-arif-audit
+  # selfcheck gate rows (session "audit-test")
+  - verified

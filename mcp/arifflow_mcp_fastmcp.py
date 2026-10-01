@@ -167,6 +167,23 @@ def flow_entity_report() -> dict[str, Any]:
         d["execute"] for d in classified.values() if d["consequence_bearing"]
     )
     gov_ver = sum(d["verify"] for d in classified.values() if d["consequence_bearing"])
+    # Void guard: "unknown" is not "all clear". An unclassified actor is excluded
+    # from governance FQ by default, so an unreported residue is a silent hole in
+    # who counts. Report the residue and its volume, do not bury it in a default.
+    unknown = sorted(
+        (
+            (v["execute"] + v["verify"], k)
+            for k, v in classified.items()
+            if v["entity_class"] == "unknown"
+        ),
+        reverse=True,
+    )
+    counted = sum(
+        v["execute"] + v["verify"]
+        for v in classified.values()
+        if v["consequence_bearing"]
+    )
+    seen_total = sum(v["execute"] + v["verify"] for v in classified.values())
     gov_fq = (gov_ver / gov_exec) if gov_exec > 0 else None
     if gov_fq is None:
         gov_verdict = "UNKNOWN"
@@ -181,11 +198,20 @@ def flow_entity_report() -> dict[str, Any]:
     return {
         "raw_fq": fq_data.get("quotient"),
         "raw_verdict": fq_data.get("verdict"),
-        "governance_weighted_fq": round(gov_fq, 4) if gov_fq else None,
+        "governance_weighted_fq": round(gov_fq, 4) if gov_fq is not None else None,
         "governance_verdict": gov_verdict,
         "governance_execute": gov_exec,
         "governance_verify": gov_ver,
         "entity_classes": class_totals,
+        "classification_coverage": {
+            "actors_seen": len(classified),
+            "actors_unclassified": len(unknown),
+            "unclassified_volume": sum(n for n, _ in unknown),
+            "volume_basis": seen_total,
+            "consequence_bearing_volume": counted,
+            "top_unclassified": [k for _n, k in unknown[:8]],
+            "note": "unclassified == excluded from governance FQ by default, not by decision",
+        },
         "actors": classified,
         "classification_source": _ENTITY_CLASS_FILE,
         "note": "Only human_agent + interactive_session contribute to governance FQ",
@@ -211,12 +237,19 @@ def flow_ingest(
     parent_receipt_ids: list[str] | None = None,
     parent_receipt_hashes: list[str] | None = None,
     jcs_body_hash: str | None = None,
+    supersedes_receipt_ids: list[str] | None = None,
+    supersedes_receipt_hashes: list[str] | None = None,
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Mint and ingest a FlowReceipt into the arifFlow metabolic ledger
     (POST /ingest). Records one governed step: identity, step_type, cost,
     epistemic label, and floor verdict. Use to checkpoint work so FQ
-    monitoring and cooling correlation see it. Returns FQ after ingest."""
+    monitoring and cooling correlation see it. Returns FQ after ingest.
+
+    supersedes_* records a SEQ-N belief death: this receipt retires the cited
+    receipt(s). The daemon already accepts these fields on /ingest; the bridge
+    exposed parent_* but not supersedes_*, which left agents on the governed
+    path structurally unable to retract a claim."""
     receipt: dict[str, Any] = {
         "receipt_id": str(uuid.uuid4()),
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -260,6 +293,22 @@ def flow_ingest(
         receipt["parent_receipt_ids"] = parent_receipt_ids
     if parent_receipt_hashes:
         receipt["parent_receipt_hashes"] = parent_receipt_hashes
+    if supersedes_receipt_ids:
+        if supersedes_receipt_hashes and len(supersedes_receipt_hashes) != len(supersedes_receipt_ids):
+            return {
+                "http_status": 400,
+                "error": "SUPERSESSION_ARITY: supersedes_receipt_hashes must be 1:1 with supersedes_receipt_ids",
+                "remediation": "Pass one parent hash per superseded receipt id, or omit hashes",
+            }
+        receipt["supersedes_receipt_ids"] = supersedes_receipt_ids
+        if supersedes_receipt_hashes:
+            receipt["supersedes_receipt_hashes"] = supersedes_receipt_hashes
+    elif supersedes_receipt_hashes:
+        return {
+            "http_status": 400,
+            "error": "SUPERSESSION_ARITY: supersedes_receipt_hashes given without supersedes_receipt_ids",
+            "remediation": "Pass supersedes_receipt_ids=[...] alongside the hashes",
+        }
     if jcs_body_hash:
         receipt["jcs_body_hash"] = jcs_body_hash
     if payload:

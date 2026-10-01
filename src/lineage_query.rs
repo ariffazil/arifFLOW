@@ -570,6 +570,49 @@ pub fn consequences(
 }
 
 #[derive(Serialize)]
+pub struct GraphConnectivity {
+    /// parent_receipt_ids entries examined across the scanned ledger
+    pub edges_total: usize,
+    /// both endpoints organ-tagged and the canonical organ key matches
+    pub same_organ_edges: usize,
+    /// both endpoints organ-tagged and the canonical organ keys differ —
+    /// the only edges that make the graph a FEDERATION graph rather than
+    /// N private lane threads
+    pub cross_organ_edges: usize,
+    /// edges that cannot be classified: parent outside the scan window,
+    /// or either endpoint carrying no routed_organ
+    pub unclassifiable_edges: usize,
+    /// distinct raw `routed_organ` strings seen in the ledger
+    pub organ_labels_raw: usize,
+    /// distinct canonical organ keys — raw minus spelling variants
+    pub organ_keys_canonical: usize,
+    /// connected components over canonical organ keys; 1 = the organs form
+    /// a single causal graph, N = N islands
+    pub organ_components: usize,
+    /// heaviest cross-organ flows, "parent → child", descending
+    pub top_cross_organ_pairs: Vec<String>,
+    pub note: String,
+}
+
+/// Canonical organ equivalence key (2026-10-01). `routed_organ` is free text,
+/// and the ledger had already fragmented into 18 labels for ~9 organs
+/// (`AAA`/`aaa`, `arifOS`/`arifos`, `A-FORGE`/`aforge`, `WELL`/`well`…), so
+/// organ-level traversal was impossible: two spellings of one organ were two
+/// graph nodes.
+///
+/// Deliberately NOT a name table: arifFlow does not own organ names (AAA's
+/// organs.yaml is the SOT). This is a deterministic normalisation that
+/// collapses spelling variants into one equivalence class while leaving the
+/// stored value untouched — read-side only, no history rewritten, no new
+/// authority claimed.
+pub fn canonical_organ_key(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| *c != '-' && *c != '_' && *c != ' ')
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+#[derive(Serialize)]
 pub struct FqGraphReport {
     pub schema: String,
     pub receipts_scanned: usize,
@@ -591,6 +634,11 @@ pub struct FqGraphReport {
     pub scar_to_policy_ms: Vec<u64>,
     /// policy → invoice, milliseconds (consequence attributed_to).
     pub policy_to_invoice_ms: Vec<u64>,
+    /// Federation connectivity of the causal DAG, measured over canonical
+    /// organ keys. Added 2026-10-01 because until then inter-organ edge
+    /// density was unmeasurable by any live surface — computing it required
+    /// an ad-hoc 94k-line scan by whoever happened to ask.
+    pub connectivity: GraphConnectivity,
     pub note: String,
 }
 
@@ -600,6 +648,115 @@ fn age_ms(from: &str, to: &str) -> Option<u64> {
     (t.timestamp_millis() - f.timestamp_millis())
         .try_into()
         .ok()
+}
+
+/// Federation connectivity census. Walks every causal parent edge once and
+/// classifies it by canonical organ key, then unions organ keys so the report
+/// can state how many isolated organ-islands the graph actually has.
+fn measure_connectivity(ledger: &LoadedLedger) -> GraphConnectivity {
+    let by_id: HashMap<String, &FlowReceipt> = ledger
+        .receipts
+        .iter()
+        .map(|r| (r.receipt_id.to_string(), r))
+        .collect();
+    let mut edges_total = 0usize;
+    let mut same_organ = 0usize;
+    let mut cross_organ = 0usize;
+    let mut unclassifiable = 0usize;
+    let mut labels_raw: HashMap<String, usize> = HashMap::new();
+    let mut keys: HashMap<String, usize> = HashMap::new();
+    let mut pair_counts: HashMap<String, usize> = HashMap::new();
+    let mut uf: HashMap<String, String> = HashMap::new();
+
+    fn find(uf: &mut HashMap<String, String>, x: &str) -> String {
+        if !uf.contains_key(x) {
+            uf.insert(x.to_string(), x.to_string());
+        }
+        let mut root = x.to_string();
+        loop {
+            let next = uf.get(&root).cloned().unwrap_or_else(|| root.clone());
+            if next == root {
+                break;
+            }
+            root = next;
+        }
+        // path compression
+        let mut cur = x.to_string();
+        while let Some(n) = uf.get(&cur).cloned() {
+            if n == root {
+                break;
+            }
+            uf.insert(cur.clone(), root.clone());
+            cur = n;
+        }
+        root
+    }
+
+    for r in &ledger.receipts {
+        if let Some(o) = r.routed_organ.as_deref() {
+            *labels_raw.entry(o.to_string()).or_insert(0) += 1;
+            *keys.entry(canonical_organ_key(o)).or_insert(0) += 1;
+        }
+        for pid in r.parent_receipt_ids.iter() {
+            edges_total += 1;
+            let parent = match by_id.get(pid.as_str()) {
+                Some(p) => *p,
+                None => {
+                    unclassifiable += 1;
+                    continue;
+                }
+            };
+            let (pk, ck) = match (parent.routed_organ.as_deref(), r.routed_organ.as_deref()) {
+                (Some(a), Some(b)) => (canonical_organ_key(a), canonical_organ_key(b)),
+                _ => {
+                    unclassifiable += 1;
+                    continue;
+                }
+            };
+            if pk == ck {
+                same_organ += 1;
+            } else {
+                cross_organ += 1;
+                *pair_counts.entry(format!("{} → {}", pk, ck)).or_insert(0) += 1;
+            }
+            // union the two organ keys (same-organ edges are single-node)
+            if pk != ck {
+                let a = find(&mut uf, &pk);
+                let b = find(&mut uf, &ck);
+                if a != b {
+                    uf.insert(a, b);
+                }
+            } else {
+                find(&mut uf, &pk);
+            }
+        }
+    }
+    // Every organ that ever appears in the ledger is a node, even if no edge
+    // ever touched it — otherwise a fully isolated organ would be invisible
+    // and the island count would lie.
+    for k in keys.keys() {
+        find(&mut uf, k);
+    }
+    let roots: HashMap<String, ()> = {
+        let ks: Vec<String> = uf.keys().cloned().collect();
+        ks.iter().map(|k| (find(&mut uf, k), ())).collect()
+    };
+    let mut pairs: Vec<(String, usize)> = pair_counts.into_iter().collect();
+    pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    GraphConnectivity {
+        edges_total,
+        same_organ_edges: same_organ,
+        cross_organ_edges: cross_organ,
+        unclassifiable_edges: unclassifiable,
+        organ_labels_raw: labels_raw.len(),
+        organ_keys_canonical: keys.len(),
+        organ_components: roots.len(),
+        top_cross_organ_pairs: pairs.into_iter().take(8).map(|(p, _)| p).collect(),
+        note: "cross-organ edges are the federation signal; same-organ edges are lane threads. \
+               organ_labels_raw > organ_keys_canonical measures routed_organ spelling \
+               fragmentation itself (read-side canonicalisation, stored values untouched)"
+            .into(),
+    }
 }
 
 /// FQ_G (RG-9, 2026-09-13): institutional metabolism rate — measured LAST.
@@ -698,6 +855,7 @@ pub fn fq_graph(ledger: &LoadedLedger) -> FqGraphReport {
         belief_lifetime_ms,
         scar_to_policy_ms,
         policy_to_invoice_ms,
+        connectivity: measure_connectivity(ledger),
         note: "v1 distributions only — thresholds deliberately not invented (small n; measure-first doctrine)".into(),
     }
 }
@@ -721,6 +879,135 @@ mod tests {
     fn stamp(mut r: FlowReceipt) -> FlowReceipt {
         r.jcs_body_hash = Some(r.compute_jcs_body_hash().unwrap());
         r
+    }
+
+    // ── connectivity census (2026-10-01) ────────────────────────────────
+
+    #[test]
+    fn canonical_organ_key_collapses_spelling_variants() {
+        let cases = [
+            ("AAA", "aaa"),
+            ("aaa", "aaa"),
+            ("arifOS", "arifos"),
+            ("arifos", "arifos"),
+            ("A-FORGE", "aforge"),
+            ("aforge", "aforge"),
+            ("WELL", "well"),
+            ("well", "well"),
+            ("arifFlow", "arifflow"),
+            ("TEST_ORGAN", "testorgan"),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(canonical_organ_key(raw), want, "raw={}", raw);
+        }
+    }
+
+    fn organ_step(organ: &str, step: StepType, n: u64) -> FlowReceipt {
+        stamp(
+            FlowReceipt::new_first(
+                "connectivity-test",
+                "s",
+                step,
+                EpistemicLabel::Observation,
+                n,
+            )
+            .with_routed_organ(organ),
+        )
+    }
+
+    #[test]
+    fn connectivity_reads_spelling_variants_as_one_organ_not_two() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = organ_step("AAA", StepType::Execute, 0);
+        let (pid, ph) = (
+            parent.receipt_id.to_string(),
+            parent.jcs_body_hash.clone().unwrap(),
+        );
+        let child = stamp(
+            FlowReceipt::new_first(
+                "connectivity-test",
+                "s",
+                StepType::Verify,
+                EpistemicLabel::Observation,
+                1,
+            )
+            .with_routed_organ("aaa")
+            .with_causal_parents(vec![pid], vec![ph]),
+        );
+        let c = &fq_graph(&write_ledger(dir.path(), &[parent, child])).connectivity;
+        assert_eq!(c.edges_total, 1);
+        assert_eq!(
+            c.same_organ_edges, 1,
+            "AAA→aaa is one organ, not a crossing"
+        );
+        assert_eq!(c.cross_organ_edges, 0);
+        assert_eq!(c.organ_labels_raw, 2, "two spellings observed");
+        assert_eq!(c.organ_keys_canonical, 1, "one organ underneath");
+        assert_eq!(c.organ_components, 1);
+    }
+
+    #[test]
+    fn connectivity_counts_cross_organ_edges_and_names_the_flow() {
+        let dir = tempfile::tempdir().unwrap();
+        let aaa = organ_step("AAA", StepType::Execute, 0);
+        let (aid, ah) = (
+            aaa.receipt_id.to_string(),
+            aaa.jcs_body_hash.clone().unwrap(),
+        );
+        let flow = stamp(
+            FlowReceipt::new_first(
+                "connectivity-test",
+                "s",
+                StepType::Verify,
+                EpistemicLabel::Observation,
+                1,
+            )
+            .with_routed_organ("arifFlow")
+            .with_causal_parents(vec![aid], vec![ah]),
+        );
+        let c = &fq_graph(&write_ledger(dir.path(), &[aaa, flow])).connectivity;
+        assert_eq!(c.cross_organ_edges, 1);
+        assert_eq!(c.same_organ_edges, 0);
+        assert_eq!(c.top_cross_organ_pairs, vec!["aaa → arifflow".to_string()]);
+        assert_eq!(c.organ_components, 1, "the edge joins the two organs");
+    }
+
+    #[test]
+    fn connectivity_refuses_to_classify_untagged_or_dangling_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        let tagged = organ_step("WELL", StepType::Execute, 0);
+        // child carries no routed_organ → the edge cannot be organ-classified
+        let mut untagged_child = FlowReceipt::new_first(
+            "connectivity-test",
+            "s",
+            StepType::Verify,
+            EpistemicLabel::Observation,
+            1,
+        );
+        untagged_child.parent_receipt_ids = vec![tagged.receipt_id.to_string()];
+        // parent id is not in the ledger window → likewise unclassifiable
+        let mut dangling = FlowReceipt::new_first(
+            "connectivity-test",
+            "s",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            2,
+        );
+        dangling.routed_organ = Some("CHRON".into());
+        dangling.parent_receipt_ids = vec!["00000000-0000-0000-0000-000000000000".into()];
+        let ledger = write_ledger(
+            dir.path(),
+            &[tagged, stamp(untagged_child), stamp(dangling)],
+        );
+        let c = &fq_graph(&ledger).connectivity;
+        assert_eq!(c.edges_total, 2);
+        assert_eq!(c.unclassifiable_edges, 2);
+        assert_eq!(c.cross_organ_edges, 0);
+        assert_eq!(c.organ_keys_canonical, 2);
+        assert_eq!(
+            c.organ_components, 2,
+            "WELL and CHRON remain separate islands — an isolated organ must still be counted"
+        );
     }
 
     #[test]
