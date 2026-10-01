@@ -1,0 +1,733 @@
+{
+  "provenance": {
+    "status": "DERIVED_READ_ONLY_VIEW",
+    "NOT": "FLOW_GRAPH.json (Phase 7). /root/AAA/governance/ARIF_FLOW_METABOLIC_PLANE.md architect-lock: 'Not minted. Do not invent the file'; item D reserved to F13.",
+    "measured_on": "KVM8 100.64.0.2",
+    "measured_at": "2026-10-01",
+    "actor": "FI-003 (333-AGI, BUILD lane)",
+    "staged_at": "/root/forge_work/2026-10-01-agentic-flow-graph/",
+    "sources": [
+      "/root/AAA/federation/organs.yaml (995 lines, read in full)",
+      "/etc/systemd/system/*.service (ExecStart/WorkingDirectory/After/Requires/Wants)",
+      "/proc/net/tcp + loopback /health probes + cgroup liveness",
+      "/root/.qwen/settings.json mcpServers block",
+      "code sweep over *.py *.ts *.js *.rs *.sh *.yaml *.json *.service excluding node_modules/venv/dist/build/archive/BACKUPS",
+      "/root/AAA/forge_work/2026-08-18-graph-engineering-audit/AUDIT.md (prior shape classification)"
+    ]
+  },
+  "artifact": "arifOS federation file+flow graph (derived view)",
+  "flow_spine": {
+    "source": "organs.yaml:977 authority_chain",
+    "stages": [
+      "arif_init",
+      "arif_observe",
+      "arif_think",
+      "arif_route",
+      "domain_evidence",
+      "arif_judge",
+      "arif_forge",
+      "a_forge_execute",
+      "arif_seal"
+    ],
+    "shapes": {
+      "chain_correct": [
+        "init->observe (session+SCT required)",
+        "think->route (think produces routing decision)",
+        "judge->forge (seal_verdict_id consumed)",
+        "forge->seal (parent_seal_hash Merkle epoch lock)"
+      ],
+      "chain_should_be_diamond": [
+        "domain_evidence GEOX+WEALTH+WELL (no organ reads another's output; all feed arif_judge)",
+        "observe-time health probes frame/signal/chron/organs (independent sockets; Promise.allSettled)"
+      ],
+      "router_correct": [
+        "arif_route (allowed routes enumerable)",
+        "FED :7074 advises, never calls"
+      ],
+      "cycle_unbuilt": [
+        "receipts -> FQ -> proposal -> 888 -> SOT mutation -> next boot (FLOW_GRAPH not minted, TOOLS.json quarantined, SKILLS.json not minted; arc terminates at receipts)"
+      ],
+      "cycle_at_risk": [
+        "chron verify->lesson->prediction: 107490 episodes, predictions_verified 0 at last organ probe (Pattern 9 failure mode)"
+      ],
+      "human_gate_keep": [
+        "F13 seal on constitution-class change; authorization HITL = KEEP"
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "id": "f13",
+      "label": "F13 ARIF",
+      "class": "HUMAN",
+      "state": "NON_NETWORK",
+      "note": "only node that seals constitution-class change"
+    },
+    {
+      "id": "arifos",
+      "label": "arifOS kernel",
+      "class": "CORE",
+      "port": 8088,
+      "unit": "arifos.service",
+      "state": "DEGRADED",
+      "ceiling": "JUDGE_ONLY",
+      "evidence": "probe 200 but status=degraded; exec /opt/arifos/current/venv/bin/python arifosmcp.runtime.__main__; py3.13.7"
+    },
+    {
+      "id": "a-forge",
+      "label": "A-FORGE",
+      "class": "CORE",
+      "ports": [
+        7071,
+        7072
+      ],
+      "units": [
+        "a-forge.service",
+        "a-forge-mcp.service"
+      ],
+      "state": "HEALTHY",
+      "ceiling": "EXECUTE_AFTER_SEAL"
+    },
+    {
+      "id": "aaa",
+      "label": "AAA",
+      "class": "CORE",
+      "ports": [
+        3001,
+        3002
+      ],
+      "units": [
+        "aaa-a2a.service",
+        "aaa-mcp.service"
+      ],
+      "state": "LIVE",
+      "ceiling": "DISPLAY_ONLY",
+      "note": "hosts organs.yaml SOT; federation-gateway :3003"
+    },
+    {
+      "id": "geox",
+      "label": "GEOX",
+      "class": "CORE",
+      "port": 8081,
+      "unit": "geox-mcp.service",
+      "state": "DEGRADED",
+      "ceiling": "COMPUTE_ONLY",
+      "evidence": "probe 200 degraded, kernel_verdict HOLD; 26 tools live (33 was 2026-07-30 snapshot)"
+    },
+    {
+      "id": "wealth",
+      "label": "WEALTH",
+      "class": "CORE",
+      "port": 18082,
+      "unit": "wealth-organ.service",
+      "state": "HEALTHY",
+      "ceiling": "COMPUTE_ONLY"
+    },
+    {
+      "id": "well",
+      "label": "WELL",
+      "class": "CORE",
+      "port": 18083,
+      "unit": "well.service",
+      "state": "DEGRADED",
+      "ceiling": "REFLECT_ONLY",
+      "evidence": "probe 200 degraded reason:null (health-surface attribution defect)"
+    },
+    {
+      "id": "arifflow",
+      "label": "arifFLOW",
+      "class": "METABOLISM",
+      "ports": [
+        7073,
+        7075
+      ],
+      "units": [
+        "arifflow.service",
+        "arifflow-mcp.service"
+      ],
+      "state": "HEALTHY",
+      "ceiling": "METABOLIZE_ONLY",
+      "note": "requires arifos.service; stream /var/lib/arifflow/receipts.jsonl"
+    },
+    {
+      "id": "chron",
+      "label": "CHRON",
+      "class": "METABOLISM",
+      "port": 18102,
+      "unit": "chron-mcp.service",
+      "state": "HEALTHY",
+      "ceiling": "COMPUTE_ONLY",
+      "note": "107490 episodes; predictions_verified 0 at last organ probe"
+    },
+    {
+      "id": "frame",
+      "label": "FRAME",
+      "class": "CORE",
+      "ports": [
+        18085,
+        18086
+      ],
+      "units": [
+        "frame-organ.service",
+        "frame-mcp.service"
+      ],
+      "state": "LIVE",
+      "ceiling": "ADVISORY_ONLY",
+      "note": "source /root/AAA/federation/frame/ (relocated from /root/FRAME 2026-08-26)"
+    },
+    {
+      "id": "signal",
+      "label": "SIGNAL",
+      "class": "CORE",
+      "port": 18084,
+      "unit": "signal-organ.service",
+      "state": "LIVE",
+      "ceiling": "OBSERVE_ONLY",
+      "note": "source_path null / NO_CHECKOUT_ON_HOST; runtime /opt/signal/app"
+    },
+    {
+      "id": "vault999",
+      "label": "VAULT999",
+      "class": "MEMORY",
+      "state": "NON_NETWORK",
+      "ceiling": "APPEND_ONLY",
+      "path": "/root/arifOS/VAULT999/outcomes.jsonl",
+      "note": "/root/VAULT999 is a symlink; by_path resolution; vault999-writer.service live"
+    },
+    {
+      "id": "fed",
+      "label": "FED router",
+      "class": "ADVISORY",
+      "port": 7074,
+      "unit": "fed-router.service",
+      "state": "HEALTHY",
+      "ceiling": "ADVISORY_ONLY",
+      "note": "answers WHERE, never calls"
+    },
+    {
+      "id": "hermes",
+      "label": "HERMES",
+      "class": "EDGE",
+      "mcp_port": 18087,
+      "units": [
+        "hermes-asi-gateway.service",
+        "hermes-mcp-server.service",
+        "hermes-rasa-mcp.service"
+      ],
+      "state": "LIVE",
+      "ceiling": "RELAY_ONLY",
+      "note": "gateway binds NO TCP port; primary human face @ASI_arifos_bot"
+    },
+    {
+      "id": "openclaw",
+      "label": "OpenClaw",
+      "class": "EDGE",
+      "port": 18789,
+      "state": "REMOTE",
+      "ceiling": "T1",
+      "note": "source_path ABSENT on KVM8; unit absent KVM8; live KVM4 via DNAT; FI-017"
+    },
+    {
+      "id": "qwen",
+      "label": "Qwen FI-003",
+      "class": "EDGE",
+      "port": 4357,
+      "state": "LIVE",
+      "ceiling": "COMPUTE_ONLY",
+      "note": "file-bridge Tier-1, no unit; /root/AAA/warga/qwen_bridge.py; this session"
+    },
+    {
+      "id": "opencode",
+      "label": "OpenCode",
+      "class": "EDGE",
+      "state": "LIVE",
+      "ceiling": "EDGE_AGENT",
+      "note": "by_unit resolution"
+    },
+    {
+      "id": "site",
+      "label": "arif-fazil.com",
+      "class": "EDGE",
+      "state": "NON_NETWORK",
+      "ceiling": "DISPLAY_ONLY",
+      "note": "served via caddy; discovery /llms.txt + /.well-known/agent-card.json"
+    },
+    {
+      "id": "minimax-media",
+      "label": "MiniMax media",
+      "class": "SUPPORT",
+      "port": 18100,
+      "state": "LIVE",
+      "ceiling": "OBSERVE_AND_GENERATE",
+      "note": "AMBIGUOUS: minimax-media.service declares :18100 but has no cgroup; minimax-media-mcp live; billable -> F13 consent"
+    },
+    {
+      "id": "apa",
+      "label": "apa-bridges x9",
+      "class": "SUPPORT",
+      "ports": [
+        18075,
+        18092,
+        18093,
+        18094,
+        18095,
+        18096,
+        18097,
+        18098,
+        18099
+      ],
+      "state": "LIVE",
+      "ceiling": "ACTUATE_AFTER_LEASE",
+      "note": "parent a-forge"
+    },
+    {
+      "id": "aaa-signing",
+      "label": "aaa-signing",
+      "class": "SUPPORT",
+      "port": 18900,
+      "state": "LIVE",
+      "ceiling": "CRYPTO_HELPER"
+    },
+    {
+      "id": "i-arif",
+      "label": "i-ARIF",
+      "class": "IDENTITY",
+      "state": "NOT_RUNNING",
+      "ceiling": "IDENTITY_SOVEREIGN",
+      "note": "iarif-synthesis.service inactive; its declared :18095 is held by apa-github-bridge"
+    },
+    {
+      "id": "flame",
+      "label": "FLAME",
+      "class": "ADVISORY",
+      "state": "RETIRED",
+      "note": "RETIRED 2026-09-04; no socket, no unit; tombstone AAA/docs/deprecation-registry.json"
+    },
+    {
+      "id": "substrate",
+      "label": "shared substrate",
+      "class": "DATA",
+      "state": "LIVE",
+      "members": {
+        "postgres": 5432,
+        "redis": 6379,
+        "qdrant": 6333,
+        "falkordb": 6380,
+        "nats": 4222,
+        "minio": 9000,
+        "searxng": 8080,
+        "headscale": 8083,
+        "caddy": [
+          80,
+          443
+        ],
+        "haproxy_litellm": {
+          "front": 4000,
+          "primary": 4013,
+          "backup": "100.64.0.5:4000"
+        }
+      },
+      "note": "not drawn as per-organ edges: organs.yaml declares no DATA-plane dependencies; inventing them would violate 'every edge carries real data or authority'"
+    }
+  ],
+  "file_edges": [
+    {
+      "file": "/root/arifOS/arifos/forge/__init__.py:28",
+      "target": "A-FORGE MCP :7072/mcp",
+      "via": "AFORGE_MCP_URL"
+    },
+    {
+      "file": "/root/arifOS/arifos/aaa/__init__.py:32",
+      "target": "AAA A2A :3001/a2a",
+      "via": "AAA_A2A_URL"
+    },
+    {
+      "file": "/root/arifOS/arifos/identity/identity_registry.py:24",
+      "target": "/root/AAA/agents",
+      "via": "AGENTS_DIR"
+    },
+    {
+      "file": "/root/arifOS/arifos/identity/agent_keygen.py:38",
+      "target": "/root/AAA/agents",
+      "via": "AGENTS_DIR"
+    },
+    {
+      "file": "/root/arifOS/scripts/sync_manifest.py:34",
+      "target": "WEALTH :18082/mcp",
+      "via": "WEALTH_DEFAULT_URL"
+    },
+    {
+      "file": "/root/arifOS/scripts/flow_resume.sh:22",
+      "target": "arifFlow :7073",
+      "via": "FLOW_URL"
+    },
+    {
+      "file": "/root/arifOS/scripts/flow_checkpoint.sh:18",
+      "target": "arifFlow :7073",
+      "via": "FLOW_URL"
+    },
+    {
+      "file": "/root/arifOS/scripts/hooks/pre-push/repo_guard.py:29",
+      "target": "arifOS :8088/health"
+    },
+    {
+      "file": "/root/arifOS/scripts/generate_federation_manifest.py:180",
+      "target": "/root/AAA/a2a-server/agent-cards"
+    },
+    {
+      "file": "/root/arifOS/scripts/check-estate-invariants.sh:90,107,116",
+      "target": "WEALTH :18082/health + arifOS :8088/health + GEOX :8081/health"
+    },
+    {
+      "file": "/root/arifOS/config/openclaw/openclaw.json:539",
+      "target": "/root/arifFlow/mcp/arifflow-mcp.py"
+    },
+    {
+      "file": "/root/arifOS/config/openclaw/openclaw.json:532",
+      "target": "/root/HERMES/media/minimax",
+      "via": "MINIMAX_MCP_BASE_PATH"
+    },
+    {
+      "file": "/root/arifOS/config/openclaw/openclaw.json:1638",
+      "target": "arifOS :8088/health + WELL :18083/health"
+    },
+    {
+      "file": "/root/A-FORGE/fed_aware_middleware.py:41",
+      "target": "FED MCP :7074",
+      "via": "FED_URL"
+    },
+    {
+      "file": "/root/A-FORGE/fed_aware_middleware.py:70,735",
+      "target": "litellm :4000/v1/responses"
+    },
+    {
+      "file": "/root/A-FORGE/bridges/graph_bridge.py:41,46",
+      "target": "/root/AAA/graph/codegraph.db"
+    },
+    {
+      "file": "/root/A-FORGE/bridges/mail_gateway.py:50",
+      "target": "/root/AAA/ops/capabilities/mail_gateway_receipts.jsonl"
+    },
+    {
+      "file": "/root/A-FORGE/bridges/google_bridge_base.py:99",
+      "target": "/root/HERMES/google_token.json",
+      "flag": "cross-estate credential read"
+    },
+    {
+      "file": "/root/A-FORGE/fed_health_probe.py:75",
+      "target": "/root/arifOS/VAULT999/outcomes.jsonl"
+    },
+    {
+      "file": "/root/A-FORGE/mcp/tools/forge_github.py:12",
+      "target": "i-ARIF Seal B :18095/execute",
+      "flag": "DRIFT: :18095 held by apa-github-bridge; iarif-synthesis inactive"
+    },
+    {
+      "file": "/root/A-FORGE/skills/tool-fitness-compiler/fitness_compiler.py:536-540",
+      "target": "{WEALTH,WELL,arifOS,AAA}/a_think/affordances.yaml"
+    },
+    {
+      "file": "/root/GEOX/contracts/tools/canonical/registry.py:126,127",
+      "target": "arifosmcp/VAULT999/SEALED_EVENTS.jsonl + VAULT999/outcomes.jsonl",
+      "flag": "two distinct vault paths"
+    },
+    {
+      "file": "/root/GEOX/scripts/asabiyyah_probe.py:40",
+      "target": "/root/arifOS/arifosmcp/runtime/asabiyyah.py",
+      "via": "KERNEL_PATH"
+    },
+    {
+      "file": "/root/GEOX/deploy/geox-mcp.service:27",
+      "target": "/root/.local/share/arifos/saf-data",
+      "via": "ReadWritePaths"
+    },
+    {
+      "file": "/root/WELL/session_bridge.py:27",
+      "target": "arifOS :8088",
+      "via": "ARIFOS_URL"
+    },
+    {
+      "file": "/root/WELL/internal/federation_memory.py:28",
+      "target": "arifOS :8088",
+      "via": "ARIFOS_MCP_URL"
+    },
+    {
+      "file": "/root/WELL/internal/apex_envelope_well.py:26",
+      "target": "sys.path.insert /root/arifOS"
+    },
+    {
+      "file": "/root/WELL/internal/federation_safety.py:107",
+      "target": "arifosmcp/schemas/federation_enums.py",
+      "flag": "marked CANONICAL SOURCE"
+    },
+    {
+      "file": "/root/WELL/scripts/vault_bridge.py:24",
+      "target": "/root/arifOS/core/vault999/well_ledger.jsonl",
+      "flag": "third vault path"
+    },
+    {
+      "file": "/root/chron/chron_prediction.py:57",
+      "target": "arifFlow :7073/ingest"
+    },
+    {
+      "file": "/root/chron/chron_loop_close.py:764",
+      "target": "arifFlow :7073/ingest"
+    },
+    {
+      "file": "/root/chron/server.py:596",
+      "target": "arifFlow :7073/ingest"
+    },
+    {
+      "file": "/root/chron/chron_frame.py:21",
+      "target": "FRAME :18085",
+      "via": "FRAME_URL"
+    },
+    {
+      "file": "/root/chron/verify_due.py:18",
+      "target": "WEALTH :18082/mcp",
+      "via": "WEALTH_URL"
+    },
+    {
+      "file": "/root/arifFlow/scripts/arifflow_digest.py:16,22,23,25",
+      "target": "VAULT999/arifflow_sealed.jsonl + /root/WELL/state/*"
+    },
+    {
+      "file": "/root/arifFlow/mcp/ariflow-mcp.py:447",
+      "target": "/root/arifOS-model-registry/data/tool_traces.jsonl"
+    },
+    {
+      "file": "/root/FRAME/src/frame_organ/config.py:47",
+      "target": "SIGNAL :18084",
+      "via": "SIGNAL_URL"
+    },
+    {
+      "file": "/root/AAA/ingress/webhook.py:52",
+      "target": "arifOS :8088",
+      "via": "ARIFOS_URL floor pre-gate"
+    },
+    {
+      "file": "/root/AAA/gateways/mcp_constitutional_gateway/gateway.py:49",
+      "target": "arifOS :8088/mcp"
+    },
+    {
+      "file": "/root/AAA/plugins/claude-code-federation/hooks/f11-audit-posttool.py:25",
+      "target": "arifFlow :7073/ingest"
+    },
+    {
+      "file": "/root/AAA/scripts/attention_plane.py:56,58",
+      "target": "CHRON :18102 + AAA :3001"
+    },
+    {
+      "file": "/root/AAA/scripts/fed_router.py:1264",
+      "target": "arifFlow :7073/ingest"
+    },
+    {
+      "file": "/root/AAA/scripts/capability_fitness_check.py:31",
+      "target": "litellm :4000/health/liveliness",
+      "flag": "only correct health path; /health falsely returns 000"
+    },
+    {
+      "file": "/root/AAA/observability/hermes-gateway/config.yaml:21",
+      "target": "GEOX :8081/health"
+    },
+    {
+      "file": "/root/HERMES/mcp_servers/hermes_a2a_listener.py:56",
+      "target": "arifOS :8088/mcp",
+      "via": "ARIFOS_MCP_URL"
+    },
+    {
+      "file": "/root/HERMES/hermes_mcp/_config.py:86",
+      "target": "litellm :4000",
+      "via": "HERMES_SEMANTIC_API_BASE"
+    }
+  ],
+  "kernel_import_edges": [
+    {
+      "file": "arifosmcp/tools/__init__.py:6,8,10,11,17,20,21,24",
+      "imports": "all 8 kernel verbs"
+    },
+    {
+      "file": "arifosmcp/runtime/convergence.py:26",
+      "imports": "tools.reason (arif_think)"
+    },
+    {
+      "file": "arifosmcp/runtime/webhook_intake.py:626",
+      "imports": "tools.judge"
+    },
+    {
+      "file": "arifosmcp/runtime/memory_store.py:484",
+      "imports": "tool_13_arif_memory"
+    },
+    {
+      "file": "arifosmcp/tools/judge.py:598",
+      "imports": "tool_13_arif_memory"
+    },
+    {
+      "file": "arifosmcp/tools/judge.py:3778",
+      "imports": "tools.vault (arif_seal)"
+    },
+    {
+      "file": "arifosmcp/tools/vault.py:1282",
+      "imports": "tool_13_arif_memory"
+    },
+    {
+      "file": "arifosmcp/tools/forge.py:513",
+      "imports": "tools.judge (_read_well_substrate)"
+    },
+    {
+      "file": "arifosmcp/tools/session.py:2392,2640,3975",
+      "imports": "tools.kernel_canonical (arif_triage) + _read_well_substrate"
+    },
+    {
+      "file": "arifosmcp/tools/memory.py:1819,1820,1823",
+      "imports": "tools.judge (DELTA_MAX, JUDGE_PREDICTION_SCHEMA)"
+    },
+    {
+      "file": "arifosmcp/tools/mesh_delegate.py:20",
+      "imports": "tools.judge"
+    },
+    {
+      "file": "arifosmcp/tools/session_close_macro.py:859",
+      "imports": "tools.vault (arif_seal)"
+    },
+    {
+      "file": "arifosmcp/runtime/tools.py:10530,22078,24916,25874,25981-25996",
+      "imports": "session/vault/memory/judge/kernel_canonical (~14 sites in one 26k-line module)"
+    }
+  ],
+  "systemd_edges": [
+    {
+      "unit": "arifos.service",
+      "exec": "/opt/arifos/current/venv/bin/python -c 'from arifosmcp.runtime.__main__ import main; main()'",
+      "workdir": "/opt/arifos/app",
+      "after": "network-online.target"
+    },
+    {
+      "unit": "a-forge-mcp.service",
+      "exec": "node /root/A-FORGE/dist/src/interfaces/mcp/cli.js serve --transport http --port 7072",
+      "after": "a-forge.service"
+    },
+    {
+      "unit": "aaa-a2a.service",
+      "exec": "node /root/AAA/a2a-server/server.js",
+      "after": "arifos.service"
+    },
+    {
+      "unit": "aaa-mcp.service",
+      "exec": "python3 /root/AAA/mcp/aaa_mcp_fastmcp.py",
+      "requires": "aaa-a2a.service"
+    },
+    {
+      "unit": "federation-gateway.service",
+      "exec": "python3 /root/AAA/mcp/federation_gateway.py",
+      "after": "aaa-mcp.service"
+    },
+    {
+      "unit": "arifflow.service",
+      "exec": "/opt/arifflow/bin/arifflow --daemon",
+      "workdir": "/root/arifFlow",
+      "requires": "arifos.service"
+    },
+    {
+      "unit": "well.service",
+      "exec": "/root/WELL/.venv/bin/python3 /root/WELL/server.py",
+      "after": "arifos.service"
+    },
+    {
+      "unit": "frame-organ.service",
+      "exec": "/opt/frame/venv/bin/python -m uvicorn frame_organ.main:app",
+      "wants": "arifos.service aforge.service signal-organ.service"
+    },
+    {
+      "unit": "signal-organ.service",
+      "exec": "/opt/signal/venv/bin/python -m uvicorn signal_organ.main:app",
+      "after": "redis.service"
+    },
+    {
+      "unit": "chron-mcp.service",
+      "exec": "/opt/arifos/current/venv/bin/python3 mcp_server.py",
+      "workdir": "/root/chron"
+    },
+    {
+      "unit": "chron-loop-closer.service",
+      "exec": "python3 /root/chron/chron_loop_close.py",
+      "after": "chron-prediction-verifier.service"
+    },
+    {
+      "unit": "fed-router.service",
+      "exec": "bash -c 'source /root/.secrets/kunci-mas.env; FASTMCP_PORT=7074; python3 /root/AAA/scripts/fed_router.py'",
+      "after": "arifos.service arifflow.service"
+    },
+    {
+      "unit": "fed-aware-middleware.service",
+      "exec": "python3 /root/A-FORGE/fed_aware_middleware.py",
+      "after": "fed-router.service"
+    },
+    {
+      "unit": "federation-verifier.service",
+      "exec": "python3 /root/scripts/federation_verifier.py",
+      "after": "arifos.service aforge.service geox-mcp.service wealth-organ.service well.service"
+    }
+  ],
+  "findings": [
+    {
+      "id": "D1",
+      "severity": "RESOLVED",
+      "claim": ":18095 = i-ARIF synthesis (Seal B engine) [fi003 overlay QWEN.md]",
+      "reality": "hardcoded port collision: iarif_synthesis.py:198 bound 127.0.0.1:18095 while apa-github-bridge owns GITHUB_BRIDGE_PORT=18095; engine could never bind (bind-fail + Restart=on-failure/3s = retry storm). forge_github.py:12 -> :18095/execute was always correct.",
+      "fix_2026_10_02": [
+        "iarif_synthesis.py: port now IARIF_PORT env, default 18095",
+        "iarif-synthesis.service: Environment=IARIF_PORT=18101 + Description corrected",
+        "overlay QWEN.md :18095/:18101 rows + Seal B line corrected; witness PASS",
+        "started + verified: POST :18101/synthesize -> {status:SYNTHESIZED, engine:fed:i-arif, latency_ms:1992}; :18095 still github bridge"
+      ],
+      "note": "zero live consumers of /synthesize found in estate — capability restored, gateway wire-in still a spec"
+    },
+    {
+      "id": "D2",
+      "severity": "RESOLVED_DOC",
+      "claim": ":4000 = KVM8 HAProxy -> KVM4 litellm [fi003 overlay QWEN.md]",
+      "reality": "live config already correct: litellm-federation.service drop-in override runs docker litellm --port 4013 (network host); haproxy primary 127.0.0.1:4013, KVM4 backup. No stale twin — my phantom-twin hypothesis RETRACTED.",
+      "fix_2026_10_02": [
+        "overlay QWEN.md :4000 row corrected to local-primary/KVM4-backup"
+      ],
+      "evidence": [
+        "systemctl cat drop-in: docker run --network host ... --port 4013",
+        "ps: /app/.venv/bin/litellm --config /app/config.yaml --port 4013",
+        "haproxy.cfg:70,72"
+      ]
+    },
+    {
+      "id": "D3",
+      "severity": "RETRACTED_x2_PLUS_F13_ACT",
+      "claim": "arifOS :8088 degraded; GEOX degraded",
+      "reality": "RETRACTED. First-party probes 2026-10-02: arifOS status=healthy degraded_reasons=[]; GEOX status=healthy kernel_verdict=HOLD (constitutional posture, not health failure). Original claim came from a 2026-10-01 scout probe published without re-verification. WELL remains degraded BY DESIGN: reasons sovereign_state_unknown + human_injection_required, freshness expired (>4h stale_after 14400s); the fix is an F13 human injection via the sanctioned manual-capture lane — agent fabrication of human state would violate dignity/zero-lie.",
+      "supersedes": "2026-10-01 artifact claim D3"
+    },
+    {
+      "id": "D4",
+      "severity": "MEDIUM",
+      "claim": "organs.yaml declares the topology",
+      "reality": "only 7 of 36 components carry any relationship field; 29 graph-isolated in SOT despite live flows",
+      "evidence": [
+        "organs.yaml field sweep vs file_edges above"
+      ]
+    },
+    {
+      "id": "D5",
+      "severity": "MEDIUM",
+      "claim": "chron closes its arrow",
+      "reality": "107490 episodes but predictions_verified 0 at last organ probe",
+      "evidence": [
+        "chron-mcp probe 2026-10-01",
+        "organs.yaml live_probe_2026_09_18 predictions_verified: 0"
+      ]
+    }
+  ],
+  "did_not_do": [
+    "did NOT mint FLOW_GRAPH.json (Phase 7 lock, F13 item D)",
+    "did NOT write into /root/AAA/governance/ or /root/AAA/federation/",
+    "did NOT mutate any organ, unit, config, or SOT",
+    "did NOT fix the drifts (reported; fixes are reversible and in BUILD lane on request)"
+  ]
+}
