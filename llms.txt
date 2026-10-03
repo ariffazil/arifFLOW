@@ -1,0 +1,21 @@
+# arifFlow — Metabolism & Attention Pulse
+> Constitutional Attention Pulse for the arifOS Federation.
+> Port: 7073 (Rust daemon) | Role: METABOLISM organ | Authority: METABOLIZE_ONLY
+> Invariant: FQ = verify_count / execute_count · Holds execution when verify starves
+
+## Identity & Purpose
+arifFlow is the metabolism organ of the arifOS Federation. It monitors every execution step across the federation, ingests receipts, calculates the Flow Quotient (FQ), and triggers HOLD/THROTTLE signals when execution outpaces verification.
+It acts as the autonomic nervous system: preventing runaway execution loops and enforcing epistemic metabolism.
+
+## Runtime Surface (Port 7073)
+- `GET /health`: Daemon status, uptime, current FQ, and receipt count.
+- `POST /ingest`: Ingest structured execution/verification receipts with hash-chain continuity.
+- `POST /check`: Check whether execution is permitted under current FQ band.
+- `POST /release`: Release temporary holds when verification catches up.
+- `POST /enforce`: Run active invariant checks across F0–F6 flow floors.
+- `POST /flow`: Query real-time flow state and attention pulse metrics.
+
+## FQ Governance Invariants
+- `FQ < 0.5`: HOLD (verification starving — halt new mutations)
+- `FQ > 10.0`: THROTTLE (execution outrunning verification — mandatory cooldown)
+- `5+ consecutive executions without verify`: Mandatory HOLD
