@@ -381,5 +381,46 @@ def flow_lineage(
     return _flow_post("/lineage", body)
 
 
+@mcp.custom_route("/health", methods=["GET"])
+async def _health_route(request):
+    """Plain-HTTP liveness / contract / capability surface for the arifFlow organ.
+
+    The tool count belongs HERE and not on the Rust daemon's :7073/health: this
+    process owns the @mcp.tool() registrations. A daemon publishing a count for a
+    surface it does not serve would be exactly the fabricated-capability class the
+    observatory stopped publishing on 2026-10-03 (SCAR-OBS-GREENWASH).
+
+    The count is read from the live FastMCP registry on every request, so it
+    cannot drift from what the MCP wire actually exposes. If the registry cannot
+    be read, tools_loaded is null and the reason is published — never a literal
+    fallback count.
+    """
+    from starlette.responses import JSONResponse
+
+    tool_error = None
+    try:
+        # FastMCP 4.x exposes the registry as list_tools() — verified on the
+        # installed 4.0.4. It is synchronous there but awaited in some releases,
+        # so handle both rather than pinning one and silently reporting None.
+        _tools = mcp.list_tools()
+        if hasattr(_tools, "__await__"):
+            _tools = await _tools
+        tool_count = len(_tools)
+    except Exception as exc:  # noqa: BLE001 — publish the reason, do not guess
+        tool_count = None
+        tool_error = f"{type(exc).__name__}: {exc}"
+
+    payload: dict[str, Any] = {
+        "status": "healthy" if tool_count else "degraded",
+        "service": "ariflow-mcp",
+        "version": getattr(mcp, "version", None),
+        "tools_loaded": tool_count,
+        "tool_count": tool_count,
+    }
+    if tool_error:
+        payload["tool_count_error"] = tool_error
+    return JSONResponse(payload)
+
+
 if __name__ == "__main__":
     mcp.run(transport="http", host="127.0.0.1", port=7075)
