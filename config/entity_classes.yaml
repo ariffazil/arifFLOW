@@ -47,6 +47,13 @@ human_agent:
 
 # --- Interactive Sessions (sometimes consequence-bearing) ---
 interactive_session:
+  # 2026-10-03 alignment: 333-AGI spawned subagent lanes appeared as actor
+  # `333-agi/memory-helix` (held=true, EXECUTION DOMINANCE, class=unknown →
+  # excluded from governance FQ by DEFAULT not by decision — entity_report
+  # top_unclassified). Spawned one-shot task lanes = interactive_session.
+  # Convention: any `333-agi/<lane>` or `333-AGI/<lane>` subagent actor that is
+  # NOT a standing patrol (patrols stay daemon:) gets listed here on sighting.
+  - 333-agi/memory-helix
   - codex
   - codex-startup
   - FI-003
