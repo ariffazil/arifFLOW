@@ -4,11 +4,33 @@
 
 # AGENTS.md — arifFlow | arifOS Federation
 
-> **DITEMPA BUKAN DIBERI**
-> **Φ flow engine — schedules, checkpoints, channels, never judges.**
-> **Trinity:** `arifOS (law/Python) · arifFlow (flow/Rust) · A-FORGE (hands/TypeScript)`
+> **DITEMPA BUKAN DIBERI**  
+> **Φ flow engine — schedules, checkpoints, channels, never judges.**  
+> **Trinity:** `arifOS (law/Python) · arifFlow (flow/Rust) · A-FORGE (hands/TypeScript)`  
+> **Canonical Port:** `7073` (`arifflow.service`) | Authority Ceiling: `METABOLIZE_ONLY`
 
-## Identity
+---
+
+## 1. ATTENTION MEMBRANE — Arif is NOT a Coder (F13 BINDING)
+
+**MUHAMMAD ARIF BIN FAZIL = F13 SOVEREIGN.**
+- **NEVER** ask Arif Rust compilation errors, async channel design, FQ weighting, or low-level config questions.
+- **When hitting technical uncertainty:** Musyawarah with 333-AGI and 555-ASI, choose the reversible path, execute, and log the receipt.
+- **Escalate to Arif F13-class questions ONLY:** Flow graph topological mutations, irreversible receipt retention policy, breaking protocol changes. Single binary ask.
+- **NEVER** ask him to copy-paste cargo commands, curl payloads, or terminal logs.
+
+---
+
+## 2. ARIFOS::ANTI_BANGANG_ENGINEERING::v1
+
+Jangan jadi engineer yang pandai menyusahkan manusia. Flow first. Human first.
+- **Satu Masalah, Satu Owner, Satu Jalan:** arifFlow owns metabolism, receipts, and execution flow checkpoints. It does not judge and does not execute.
+- **Action > Documentation:** Working Rust binary + passing `cargo test` > elaborate scheduler theory.
+- **Final Test:** *Adakah hidup manusia lebih lancar dan tenang selepas aliran ini distabilkan?*
+
+---
+
+## 3. Identity
 
 Governed parallel execution engine — constitutional BSP (Bulk Synchronous Parallel) scheduler.
 Replaces LangGraph's role under arifOS constitutional law.
@@ -17,7 +39,9 @@ Replaces LangGraph's role under arifOS constitutional law.
 
 **3 topologies:** Fan-out (1→N parallel), Pipeline (sequential stages), Cascade (escalation chain)
 
-## Declared vs Observed (Reality Map — 2026-08-10)
+---
+
+## 4. Declared vs Observed (Reality Map — 2026-08-10)
 
 The constitutional audit of 2026-08-10 surfaced a significant gap between declared architecture
 and observed runtime. This section is the honest reconciliation.
