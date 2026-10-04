@@ -822,16 +822,17 @@ pub fn fq_graph(ledger: &LoadedLedger) -> FqGraphReport {
             }
         }
     }
+    // O(n) supersession count — was O(n²) with a String alloc per comparison,
+    // costing ~30s per /fq_g call at 1k receipts (diagnosed 2026-10-04).
+    let superseded_ids: std::collections::HashSet<&str> = ledger
+        .receipts
+        .iter()
+        .flat_map(|k| k.supersedes_receipt_ids.iter().map(|x| x.as_str()))
+        .collect();
     let beliefs_superseded = ledger
         .receipts
         .iter()
-        .filter(|r| {
-            ledger.receipts.iter().any(|k| {
-                k.supersedes_receipt_ids
-                    .iter()
-                    .any(|x| *x == r.receipt_id.to_string())
-            })
-        })
+        .filter(|r| superseded_ids.contains(r.receipt_id.to_string().as_str()))
         .count();
     FqGraphReport {
         schema: "arifflow.fq-g/v1".into(),
