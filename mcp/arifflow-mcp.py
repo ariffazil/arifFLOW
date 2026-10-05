@@ -42,7 +42,7 @@ try:
                 _ENTITY_CLASSES[str(_a)] = _cls
 except Exception:
     pass  # no classification available — treat all as unknown
-EPISTEMIC = ["Observation", "Derivation", "Interpretation", "Specification", "Seal"]
+EPISTEMIC = ["Observation", "Derivation", "Interpretation", "Specification", "Seal", "Unknown"]
 VERDICTS = ["Pass", "Caution", "Hold", "Void"]
 
 TOOLS = [

@@ -107,6 +107,8 @@ pub enum EpistemicLabel {
     Specification,
     /// SEAL — Irreversible commitment
     Seal,
+    /// UNK — Cannot witness; honest null (SAH 2026-10-05, additive)
+    Unknown,
 }
 
 impl fmt::Display for EpistemicLabel {
@@ -117,6 +119,7 @@ impl fmt::Display for EpistemicLabel {
             EpistemicLabel::Interpretation => write!(f, "INT"),
             EpistemicLabel::Specification => write!(f, "SPEC"),
             EpistemicLabel::Seal => write!(f, "SEAL"),
+            EpistemicLabel::Unknown => write!(f, "UNK"),
         }
     }
 }
