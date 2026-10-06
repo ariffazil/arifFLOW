@@ -1,25 +1,33 @@
+# /etc/systemd/system/arifflow.service
 [Unit]
-Description=arifFlow — Governed Parallel Execution Engine
-Documentation=https://github.com/ariffazil/arifFlow
-After=network.target
+Description=arifFLOW — Federation Metabolism Plane (Rust daemon, 7073)
+After=network-online.target arifos.service
+Wants=network-online.target arifos.service
+Requires=arifos.service
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/ariflow
-ExecStart=/opt/ariflow/ariflow --daemon
-Restart=on-failure
-RestartSec=5
-Environment=RUST_LOG=info
+WorkingDirectory=/root/arifFlow
 Environment=ARIFLOW_PORT=7073
-StandardOutput=journal
-StandardError=journal
+Environment=ARIFLOW_PERSIST_DIR=/var/lib/arifflow
+Environment=ARIFLOW_TELEMETRY_PATH=/root/arifFlow-runtime/data/telemetry.jsonl
+Environment=COOLING_LEDGER_DIR=/root/arifFlow-runtime/data/cooling
+Environment=ARIFOS_URL=http://127.0.0.1:8088
+Environment=AFORGE_URL=http://127.0.0.1:7071
+Environment=AAA_A2A_URL=http://127.0.0.1:3001
+ExecStart=/opt/arifflow/bin/arifflow --daemon
+Restart=always
+RestartSec=5
+KillMode=process
+TimeoutStopSec=15
 
 # Security
-NoNewPrivileges=true
+NoNewPrivileges=yes
+CapabilityBoundingSet=~CAP_SYS_ADMIN ~CAP_SYS_PTRACE ~CAP_SYS_RAWIO ~CAP_NET_ADMIN ~CAP_NET_RAW ~CAP_SYS_BOOT ~CAP_SYS_MODULE ~CAP_SYS_NICE ~CAP_SYS_RESOURCE ~CAP_SYS_TIME ~CAP_AUDIT_WRITE ~CAP_AUDIT_CONTROL ~CAP_MAC_OVERRIDE ~CAP_MAC_ADMIN ~CAP_SYSLOG ~CAP_LEASE ~CAP_BLOCK_SUSPEND ~CAP_WAKE_ALARM
 ProtectSystem=full
 ProtectHome=read-only
-PrivateTmp=true
+ReadWritePaths=/root/arifFlow-runtime/data /root/VAULT999 /var/lib/arifflow
 
 [Install]
 WantedBy=multi-user.target
