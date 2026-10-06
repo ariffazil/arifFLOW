@@ -42,7 +42,14 @@ try:
                 _ENTITY_CLASSES[str(_a)] = _cls
 except Exception:
     pass  # no classification available — treat all as unknown
-EPISTEMIC = ["Observation", "Derivation", "Interpretation", "Specification", "Seal", "Unknown"]
+EPISTEMIC = [
+    "Observation",
+    "Derivation",
+    "Interpretation",
+    "Specification",
+    "Seal",
+    "Unknown",
+]
 VERDICTS = ["Pass", "Caution", "Hold", "Void"]
 
 TOOLS = [
@@ -160,6 +167,14 @@ TOOLS = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "SEQ-N: jcs_body_hash of each superseded receipt, 1:1 with supersedes_receipt_ids. A forged death is rejected by the daemon.",
+                },
+                "top_level_intent": {
+                    "type": "boolean",
+                    "description": "RG-OM: declare this receipt as a session-origin root intent (no parent receipt exists). Required when parent_receipt_ids is absent; without it ingest fails PARENT_REQUIRED. May also be set inside payload.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "RG-OM lineage: WHY this is a root intent (e.g. 'sovereign-directed mission, session origin'). Forwarded into the receipt payload so the ledger records intent justification, not just intent existence.",
                 },
             },
             "required": ["actor_id", "session_id"],
@@ -493,14 +508,28 @@ def call_tool(name: str, args: dict) -> dict:
         # Defect upstream of lineage system; lineage CAN reconstruct chains when
         # parents are set (verified: 2207231e spans arifOS→arifFlow→AAA, 5 deep).
         parent_provided = bool(args.get("parent_receipt_ids"))
-        payload_dict = args.get("payload") if isinstance(args.get("payload"), dict) else {}
-        top_level_claim = bool(args.get("top_level_intent") or payload_dict.get("top_level_intent"))
+        _payload_raw = args.get("payload")
+        payload_dict = _payload_raw if isinstance(_payload_raw, dict) else {}
+        top_level_claim = bool(
+            args.get("top_level_intent") or payload_dict.get("top_level_intent")
+        )
         if not parent_provided and not top_level_claim:
             return {
                 "http_status": 400,
                 "error": "PARENT_REQUIRED: pass parent_receipt_ids OR set top_level_intent=true with reason",
                 "remediation": "Pass parent_receipt_ids=[...] or declare top_level_intent=True",
             }
+        # RG-OM lineage (2026-10-06 FI-003): a top-level intent without a recorded
+        # reason is an orphan claim — governance debt, not a checkpoint. Forward
+        # reason + top_level_intent into the persisted payload so /lineage and
+        # audits can distinguish declared roots from silent ones.
+        if top_level_claim:
+            if receipt["payload"] is None:
+                receipt["payload"] = {}
+            receipt["payload"]["top_level_intent"] = True
+            reason = args.get("reason") or payload_dict.get("reason")
+            if reason:
+                receipt["payload"]["top_level_reason"] = reason
         if parent_provided:
             receipt["parent_receipt_ids"] = args["parent_receipt_ids"]
         if args.get("parent_receipt_hashes"):
