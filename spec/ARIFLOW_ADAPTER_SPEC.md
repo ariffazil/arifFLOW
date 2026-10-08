@@ -350,7 +350,7 @@ if __name__ == "__main__":
 | Rust binary in release or debug? | Release = faster, debug = better error messages | Release for prod, debug for dev |
 | JSON-L or protobuf for Rust↔Python? | JSON-L = easy debug, protobuf = faster | JSON-L for Phase 2, upgrade if bottleneck |
 | Blocking or async Python adapter? | Blocking = simpler, async = better concurrency | Blocking for Phase 2, async Phase 3 |
-| Adapter lives where? | `A-FORGE/domain/orchestration/` or `arifFlow/adapter/` | A-FORGE dir — makes more sense |
+| Adapter lives where? | `A-FORGE/domain/orchestration/` or `arifFlow/spec/` | A-FORGE dir — makes more sense |
 
 ---
 
