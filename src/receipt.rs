@@ -919,6 +919,19 @@ pub struct FlowReceipt {
     /// Total verification cost that led to this step
     pub preceding_verify_cost_ns: Option<u64>,
 
+    // ── Sensor integrity (2026-10-15, WEALTH_THREE_DEFECT_CLOSURE follow-up) ──
+    /// True when the DAEMON detected this Verify was emitted mechanically by the
+    /// SAME actor as the immediately preceding Execute in the same session
+    /// (≤1s apart, zero measured cost). Such receipts are evidence of transport
+    /// dual-emission, not of verification work. Measure-first v1: stamped and
+    /// exposed (ActorFlowState.mechanical_verify_count); FQ computation does
+    /// NOT yet exclude them — that enforcement change waits for measured data.
+    /// Serialization note: skipped when false so unstamped receipts remain
+    /// byte-identical to the pre-field format (JCS-hash stability, old-reader
+    /// compat). The field appears only when the daemon actually stamped it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mechanical_self_verify: bool,
+
     // ── Epistemic ──
     /// Truth status of this step's output (F2/F7)
     pub epistemic_label: EpistemicLabel,
@@ -1048,6 +1061,7 @@ impl FlowReceipt {
             genesis_anchor: None,
             cost_ns,
             preceding_verify_cost_ns: None,
+            mechanical_self_verify: false,
             epistemic_label,
             floor_verdict: FloorVerdict::Pass,
             intent_reason: None,
@@ -1100,6 +1114,7 @@ impl FlowReceipt {
             genesis_anchor: None,
             cost_ns,
             preceding_verify_cost_ns: None,
+            mechanical_self_verify: false,
             epistemic_label,
             floor_verdict: FloorVerdict::Pass,
             intent_reason: None,
@@ -1266,6 +1281,79 @@ impl FlowReceipt {
 ///
 /// Every receipt must have `previous_receipt_hash` matching the SHA3-256
 /// of the previous receipt. The first receipt must have `None`.
+/// Canonicalize an actor identifier at ingest (server-side, RG-PH pattern:
+/// daemon normalizes, client-supplied values are never trusted for identity).
+///
+/// Problem being fixed (2026-10-15): one agent appears in the ledger under many
+/// spellings — `333-AGI`, `333-agi`, `opencode/333-AGI` — and shards receive
+/// OPPOSITE flow diagnoses (uppercase-555 = pure executor, lowercase-555 =
+/// pure verifier). FQ per actor is meaningless until identity is one key.
+///
+/// Rules (conservative v1 — fold only provable shards):
+///   1. trim + lowercase
+///   2. strip a known harness prefix (`opencode/`, `kimi-code/`, …) ONLY when
+///      the remainder is a recognized agent id pattern (trinity numerals,
+///      `fi-NNN`, `a-forge`). Garbage remainders (e.g. `codex:/root`) stay.
+///   3. `agent/subsystem` lanes (e.g. `333-agi/memory-helix`) stay DISTINCT —
+///      they are real lanes, not spelling shards.
+pub fn canonical_actor_id(raw: &str) -> String {
+    let mut s = raw.trim().to_lowercase();
+
+    const HARNESS_PREFIXES: &[&str] = &[
+        "opencode/",
+        "openclaw/",
+        "kimi-code/",
+        "claude-code/",
+        "qwen-code/",
+        "grok-build/",
+        "antigravity/",
+        "codex:",
+        "hermes/",
+    ];
+
+    fn is_agent_id(rem: &str) -> bool {
+        if rem.is_empty() || rem.starts_with('/') {
+            return false;
+        }
+        // trinity/cognitive numerals: 000-999 bands (333-agi, 555-asi, …)
+        for band in [
+            "000", "111", "222", "333", "444", "555", "666", "777", "888", "999",
+        ] {
+            if rem.starts_with(band) && rem.len() >= 7 {
+                return true;
+            }
+        }
+        // federation instance ids: fi-002, fi-008, …
+        if rem.len() >= 6 && rem.starts_with("fi-") && rem[3..].chars().all(|c| c.is_ascii_digit())
+        {
+            return true;
+        }
+        // organs that appear as harness-invoked actors
+        matches!(
+            rem,
+            "a-forge" | "arifos" | "arifflow" | "well" | "geox" | "wealth" | "chron" | "aaa"
+        )
+    }
+
+    // loop-strip: handle at most two stacked prefixes (e.g. hermes/opencode/x)
+    for _ in 0..2 {
+        let mut stripped = false;
+        for p in HARNESS_PREFIXES {
+            if let Some(rest) = s.strip_prefix(p) {
+                if is_agent_id(rest) {
+                    s = rest.to_string();
+                    stripped = true;
+                    break;
+                }
+            }
+        }
+        if !stripped {
+            break;
+        }
+    }
+    s
+}
+
 pub fn verify_chain(receipts: &[FlowReceipt]) -> Result<(), String> {
     if receipts.is_empty() {
         return Err("Empty receipt chain".to_string());
@@ -1585,6 +1673,49 @@ impl Default for ReceiptStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── canonical_actor_id (2026-10-15) ──────────────────────────────────
+
+    #[test]
+    fn canonical_folds_case_and_whitespace() {
+        assert_eq!(canonical_actor_id("  333-AGI "), "333-agi");
+        assert_eq!(canonical_actor_id("555-ASI"), "555-asi");
+        assert_eq!(canonical_actor_id("A-FORGE"), "a-forge");
+        assert_eq!(canonical_actor_id("FI-002"), "fi-002");
+        assert_eq!(canonical_actor_id("CODEX"), "codex");
+    }
+
+    #[test]
+    fn canonical_strips_known_harness_prefixes() {
+        assert_eq!(canonical_actor_id("opencode/333-AGI"), "333-agi");
+        assert_eq!(canonical_actor_id("kimi-code/FI-008"), "fi-008");
+        assert_eq!(canonical_actor_id("qwen-code/FI-003"), "fi-003");
+        assert_eq!(canonical_actor_id("grok-build/FI-007"), "fi-007");
+        assert_eq!(canonical_actor_id("HERMES/555-ASI"), "555-asi");
+        assert_eq!(canonical_actor_id("openclaw/FI-017"), "fi-017");
+    }
+
+    #[test]
+    fn canonical_keeps_subsystem_lanes_distinct() {
+        // agent/subsystem lanes are real distinct lanes — NOT folded
+        assert_eq!(
+            canonical_actor_id("333-AGI/memory-helix"),
+            "333-agi/memory-helix"
+        );
+        assert_eq!(
+            canonical_actor_id("333-agi/memory-helix"),
+            "333-agi/memory-helix"
+        );
+    }
+
+    #[test]
+    fn canonical_does_not_strip_garbage_remainders() {
+        // "codex:/root" — remainder after prefix is a path, not an agent id
+        assert_eq!(canonical_actor_id("codex:/root"), "codex:/root");
+        // unknown harness stays intact
+        assert_eq!(canonical_actor_id("some-random/agent"), "some-random/agent");
+    }
+
     use std::path::Path;
 
     #[test]

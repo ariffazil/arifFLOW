@@ -42,7 +42,11 @@ use std::time::{Duration, Instant};
 
 // F5 (audit 2026-08-10): VAULT999 canonical witness-trail log.
 // arifFlow appends sealed receipts here; VAULT999 is the only immutable store.
-const VAULT999_LOG_PATH: &str = "/root/arifOS/VAULT999/arifflow_sealed.jsonl";
+// 2026-10-15: runtime env override for staging runs (default unchanged — live vault).
+fn vault_log_path() -> String {
+    std::env::var("ARIFLOW_VAULT_LOG_PATH")
+        .unwrap_or_else(|_| "/root/arifOS/VAULT999/arifflow_sealed.jsonl".into())
+}
 
 // ── Protocol Messages ──────────────────────────────────────────────────
 
@@ -390,6 +394,16 @@ fn extract_body(request: &str) -> Option<&str> {
 }
 
 /// Handle a single HTTP connection on the daemon port
+/// P2/P3 (2026-10-15): last-receipt meta per session, for derived parentage
+/// stamps and mechanical self-verify detection at ingest.
+#[derive(Debug, Clone)]
+struct SessionLastReceipt {
+    receipt_id: String,
+    actor_id: String,
+    step_type: StepType,
+    created_at_ns: i64,
+}
+
 fn handle_client(
     mut stream: TcpStream,
     start_time: Instant,
@@ -400,6 +414,7 @@ fn handle_client(
     persist_path: &PathBuf,
     persist_mutex: &Arc<Mutex<()>>,
     vault_sealer: &Arc<Mutex<Vault999Sealer>>,
+    session_tracker: &Arc<Mutex<std::collections::HashMap<String, SessionLastReceipt>>>,
 ) {
     let mut buf = [0u8; 16384];
     match stream.read(&mut buf) {
@@ -469,6 +484,7 @@ fn handle_client(
                             serde_json::json!({
                                 "execute": state.execute_count,
                                 "verify": state.verify_count,
+                                "mechanical_verify_count": state.mechanical_verify_count,
                                 "quotient": state.quotient,
                                 "verdict": format!("{}", state.verdict),
                                 "diagnosis": actor_dx,
@@ -771,6 +787,65 @@ fn handle_client(
                 match extract_body(&request) {
                     Some(raw_json) => match serde_json::from_str::<FlowReceipt>(raw_json.trim()) {
                         Ok(mut receipt) => {
+                            // ── P1 (2026-10-15): server-side actor-id canonicalization ──
+                            // RG-PH pattern: daemon normalizes identity, client values
+                            // never trusted. Folds spelling shards (333-AGI/333-agi/
+                            // opencode/333-AGI → 333-agi) so per-actor FQ is computed
+                            // on one key. Subsystem lanes stay distinct.
+                            receipt.actor_id = arifflow::receipt::canonical_actor_id(&receipt.actor_id);
+                            // ── P2/P3 (2026-10-15): derived parentage + mechanical
+                            // self-verify stamping, from the daemon's own session
+                            // tracking. Linkage substrate today: parent_receipt_ids
+                            // 0.3%, previous_receipt_hash 0.0% — the pair signal
+                            // Arif's loop doctrine needs does not exist yet. This
+                            // creates it going forward (measure-first: stamped and
+                            // exposed; FQ math unchanged in v1).
+                            {
+                                let mut tracker = session_tracker.lock().unwrap();
+                                let key = receipt.session_id.clone();
+                                if let Some(last) = tracker.get(&key) {
+                                    // P2: derived sequence-parent within session
+                                    if receipt.parent_receipt_ids.is_empty() {
+                                        receipt.parent_receipt_ids = vec![last.receipt_id.clone()];
+                                    }
+                                    // P3: mechanical dual-emission detection — a Verify
+                                    // by the same actor immediately (≤1s) after that
+                                    // actor's Execute, with zero measured cost, is
+                                    // transport coupling, not verification work.
+                                    if receipt.step_type == StepType::Verify
+                                        && last.step_type == StepType::Execute
+                                        && last.actor_id == receipt.actor_id
+                                        && receipt.cost_ns == 0
+                                        && receipt
+                                            .created_at
+                                            .timestamp_nanos_opt()
+                                            .unwrap_or(0)
+                                            .saturating_sub(last.created_at_ns)
+                                            <= 1_000_000_000
+                                    {
+                                        receipt.mechanical_self_verify = true;
+                                    }
+                                }
+                                tracker.insert(
+                                    key,
+                                    SessionLastReceipt {
+                                        receipt_id: receipt.receipt_id.to_string(),
+                                        actor_id: receipt.actor_id.clone(),
+                                        step_type: receipt.step_type.clone(),
+                                        created_at_ns: receipt
+                                            .created_at
+                                            .timestamp_nanos_opt()
+                                            .unwrap_or(0),
+                                    },
+                                );
+                                // bounded memory: hard reset past 100k sessions
+                                if tracker.len() > 100_000 {
+                                    tracker.clear();
+                                    eprintln!(
+                                        "[arifFlow] session tracker cap reached (100k) — cleared"
+                                    );
+                                }
+                            }
                             // ── CM-1 (2026-09-19): explanatory-class gate (F2 + F3) ──
                             // Receipt-validation point. arifFlow does not classify the
                             // claim (claim_kernel owns that verdict, on disk at
@@ -914,7 +989,7 @@ fn handle_client(
                                         match OpenOptions::new()
                                             .create(true)
                                             .append(true)
-                                            .open(VAULT999_LOG_PATH)
+                                            .open(vault_log_path())
                                         {
                                             Ok(mut f) => {
                                                 let _ = writeln!(f, "{}", line);
@@ -922,7 +997,7 @@ fn handle_client(
                                             Err(e) => {
                                                 eprintln!(
                                                     "[arifFlow] WARN: VAULT999 log unwritable at {}: {} — seal kept in-memory",
-                                                    VAULT999_LOG_PATH, e
+                                                    vault_log_path(), e
                                                 );
                                             }
                                         }
@@ -1365,6 +1440,12 @@ fn daemon_mode() {
     let start_time = Instant::now();
     let receipt_store = Arc::new(Mutex::new(ReceiptStore::new(1000)));
     let enforcer = Arc::new(Mutex::new(InvariantEnforcer::default()));
+    // ── P2/P3 (2026-10-15): per-session last-receipt tracker for derived
+    // parentage stamps and mechanical self-verify detection. Bounded at 100k.
+    let session_tracker = Arc::new(Mutex::new(std::collections::HashMap::<
+        String,
+        SessionLastReceipt,
+    >::new()));
     // ── QG.V0.3 VECTOR ENGINE (2026-08-14) ──
     let vector_store = Arc::new(Mutex::new(VectorStore::new()));
     let independence = Arc::new(Mutex::new(IndependenceMonitor::new(200)));
@@ -1376,7 +1457,11 @@ fn daemon_mode() {
 
     // ── Daemon-side receipt persistence (audit 2026-08-10) ──
     // Load existing receipts on startup, then append new receipts as they arrive.
-    let persist_path = PathBuf::from("/var/lib/arifflow/receipts.jsonl");
+    // 2026-10-15: env override for staging runs (default unchanged — live path).
+    let persist_path = PathBuf::from(
+        std::env::var("ARIFLOW_PERSIST_PATH")
+            .unwrap_or_else(|_| "/var/lib/arifflow/receipts.jsonl".into()),
+    );
     let persist_mutex = Arc::new(Mutex::new(()));
     if let Some(parent) = persist_path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -1720,10 +1805,11 @@ fn daemon_mode() {
                         let indep = independence.clone();
                         let start = start_time;
                         let pp = persist_path.clone();
+                        let strt = session_tracker.clone();
                         let pm = persist_mutex.clone();
                         let vsl = vault_sealer.clone();
                         std::thread::spawn(move || {
-                            handle_client(s, start, &store, &enf, &vs, &indep, &pp, &pm, &vsl);
+                            handle_client(s, start, &store, &enf, &vs, &indep, &pp, &pm, &vsl, &strt);
                         });
                     }
                     Err(e) => {

@@ -240,6 +240,12 @@ pub struct ActorFlowState {
     pub throttled: bool,
     pub held: bool,
     pub last_seen_ns: i64,
+    /// P3 (2026-10-15): Verify receipts the daemon stamped as mechanical
+    /// dual-emission (same actor, same session, ≤1s after that actor's
+    /// Execute, zero cost). Exposed for measurement; NOT yet excluded from
+    /// verify_count / quotient — that enforcement change waits for data.
+    #[serde(default)]
+    pub mechanical_verify_count: u64,
 }
 
 impl ActorFlowState {
@@ -258,6 +264,7 @@ impl ActorFlowState {
             throttled: false,
             held: false,
             last_seen_ns: 0,
+            mechanical_verify_count: 0,
         }
     }
 
@@ -274,6 +281,12 @@ impl ActorFlowState {
             self.verify_count += 1;
             self.verify_cost_ns = self.verify_cost_ns.saturating_add(receipt.cost_ns);
             self.consecutive_executes_without_verify = 0;
+            // P3 (2026-10-15): track mechanical dual-emissions separately.
+            // Measure-first: still counted in verify_count above; the split is
+            // exposed so the enforcement change can be made on data, not vibes.
+            if receipt.mechanical_self_verify {
+                self.mechanical_verify_count += 1;
+            }
         }
         // ── FQ dual-formula fix (audit 2026-08-10) ──
         // Legacy cost-based ratio (execute_cost_ns / verify_cost_ns) is DEPRECATED.
