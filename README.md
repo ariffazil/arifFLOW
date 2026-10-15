@@ -358,3 +358,18 @@ This repo follows the federation's CI governance pattern (replicated from `ariff
 **Reference:** [`/root/AGENTS.md`](/root/AGENTS.md) — canonical federation doctrine. `AAA/docs/ORGAN.md` — topology.
 
 DITEMPA BUKAN DIBERI — governance is forged, not given.
+
+<!-- FEDERATION-STANDARD v2026-10-15 START :: 333-AGI audit :: source: organs.yaml + git + live probes :: regenerate: re-run audit -->
+## 🔗 Federation Identity (auto-audit 2026-10-15)
+| Field | Value |
+|---|---|
+| Organ | `arifflow` · METABOLISM · federation_metabolism |
+| Ports | 7073 |
+| Unit | arifflow.service |
+| Authority ceiling | METABOLIZE_ONLY |
+| Live (SOT probe @audit) | UP |
+| Repo HEAD @audit | `cf38722 2026-10-15` |
+| Public MCP | — |
+| Rollback | /opt/arifflow/bin/ROLLBACK.md (3-tier) |
+| Flow graph | [FEDERATION-FLOW-GRAPH.md](../FEDERATION-FLOW-GRAPH.md) — peta semua organ + repo |
+<!-- FEDERATION-STANDARD v2026-10-15 END -->
