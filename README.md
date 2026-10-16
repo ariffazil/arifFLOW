@@ -10,354 +10,196 @@ authority: METABOLIZE_ONLY — never judges, never executes
 truth_rule: cargo test + curl :7073/health beat any prose below
 -->
 
-# 🫀 arifFlow — Metabolism & Attention Pulse
+<p align="center">
+  <img src="docs/assets/arifflow-hero.png" alt="arifFlow — many receipts flowing in, metabolized into one FQ pulse signal; a gate, never a verdict" width="100%">
+</p>
 
-> **Constitutional Attention Pulse for the arifOS Federation**
->
-> DITEMPA BUKAN DIBERI — Forged, Not Given.
+# arifFlow
 
-**arifFlow** is the **metabolism organ** of the arifOS Federation. It runs a Rust daemon on port `7073` that watches every execute step in the federation, ingests receipts, computes **Flow Quotient (FQ)**, and emits HOLD/THROTTLE signals when execute outruns verify. It is the **nerve**, not the brain.
+### Metabolism before momentum.
 
-```
-FQ = verify_count / execute_count
-  FQ < 0.5  → HOLD   (verify is starving — block new execution)
-  FQ > 10   → THROTTLE (execute outrunning verify — 30s cooldown)
-  5+ exec without verify → HOLD (mandate verification)
-```
+**arifFlow is the arifOS federation's metabolism organ.** A Rust daemon on port `7073` ingests every execute/verify/release receipt in the federation, measures the verify-vs-execute pulse (FQ), and gates new execution when truth-metabolism breaks down.
 
-arifFlow sits between the brain (arifOS :8088) and the hands (A-FORGE :7071). It is not a transport layer. It is an **active attention governor** — refusing execution when the federation's truth-metabolism is breaking.
+When intelligence is abundant, momentum becomes the disease: agents execute faster than they verify. arifFlow metabolizes what actually happened — and refuses to let the federation outrun its own evidence.
 
----
+[30-second proof](#30-second-proof) · [What it does](#what-it-does) · [Current verified state](#current-verified-state) · [Known gaps](#evidence--known-gaps) · [Canon](./ARIFLOW_KERNEL_CANON.md)
 
-## What arifFlow Is at Runtime (OBSERVED)
+[![CI](https://img.shields.io/github/actions/workflow/status/ariffazil/arifFLOW/ci.yml?label=CI&style=flat-square)](./.github/workflows/ci.yml)
+[![Authority](https://img.shields.io/badge/authority-METABOLIZE__ONLY-8b7cf6?style=flat-square)](#the-invariant)
+[![Rust](https://img.shields.io/badge/Rust-2024_edition-orange?style=flat-square&logo=rust&logoColor=white)](./Cargo.toml)
+[![Security](https://img.shields.io/badge/security-policy-d4a853?style=flat-square)](./SECURITY.md)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](./LICENSE)
 
-This section is the honest reconciliation. The federation's metabolism plane ships live; the governance plane is partially compiled but not all wired into the daemon path. Per the constitutional audit of 2026-08-10:
+### The invariant
 
-### Live at Runtime ✅
-- HTTP daemon on `:7073` (GET /health, POST /ingest, POST /check, POST /release, POST /enforce, POST /flow)
-- Receipt accumulator (in-memory + disk-persisted to `/var/lib/arifflow/receipts.jsonl`)
-- Flow Quotient (FQ) monitor — six-state band per F13 spec (v2.1 formula)
-- Invariant enforcer (F0-F6 flow-plane, with auto-enforcement cycle every 10s)
-- Chain-aware ingest since 2026-08-10 (rejects receipts with invalid `previous_receipt_hash`)
-- Fail-CLOSED advisory gate (Python client default since 2026-08-10)
+> **It metabolizes. It never judges. It never executes.**
+> FQ is a gate, not a verdict — verdict grammar belongs to arifOS. Execution belongs to A-FORGE.
 
-### Compiled but Inactive at Runtime ⚠️
-- BSP scheduler is compiled but not invoked from daemon (lives in `stdin_protocol_loop` only)
-- Cross-organ coordination bridges (arifOS :8088, A-FORGE :7071) are compiled but not called
-- VAULT999 sealing is not wired to runtime ingest path (receipts go to local JSONL)
-- Merkle checkpointing is computed in scheduler path only (dead code at daemon runtime)
+**What arifFlow is not:** not a judge (arifOS judges) · not an executor (A-FORGE executes) · not a memory owner (VAULT999 is arifOS-owned; arifFlow only seals a witness trail) · not a transport layer · not the brain — it is the nerve.
 
-### Aspirational Architecture 📋
-- Governed parallel execution engine
-- Federation nervous system
-- Constitutional BSP scheduler with cross-organ coordination
+| Audience | What you get |
+|---|---|
+| **Human** | A pulse for the federation's honesty: are agents verifying what they execute, or drifting into execution dominance? |
+| **Agent / A2A** | A check/ingest/release protocol — `POST /check` before execute, `POST /ingest` after, `POST /release` after verify. Held means held |
+| **Developer** | A Rust daemon (`cargo build --release`), shell + Python clients, and a JSON health surface to wire into your loop |
+| **Auditor** | [Current verified state](#current-verified-state) · [`ARIFLOW_KERNEL_CANON.md`](./ARIFLOW_KERNEL_CANON.md) · [`FLOW_OWNERSHIP_LEDGER.md`](./FLOW_OWNERSHIP_LEDGER.md) · hash-chained receipts |
 
-The gap is documented, not hidden. Resolution is deferred to F13 SOVEREIGN verdict. Until then: this section is the SOT for actual behavior.
+Live: `https://arifflow.arif-fazil.com/health` · daemon `:7073` · sister organs [arifOS](https://github.com/ariffazil/arifOS) · [A-FORGE](https://github.com/ariffazil/A-FORGE) · [WELL](https://github.com/ariffazil/WELL)
 
 ---
 
-## The 6 Flow-Plane Invariants (F0–F6)
+## What works today
 
-| ID | Name | Rule | Enforcement |
-|----|------|------|-------------|
-| **F0** | Transmit, Never Own | Flow transmits, never originates intent | Architecture |
-| **F1** | Schedule, Never Authorize | Scheduling ≠ permission | Architecture |
-| **F2** | Checkpoint, Never Judge | Verdict grammar belongs to arifOS | Architecture |
-| **F3** | Observe, Never Interpret | FQ measurement, drift detection | **AUTO** — FQ gate |
-| **F4** | Route, Never Execute | Execution belongs to A-FORGE | Architecture |
-| **F5** | Receipt, Never Own Memory | VAULT999 authority belongs to arifOS | Architecture |
-| **F6** | Connect, Never Collapse | Organs are independent | Architecture |
+- **The metabolism daemon is live** — health, ingest, check, release, enforce, flow endpoints on `:7073` (observed 2026-10-16).
+- **Chain-aware receipt ingestion** — receipts with an invalid `previous_receipt_hash` are rejected; the receipt stream is tamper-evident by construction.
+- **FQ gating with real enforcement** — held actors were observed at probe time; holds, throttles and restricted-actor state are all visible on `/health`.
+- **VAULT999 sealing wired into the runtime ingest path** — sealed receipts append to `arifOS/VAULT999/arifflow_sealed.jsonl` as a hash chain (`src/main.rs`, `vault_sealer.seal(...)`). Earlier README text claiming "not wired" was stale and is corrected here (also corrected by the 2026-09-07 FI-008 audit).
+- **Auto-enforcement cycle** for the flow-plane invariants, running on an interval in the daemon.
+
+## What is not yet proven
+
+- **BSP scheduler at runtime** — compiled, but invoked only from the `stdin_protocol_loop`, not the daemon path.
+- **Cross-organ coordination bridges** (arifOS `:8088`, A-FORGE `:7071`) — compiled, not called from the daemon.
+- **Merkle checkpointing at daemon runtime** — computed in the scheduler path only.
+- **Gaming-resistance of the FQ formula** — no adversarial evaluation published.
+- **Independent audit / stranger reproducibility** — self-measurement and maintainer observation only.
+
+The declared-vs-observed gap is documented, not hidden; resolution is deferred to F13 SOVEREIGN verdict ([Evidence & known gaps](#evidence--known-gaps)).
 
 ---
 
-## Agent Execution Flow (ALL agents MUST follow)
+## 30-second proof
 
-```
-Before execute:
-    POST /check {"actor_id": "333-AGI"}
-    → 200 allowed=true  → proceed
-    → 403 allowed=false → HOLD — send Verify receipt, then release
+One read-only command against the public surface:
 
-After execute:
-    POST /ingest {step_type: "Execute", ...}
-
-After verify:
-    POST /ingest {step_type: "Verify", ...}
-    POST /release {"actor_id": "333-AGI"}
-```
-
-### Client Libraries
-
-**Shell:**
 ```bash
-source /root/arifFlow/scripts/check.sh
-arifflow_check "333-AGI"    # returns 0 if allowed, 1 if blocked
-arifflow_release "333-AGI"  # release hold
+curl -s https://arifflow.arif-fazil.com/health | jq '{verdict, fq: .fq.quotient, actors: .fq.metric_frame.actors_tracked}'
 ```
 
-**Python:**
-```python
-from arifflow.client import check, ingest, release
-
-result = check("333-AGI")
-if not result.allowed:
-    raise SystemExit(f"HOLD: {result.reason}")
-
-# ... execute ...
-
-ingest("333-AGI", session_id, "Execute", "Observation", cost_ns)
-```
+Expected shape: `{"verdict": …, "fq": …, "actors": …}` — a top-level flow verdict, the window FQ quotient, and the tracked-actor count. Current values are quoted in [Current verified state](#current-verified-state). On the box itself, `curl -s http://127.0.0.1:7073/health | jq .` returns the full vector.
 
 ---
 
-## Endpoints
+## What it does
+
+arifFlow compresses into four user jobs:
+
+1. **Metabolize receipts.** Every execute, verify and release step across the federation is ingested, hash-linked to the previous receipt, and persisted (`/var/lib/arifflow/receipts.jsonl`).
+2. **Measure the FQ pulse.** Per-actor verify-vs-execute quotient plus a seven-dimension vector constellation (the health verdict) — measurement, not interpretation.
+3. **Gate execution.** `POST /check` before you execute; the answer is `allowed` or `HOLD`. Risk-weighted `fq_required` per risk class; execution-dominance patterns (consecutive executes without verify) trigger holds. After verifying: `POST /release`.
+4. **Enforce flow-plane invariants and seal a witness trail.** F0–F6 auto-enforcement cycles, and sealed receipts appended to the VAULT999 hash chain — flow transmits, never owns memory.
+
+### Agent execution contract (all agents follow this)
+
+```
+before execute:  POST /check   {"actor_id": "…"}   → 200 allowed=true | 403 HOLD
+after execute:   POST /ingest  {step_type: "Execute", …}
+after verify:    POST /ingest  {step_type: "Verify", …}
+                 POST /release {"actor_id": "…"}
+```
+
+Clients: [`scripts/check.sh`](./scripts/check.sh) (shell) · [`src/py/arifflow/client.py`](./src/py/arifflow/client.py) (Python).
+
+---
+
+## Current verified state
+
+**Observed at: 2026-10-16T09:06:37Z** — method: `curl http://127.0.0.1:7073/health` on the production host.
+
+- Status: `ok-v3-vector` · flow verdict: **FLOWING** (constellation `FLOWING`, fused rank 0.823)
+- FQ quotient (window): **1.33** — 57 verify / 43 execute across a 100-receipt sample window
+- Actors tracked: **9** · held at probe: `codex`, `fi-002` (both `HELD: FQ=0.00`)
+- Invariant counters: 297 enforcement cycles · 900 holds recorded
+- Formula: `qg.v0.3.1-vector` (scalar FQ is deprecated as a health indicator — the top-level vector verdict is authoritative)
+
+Dynamic state is generated by probe. If this section conflicts with the live endpoint, the endpoint wins.
+
+---
+
+## Concepts (compressed)
+
+**The FQ gate.** FQ compares verification against execution over a recent receipt window. The scalar quotient is a diagnostic; the **vector constellation** (seven dimensions — FQ, G, J, C_dark, dS, Ω, W3 — each with producer, epistemic class and freshness) is the health verdict. Gates are risk-weighted: each actor carries an `fq_required` per risk class, and consecutive executes without verification trigger a HOLD regardless of the quotient.
+
+**Flow-plane invariants (F0–F6)** — the constitutional ceiling in one line each; full rules in [`ARIFLOW_KERNEL_CANON.md`](./ARIFLOW_KERNEL_CANON.md):
+
+| ID | Rule | ID | Rule |
+|---|---|---|---|
+| F0 | Transmit, never own | F4 | Route, never execute |
+| F1 | Schedule, never authorize | F5 | Receipt, never own memory |
+| F2 | Checkpoint, never judge | F6 | Connect, never collapse |
+| F3 | Observe, never interpret (auto-enforced) | | |
+
+**Position in the federation.** arifOS is the law (`:8088`) · A-FORGE the hands (`:7071`) · arifFlow the nerve (`:7073`) · FQ the pulse · VAULT999 the structure. Organs call arifFlow through the bridge adapter; no organ imports another to reach the flow engine.
+
+### Endpoints
 
 | Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/health` | GET | Status + FQ + invariant health + restricted actors |
+|---|---|---|
+| `/health` | GET | Status + FQ vector + invariant health + restricted actors |
 | `/ingest` | POST | Ingest flow receipt, update actor FQ |
-| `/check` | POST | **Invariant gate** — check if actor can execute |
-| `/release` | POST | Release hold on actor after verification |
+| `/check` | POST | Invariant gate — may this actor execute? |
+| `/release` | POST | Release hold after verification |
 | `/enforce` | POST | Trigger enforcement cycle manually |
 
 ---
 
-## The Body Is Complete
+## Evidence & known gaps
 
-```
-arifOS   = undang-undang �️  (law — the brain, :8088)
-A-FORGE  = tangan 👐         (hands — the body, :7071)
-arifFlow = saraf 🧠           (nerves — the flow, :7073)
-FQ       = nadi ❤️            (pulse — the heartbeat)
-VAULT999 = tulang 💀          (bones — the structure)
-```
+| Gap | Risk | Status |
+|---|---|---|
+| BSP scheduler not on the daemon path | The governed parallel-execution design is unexercised at runtime | **Compiled, inactive** — lives in `stdin_protocol_loop` only (observed 2026-08-10 audit) |
+| Cross-organ bridges not called | arifOS/A-FORGE coordination is one-way at runtime | **Compiled, inactive** |
+| Merkle checkpointing at daemon runtime | Scheduler-path only | **Dead code at daemon runtime** |
+| FQ formula gaming-resistance | A determined actor could pad verify receipts | **Open** — no adversarial evaluation published |
+| Independent audit | Self-measurement only | **Open** |
+| Interpretation of the declared/observed gap | Phased deployment vs deployment drift | **Deferred to F13 SOVEREIGN verdict** — see pre-doctrine archive §"What arifFlow Is at Runtime" |
 
-> **Bila FQ turun, semua HOLD. Bila FQ naik, semua forge.**  
-> DITEMPA BUKAN DIBERI — dan ditempa dalam flow, bukan dalam drift.
-
----
-
-## 🗺️ Where arifFlow Sits in the Federation
-
-```mermaid
-flowchart LR
-  subgraph Metabolism["🫀 Metabolism Plane (METABOLIZE_ONLY)"]
-    ARIFLOW[("🫀 arifFlow :7073<br/>FQ pulse · receipt accumulator<br/>invariant gate F0-F6")]
-  end
-
-  subgraph Governance["⚖️ Governance"]
-    ARIFOS["arifOS :8088<br/>F1-F13 · 8 verbs"]
-  end
-
-  subgraph Execution["⚒️ Execution"]
-    AFORGE["A-FORGE :7071/72"]
-  end
-
-  subgraph Truth["💀 Truth"]
-    VAULT["VAULT999"]
-  end
-
-  subgraph Agents["All agents MUST check in"]
-    AGENTS["333-AGI · 555-ASI<br/>888-APEX · 777-FORGE"]
-  end
-
-  AGENTS -->|"POST /check<br/>(before execute)"| ARIFLOW
-  ARIFLOW -->|"200 allowed=true<br/>403 HOLD"| AGENTS
-
-  AGENTS -->|"POST /ingest<br/>step_type=Execute\|Verify"| ARIFLOW
-  ARIFLOW -->|"FQ compute<br/>HOLD if FQ<0.5<br/>THROTTLE if FQ>10"| AGENTS
-
-  ARIFLOW -.->|"FQ monitor (advisory)"| ARIFOS
-  ARIFLOW -.->|"FQ gate (advisory)"| AFORGE
-  ARIFLOW -.->|"receipt stream (advisory)"| VAULT
-
-  classDef metabolism fill:#FFA500,stroke:#000,color:#fff,stroke-width:2px
-  classDef governance fill:#A42E2E,stroke:#000,color:#fff
-  classDef execution fill:#2E7D32,stroke:#000,color:#fff
-  classDef truth fill:#000,stroke:#000,color:#fff
-  classDef agent fill:#e0e0e0,stroke:#000
-  class ARIFLOW metabolism
-```
-
-**arifFlow internal loop (FQ gate):**
-
-```
-agent wants to execute
-        │
-        ▼
-POST /check {"actor_id": "333-AGI"}
-        │
-        ├─→ FQ compute (verify_count / execute_count over recent receipts)
-        │
-        ├─→ FQ < 0.5  → 403 HOLD (must Verify before re-check)
-        ├─→ FQ > 10   → 200 + THROTTLE flag (30s cooldown)
-        └─→ 0.5 ≤ FQ ≤ 10 → 200 allowed=true
-        │
-        ▼
-agent executes (MUTATE in A-FORGE under SEAL)
-        │
-        ▼
-POST /ingest {step_type: "Execute", ...}
-        │
-        ▼
-POST /ingest {step_type: "Verify", ...}
-        │
-        ▼
-POST /release {"actor_id": "333-AGI"} → FQ rebalances
-```
-
-**Hard rules (METABOLIZE_ONLY ceiling):**
-- arifFlow never adjudicates. FQ is a *gate*, not a *verdict*. Verdict is arifOS.
-- arifFlow never executes. The gate blocks; A-FORGE applies.
-- arifFlow never owns memory. Receipts go to local JSONL; VAULT999 is arifOS-owned.
+Detail preserved verbatim: [`docs/archive/README-2026-10-16-pre-doctrine.md`](./docs/archive/README-2026-10-16-pre-doctrine.md) · historical audit: `/root/forge_work/ariflow-audit/` (verdict SABAR — 2 assumptions falsified, 3 weakened).
 
 ---
 
-## 🏅 Federation Certification
-
-[![Federation](https://img.shields.io/endpoint?url=https%3A%2F%2Farif-fazil.com%2F.well-known%2Fbadge%2Ffederation.json&style=flat-square&label=federation)](https://arifflow.arif-fazil.com/health)
-[![VAULT999](https://img.shields.io/endpoint?url=https%3A%2F%2Farif-fazil.com%2F.well-known%2Fbadge%2Fvault999.json&style=flat-square&label=VAULT999)](https://arif-fazil.com/999/verify)
-[![F1–F13](https://img.shields.io/endpoint?url=https%3A%2F%2Farif-fazil.com%2F.well-known%2Fbadge%2Ffloors.json&style=flat-square)](https://github.com/ariffazil/arifos/blob/main/GENESIS/000_KERNEL_CANON.md)
-[![FQ Pulse](https://img.shields.io/endpoint?url=https%3A%2F%2Farif-fazil.com%2F.well-known%2Fbadge%2Fhealth.json&style=flat-square&label=FQ)](https://github.com/ariffazil/arifFlow)
-
-[![MCP 2025-06-18](https://img.shields.io/badge/MCP-2025--06--18-00b894?style=flat-square&logo=modelcontextprotocol&logoColor=white)](https://modelcontextprotocol.io)
-[![arifFlow: METABOLIZE_ONLY](https://img.shields.io/badge/arifFlow-METABOLIZE_ONLY-FFA500?style=flat-square)](https://github.com/ariffazil/arifFlow/blob/main/ARIFLOW_KERNEL_CANON.md)
-
-[![Rust 1.85+](https://img.shields.io/badge/rust-1.85+-orange?style=flat-square&logo=rust&logoColor=white)](https://github.com/ariffazil/arifFlow)
-[![Tokio async](https://img.shields.io/badge/tokio-async-blueviolet?style=flat-square)](https://github.com/ariffazil/arifFlow)
-[![License AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-A42E2E?style=flat-square)](https://github.com/ariffazil/arifFlow/blob/main/LICENSE)
-
----
-
-## Federation Position
-
-```
-                  arifOS
-               (Constitution)
-                     │
-                     ▼
-        ┌─────── AAA ────────┐
-        │  Attention Plane   │
-        │                    │
-        │  arifFlow = WITNESS ← "What actually happened?"
-        │  FRAME     = OBSERVE ← "Has reality drifted?"
-        │  FED       = ROUTE  ← "Which intelligence source should perform this task?"
-        └────────────────────┘
-                     │
-                     ▼
-                 A-FORGE
-               (Execution)
-```
-
-arifFlow is one of the four AAA State Infrastructure organs (alongside FRAME, FED, FLAME). It retains its own authority ceiling — AAA catalogs them; AAA does not command them.
-
----
-
-## Quick Start
+## Development
 
 ```bash
+git clone https://github.com/ariffazil/arifFLOW.git
+cd arifFlow
 cargo build --release
 cargo test
-cargo clippy
-cargo fmt
+cargo clippy && cargo fmt
 
-# Run daemon
-./target/release/arifflow --port 7073
+# run the daemon (port via env; production pins ARIFLOW_PORT=7073)
+ARIFLOW_PORT=7073 ./target/release/arifflow --daemon
 
-# Probe
-curl -s http://127.0.0.1:7073/health | jq .
+# probe
+curl -s http://127.0.0.1:7073/health | jq .vector.diagnosis
 ```
 
-### Prerequisites
-- Rust 2024 edition (1.85+)
-- Tokio runtime
+Prerequisites: Rust 2024 edition (1.85+), Tokio runtime. Release tags are date-stamped `vYYYY.MM.DD` (never semver).
 
----
+### Operational gates
 
-## Federation Contract
-
-arifFlow is a **sovereign organ** — called by other organs via adapter:
-
-- **Adapter:** `/root/A-FORGE/domain/orchestration/arifFlow_adapter.py`
-- `POST /bridge/execute` — submit execution topology
-- `GET /bridge/status/:id` — poll execution state
-- `POST /bridge/cooling` — cooling queue enqueue
-
-Every organ (GEOX, WEALTH, WELL, AAA, HERMES) may call arifFlow directly through its bridge interface. No organ imports another to reach the flow engine.
-
----
-
-## Versioning & Release Cycle
-
-**Iron Rule:** Date-stamped `vYYYY.MM.DD` (never semver).
-
-```bash
-cargo build --release
-cargo test
-# Bump Cargo.toml version → vYYYY.MM.DD
-git tag vYYYY.MM.DD && git push --tags
-systemctl restart arifflow    # on deploy
-```
-
----
-
-## Federation Navigation
-
-| Organ | Role | Port | Repo | Health |
-|:---|:---|:---:|:---|:---|
-| **⚖️ arifOS** | Constitutional Kernel — judges, seals | 8088 | [repo](https://github.com/ariffazil/arifos) | [health](https://arifos.arif-fazil.com/health) |
-| **⚒️ A-FORGE** | Execution Engine — builds, deploys | 7071/72 | [repo](https://github.com/ariffazil/A-FORGE) | [health](https://forge.arif-fazil.com/health) |
-| **🏛️ AAA** | Attention Plane — reality compression + routing | 3001 | [repo](https://github.com/ariffazil/AAA) | [health](https://aaa.arif-fazil.com/health) |
-| **🌍 GEOX** | Earth Intelligence — seismic, wells | 8081 | [repo](https://github.com/ariffazil/GEOX) | [health](https://geox.arif-fazil.com/health) |
-| **💰 WEALTH** | Capital Intelligence — NPV, risk | 18082 | [repo](https://github.com/ariffazil/WEALTH) | [health](https://wealth.arif-fazil.com/health) |
-| **🫀 WELL** | Vitality Guard — human readiness | 18083 | [repo](https://github.com/ariffazil/WELL) | [health](https://well.arif-fazil.com/health) |
-| **🫀 arifFlow** | Metabolism — FQ pulse | 7073 | [repo](https://github.com/ariffazil/arifFlow) | [health](http://127.0.0.1:7073/health) |
-| **🧭 FED** | Route Advisor | 7074 | [repo](https://arif-fazil.com) [private]| [health](https://fed.arif-fazil.com/health) |
-| **🧱 FRAME** | Observer — drift detection, evidence | frame-organ.service | [repo](https://arif-fazil.com) [private]| — |
-| **🔮 HERMES** | Tier-3 Boundary — Telegram `@ASI_arifos_bot` (KVM8, no port) | — | [repo](https://github.com/ariffazil/HERMES) | — |
-| **🌐 arif-fazil.com** | Public Web Surface | 443 | [repo](https://github.com/ariffazil/arif-fazil.com) | [verify](https://arif-fazil.com/999/verify) |
-
----
-
-## 📜 Sovereignty & License
-
-- **License:** GNU Affero General Public License v3.0 (**AGPL-3.0**)
-- **Sovereign:** **Muhammad Arif bin Fazil** (F13 SOVEREIGN)
-
-> *DITEMPA BUKAN DIBERI — Forged, Not Given.*  
-> *Flow observes. arifOS judges. A-FORGE executes. The pulse never commands.*
-
----
-
-**Audit basis:** 333-AGI Δ MIND session (2026-08-11) — README gap audit, see `/root/forge_work/2026-08-11-readme-audit/`.
-*AGPL-3.0 License · arifOS Federation Standard · Sovereign: Arif Fazil*
-
----
-
-## 🛡️ CI Governance (F13 verdict 2026-08-10)
-
-This repo follows the federation's CI governance pattern (replicated from `ariffazil/arifOS` PR #683). The pattern ensures Dependabot PRs receive a real, reproducible unprivileged verdict — no more all-red check rolls from structurally-incompatible gates.
-
-**Per-repo adapter** (see `.github/workflows/` for the actual files):
-
-- `.github/dependabot.yml` — `uv` (Python) / `cargo` (Rust) / `npm` (TypeScript) ecosystem; cooldown 3d; open-PRs 5; constitutional packages un-grouped (no `ignore:` — visibility preserved)
-- `.github/workflows/dependabot-ci.yml` — unprivileged gate; runs ONLY on Dependabot PRs; SHA-bound probes
-- `.github/workflows/{ci-uv-lock-invariant|cargo-lock-invariant|npm-lock-invariant}.yml` — universal `{uv lock --check && uv sync --frozen | cargo check --locked && cargo build --locked | npm ci}` invariant on every PR + push to main
-- `.github/workflows/auto-merge-dependabot.yml` — constitutional package denylist (per-language); F13 review the only merge path
-- Privileged workflows gated with `if: github.actor != 'dependabot[bot]' && github.actor != 'app/dependabot'` — so they SKIP for Dependabot PRs where their inputs cannot be satisfied
-
-**Constitutional packages** (denied auto-merge, require F13 review):
-
-| Language | Denylist |
+| Workflow | What it guards |
 |---|---|
-| Python | `protobuf`, `cryptography`, `fastmcp-slim`, `fastmcp`, `caio`, `sentence-transformers`, `pynacl`, `blake3` |
-| Rust    | `serde`, `tokio`, `hyper`, `axum`, `reqwest`, `rustls`, `async-trait`, `clap`, `tracing` |
-| TypeScript | `zod`, `@modelcontextprotocol/sdk`, `fastmcp`, `mcp-sdk`, `tsx`, `vitest`, `@types/node`, `typescript`, `ts-node` |
-| Static site | `vite`, `react`, `react-dom`, `react-router`, `@tanstack/react-query`, `tailwindcss` |
+| [ci](./.github/workflows/ci.yml) | build + test |
+| [cargo-lock-invariant](./.github/workflows/cargo-lock-invariant.yml) | `cargo check --locked` on every PR |
+| [dependabot-ci](./.github/workflows/dependabot-ci.yml) | unprivileged verdict on Dependabot PRs |
+| [auto-merge-dependabot](./.github/workflows/auto-merge-dependabot.yml) | constitutional packages require F13 review (denylist in pre-doctrine archive §CI Governance) |
 
-**Reference:** [`/root/AGENTS.md`](/root/AGENTS.md) — canonical federation doctrine. `AAA/docs/ORGAN.md` — topology.
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
-DITEMPA BUKAN DIBERI — governance is forged, not given.
+---
+
+## Security & license
+
+Disclosure policy and threat model: [`SECURITY.md`](./SECURITY.md).
+
+**AGPL-3.0** ([`LICENSE`](./LICENSE)) — when deployed over a network, the complete source code must be made available to all users interacting with the service. Sovereign: **Muhammad Arif bin Fazil** (F13 SOVEREIGN).
+
+---
+
+*Revision 2026-10-16 — restructured under AGENTIC-README-DOCTRINE v1 (attention layer for humans, agents and institutions; dynamic state probed and dated, never hand-carried). Pre-doctrine text preserved verbatim in [`docs/archive/README-2026-10-16-pre-doctrine.md`](./docs/archive/README-2026-10-16-pre-doctrine.md).*
+
+**DITEMPA BUKAN DIBERI** — Forged, Not Given. *Flow observes. arifOS judges. A-FORGE executes. The pulse never commands.*
 
 <!-- FEDERATION-STANDARD v2026-10-15 START :: 333-AGI audit :: source: organs.yaml + git + live probes :: regenerate: re-run audit -->
 ## 🔗 Federation Identity (auto-audit 2026-10-15)
@@ -371,5 +213,5 @@ DITEMPA BUKAN DIBERI — governance is forged, not given.
 | Repo HEAD @audit | `cf38722 2026-10-15` |
 | Public MCP | — |
 | Rollback | /opt/arifflow/bin/ROLLBACK.md (3-tier) |
-| Flow graph | [FEDERATION-FLOW-GRAPH.md](../FEDERATION-FLOW-GRAPH.md) — peta semua organ + repo |
+| Flow graph | [FEDERATION.md](https://github.com/ariffazil/AAA/blob/main/FEDERATION.md) — peta semua organ + repo |
 <!-- FEDERATION-STANDARD v2026-10-15 END -->
