@@ -427,8 +427,38 @@ fn handle_client(
                 let mut indep = independence.lock().unwrap();
                 vs.tick();
                 let fq = store.flow_quotient(100);
+
+                // Minimum-Gated Harmonic Mean (Tugas 2.2 / Gate 2):
+                // If any active executing actor has FQ < 0.50, gate immediately to min_i(FQ_i).
+                // Otherwise, compute the Harmonic Mean across all active executing actors.
+                let active_fqs: Vec<f64> = enf
+                    .actors
+                    .values()
+                    .filter_map(|state| {
+                        if state.execute_count > 0 {
+                            state.quotient
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                let fed_quotient: Option<f64> = if active_fqs.is_empty() {
+                    fq.quotient
+                } else if let Some(&min_fq) = active_fqs.iter().min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)) {
+                    if min_fq < 0.50 {
+                        Some(min_fq)
+                    } else {
+                        let sum_inv: f64 = active_fqs.iter().map(|&q| 1.0 / q.max(0.001)).sum();
+                        let h_mean = active_fqs.len() as f64 / sum_inv;
+                        Some(h_mean)
+                    }
+                } else {
+                    fq.quotient
+                };
+
                 // Inject live FQ into the vector engine (MEASURE·LIVE)
-                vs.inject_fq(fq.quotient);
+                vs.inject_fq(fed_quotient);
                 indep.record(&vs);
                 let restricted: Vec<serde_json::Value> = enf
                     .restricted_actors()
@@ -533,7 +563,9 @@ fn handle_client(
                     "verdict": constellation.clone(),
                     "diagnosis": diagnosis_label,
                     "fq": {
-                        "quotient": fq.quotient,
+                        "quotient": fed_quotient,
+                        "raw_pool_quotient": fq.quotient,
+                        "rollup_formula": "minimum_gated_harmonic_mean",
                         "legacy_verdict": format!("{}", fq.verdict),
                         "execute_count": fq.execute_count,
                         "verify_count": fq.verify_count,
