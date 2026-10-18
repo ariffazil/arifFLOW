@@ -1358,12 +1358,36 @@ Connection: close
                         }
                         match serde_json::from_str::<ExecuteRequest>(raw_json.trim()) {
                             Ok(req) => {
+                                let actor_id = req.actor_id.unwrap_or_else(|| "arifflow".into());
+                                // ── Actor gate: check per-actor HELD/THROTTLED before execute ──
+                                // Closes scar-2026-10-06-001: witness → stored without routing change.
+                                // arifFlow's check_actor() now gates the execution bridge.
+                                {
+                                    let enf = enforcer.lock().unwrap();
+                                    let (allowed, reason, action) = enf.check_actor(&actor_id);
+                                    if !allowed {
+                                        let body = serde_json::json!({
+                                            "actor": actor_id,
+                                            "allowed": false,
+                                            "reason": reason,
+                                            "action": format!("{:?}", action),
+                                            "gate": "actor_metabolic",
+                                        });
+                                        let body_str = body.to_string();
+                                        let response = format!(
+                                            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                            body_str.len(), body_str
+                                        ).into_bytes();
+                                        let _ = stream.write_all(&response);
+                                        return;
+                                    }
+                                }
                                 let exec_req = ExecutionRequest {
                                     node_id: req.node_id,
                                     topology: req.topology.unwrap_or_else(|| "pipeline".into()),
                                     envelope_json: req.envelope_json.unwrap_or_else(|| "{}".into()),
                                     lease_id: req.lease_id.unwrap_or_else(|| "unknown".into()),
-                                    actor_id: req.actor_id.unwrap_or_else(|| "arifflow".into()),
+                                    actor_id,
                                 };
                                 let bridge = AForgeExecutorBridge::new();
                                 match bridge.execute(exec_req) {
