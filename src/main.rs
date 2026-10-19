@@ -1566,6 +1566,23 @@ fn daemon_mode() {
         }
     }
 
+    // Seed per-actor FQ state from the loaded receipts. Without this, a restart
+    // leaves `actors` empty and /health reports a cold-start FQ from the global
+    // window only — a false healthy until the next live ingest. The windowed
+    // ActorFlowState keeps the most recent ACTOR_FQ_WINDOW steps per actor.
+    {
+        let store = receipt_store.lock().unwrap();
+        let mut enf = enforcer.lock().unwrap();
+        for receipt in store.all() {
+            enf.ingest(receipt);
+        }
+        eprintln!(
+            "[arifFlow] Seeded per-actor FQ from {} receipts ({} actors)",
+            store.len(),
+            enf.actors.len()
+        );
+    }
+
     // ── E1 PHASE E ACTIVATION: arifOS governance bridge boot lease ──
     // Cross-organ bridge activation per Phase E charter (F13 SOVEREIGN-ratified 2026-09-17).
     // Calls arifOS :8088/mcp (arif_init) to acquire a session + constitutional chain ID.

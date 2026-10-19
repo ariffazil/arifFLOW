@@ -61,6 +61,13 @@ impl StepType {
         matches!(self, StepType::Execute | StepType::Seal | StepType::Merge)
     }
 
+    /// Returns true if this step type is WORK for FQ computation.
+    /// A Seal is a durable outcome record, not work performed. Counting it as
+    /// execution inflates the denominator and depresses FQ (ruling 2026-10-19).
+    pub fn is_work_execution(&self) -> bool {
+        matches!(self, StepType::Execute | StepType::Merge)
+    }
+
     /// Returns true if this step type is counted as verification in FQ computation.
     pub fn is_verification(&self) -> bool {
         matches!(self, StepType::Verify)
@@ -743,7 +750,7 @@ impl FlowQuotient {
         let mut barrier_count = 0usize;
 
         for r in receipts {
-            if r.step_type.is_execution() {
+            if r.step_type.is_work_execution() {
                 execute_cost += r.cost_ns;
                 execute_count += 1;
             }
@@ -2501,6 +2508,9 @@ mod tests {
     fn test_step_type_classification() {
         assert!(StepType::Execute.is_execution());
         assert!(StepType::Seal.is_execution());
+        assert!(!StepType::Seal.is_work_execution());
+        assert!(StepType::Execute.is_work_execution());
+        assert!(StepType::Merge.is_work_execution());
         assert!(StepType::Merge.is_execution());
         assert!(!StepType::Execute.is_verification());
         assert!(StepType::Verify.is_verification());

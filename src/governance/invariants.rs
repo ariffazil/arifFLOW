@@ -21,7 +21,7 @@ use crate::receipt::{
     RiskClass,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::time::Instant;
 
 // ── Flow-Plane Invariants ────────────────────────────────────────────────
@@ -219,6 +219,10 @@ impl InvariantReport {
 
 // ── Per-Actor FQ State ───────────────────────────────────────────────────
 
+/// Number of most-recent receipts that count toward an actor's FQ.
+/// FQ measures current behaviour, not lifetime age; older receipts age out.
+const ACTOR_FQ_WINDOW: usize = 50;
+
 /// Tracked state for a single actor in the flow plane.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActorFlowState {
@@ -246,6 +250,10 @@ pub struct ActorFlowState {
     /// verify_count / quotient — that enforcement change waits for data.
     #[serde(default)]
     pub mechanical_verify_count: u64,
+    /// Last ACTOR_FQ_WINDOW step kinds (1=execution, 2=verification, 0=other).
+    /// Counts are decremented when an old step ages out.
+    #[serde(default)]
+    pub window: VecDeque<u8>,
 }
 
 impl ActorFlowState {
@@ -265,6 +273,7 @@ impl ActorFlowState {
             held: false,
             last_seen_ns: 0,
             mechanical_verify_count: 0,
+            window: VecDeque::new(),
         }
     }
 
@@ -272,21 +281,45 @@ impl ActorFlowState {
     pub fn ingest(&mut self, receipt: &FlowReceipt) {
         self.last_seen_ns = receipt.created_at.timestamp_nanos_opt().unwrap_or(0);
         self.last_risk_class = receipt.risk_class.clone();
-        if receipt.step_type.is_execution() {
-            self.execute_count += 1;
-            self.execute_cost_ns = self.execute_cost_ns.saturating_add(receipt.cost_ns);
-            self.consecutive_executes_without_verify += 1;
-        }
-        if receipt.step_type.is_verification() {
-            self.verify_count += 1;
-            self.verify_cost_ns = self.verify_cost_ns.saturating_add(receipt.cost_ns);
-            self.consecutive_executes_without_verify = 0;
-            // P3 (2026-10-15): track mechanical dual-emissions separately.
-            // Measure-first: still counted in verify_count above; the split is
-            // exposed so the enforcement change can be made on data, not vibes.
-            if receipt.mechanical_self_verify {
-                self.mechanical_verify_count += 1;
+
+        // Windowed FQ (2026-10-19): count only the most recent ACTOR_FQ_WINDOW
+        // steps. A lifetime counter measures age, not current behaviour; one
+        // old execute can pin an actor (and the min-gated federation) forever.
+        let kind: u8 = if receipt.step_type.is_work_execution() {
+            1
+        } else if receipt.step_type.is_verification() {
+            2
+        } else {
+            0
+        };
+        self.window.push_back(kind);
+        if self.window.len() > ACTOR_FQ_WINDOW {
+            if let Some(aged_out) = self.window.pop_front() {
+                match aged_out {
+                    1 => self.execute_count = self.execute_count.saturating_sub(1),
+                    2 => self.verify_count = self.verify_count.saturating_sub(1),
+                    _ => {}
+                }
             }
+        }
+        match kind {
+            1 => {
+                self.execute_count += 1;
+                self.execute_cost_ns = self.execute_cost_ns.saturating_add(receipt.cost_ns);
+                self.consecutive_executes_without_verify += 1;
+            }
+            2 => {
+                self.verify_count += 1;
+                self.verify_cost_ns = self.verify_cost_ns.saturating_add(receipt.cost_ns);
+                self.consecutive_executes_without_verify = 0;
+                // P3 (2026-10-15): track mechanical dual-emissions separately.
+                // Measure-first: still counted in verify_count above; the split is
+                // exposed so the enforcement change can be made on data, not vibes.
+                if receipt.mechanical_self_verify {
+                    self.mechanical_verify_count += 1;
+                }
+            }
+            _ => {}
         }
         // ── FQ dual-formula fix (audit 2026-08-10) ──
         // Legacy cost-based ratio (execute_cost_ns / verify_cost_ns) is DEPRECATED.
@@ -532,16 +565,22 @@ impl InvariantEnforcer {
         let mut checks = Vec::new();
 
         for (actor_id, state) in &self.actors {
-            // Risk-weighted FQ gate: fq_required per risk_class replaces fixed stuck_threshold
-            let fq_required = state.last_risk_class.fq_required();
-            if state.fq < fq_required && state.execute_count > 0 {
+            // FQ gate: the policy floor (stuck_threshold, 0.5) is the binding
+            // gate; the risk-class floor can only raise it, never lower it.
+            // Use quotient (canonical) not the deprecated fq alias.
+            let fq_value = state.quotient.unwrap_or(0.0);
+            let fq_required = state
+                .last_risk_class
+                .fq_required()
+                .max(self.thresholds.stuck_threshold);
+            if fq_value < fq_required && state.execute_count > 0 {
                 checks.push(InvariantCheck::new(
                     FlowInvariant::F3_ObserveNeverInterpret,
                     InvariantStatus::Hold,
                     format!(
                         "Actor '{}' is STUCK: FQ={:.2} < fq_required={:.2} (risk_class={}). execute={} verify={}",
                         actor_id,
-                        state.fq,
+                        fq_value,
                         fq_required,
                         state.last_risk_class.code(),
                         state.execute_count,
@@ -549,7 +588,7 @@ impl InvariantEnforcer {
                     ),
                     format!(
                         "FQ={:.2} execute_count={} verify_count={} consecutive_without_verify={}",
-                        state.fq,
+                        fq_value,
                         state.execute_count,
                         state.verify_count,
                         state.consecutive_executes_without_verify
