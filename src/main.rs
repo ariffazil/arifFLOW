@@ -636,6 +636,14 @@ fn handle_client(
                     .collect();
                 let actors_tracked = per_actor.len();
 
+                // UTC stamp of process start. Derived, not stored: Instant is monotonic and
+                // has no epoch, so subtract uptime from wall-clock now.
+                let window_start_utc = {
+                    let elapsed = chrono::Duration::from_std(start_time.elapsed())
+                        .unwrap_or_else(|_| chrono::Duration::zero());
+                    (chrono::Utc::now() - elapsed).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                };
+
                 // ── QG.V0.3 VECTOR (2026-08-14, spec §4): full vector state ──
                 let vector_state = vs.vector_state();
                 let vector_rank = (vs.rank() * 1000.0).round() / 1000.0;
@@ -711,7 +719,14 @@ fn handle_client(
                     "provenance": {
                         "formula_version": "qg.v0.3.1-vector",
                         "formula_hash": "sha256:arifflow-fq-v2.1-2026-08-05",
-                        "window_start_utc": start_time.elapsed().as_secs().to_string(),
+                        // F13 2026-10-20: this field used to carry
+                        // `start_time.elapsed().as_secs()` — process uptime, i.e. seconds,
+                        // under a name that promises a UTC timestamp. Measured live value
+                        // "941". Anyone reading it as a time got 1970-01-01T00:15:41Z.
+                        // A name and its content must agree: the UTC stamp of process start
+                        // goes here, the age goes in its own field.
+                        "window_start_utc": window_start_utc,
+                        "window_age_s": start_time.elapsed().as_secs(),
                         "window_duration_s": fq.window_size as u64,
                         "tau_half_lives": {
                             "LIVE": 10,
@@ -719,6 +734,11 @@ fn handle_client(
                             "WITNESS": 250,
                             "FEEL": "anchor N (default 10)",
                         },
+                        // The evidence window is the process lifetime: ReceiptStore is built
+                        // empty at boot and nothing rehydrates it from disk, while holds are
+                        // durable. Stating it here stops a two-minute window being quoted as
+                        // a two-day verdict.
+                        "window_basis": "process_lifetime_since_start",
                     },
                     "invariants": {
                         "cycle_count": enf.cycle_count,

@@ -825,17 +825,29 @@ impl InvariantEnforcer {
     pub fn restricted_actors(&self) -> Vec<(&str, EnforcerAction, String)> {
         let mut result = Vec::new();
         for (id, state) in &self.actors {
+            // F13 2026-10-20: `state.fq` is an alias that maps `None → 0.0`, so an actor
+            // with no measured quotient in the window (either side zero) reported
+            // "HELD: FQ=0.00" — the same string as an actor that executed and verified
+            // nothing. Measured case: `chron` held at "FQ=0.00" while its own window read
+            // 2 Execute / 10 Verify (FQ=5.00, the opposite pole). The reason must say what
+            // was actually measured; the hold itself is unchanged.
+            let reason = match state.quotient {
+                Some(q) => format!(
+                    "HELD: FQ={:.2} (execute={} verify={})",
+                    q, state.execute_count, state.verify_count
+                ),
+                None => format!(
+                    "HELD: FQ=UNMEASURED — window has execute={} verify={}; a quotient needs both sides",
+                    state.execute_count, state.verify_count
+                ),
+            };
             if state.held {
-                result.push((
-                    id.as_str(),
-                    EnforcerAction::Hold,
-                    format!("HELD: FQ={:.2}", state.fq),
-                ));
+                result.push((id.as_str(), EnforcerAction::Hold, reason));
             } else if state.throttled {
                 result.push((
                     id.as_str(),
                     EnforcerAction::Throttle,
-                    format!("THROTTLED: FQ={:.2}", state.fq),
+                    reason.replacen("HELD:", "THROTTLED:", 1),
                 ));
             }
         }
