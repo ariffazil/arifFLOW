@@ -495,6 +495,20 @@ struct SessionLastReceipt {
     actor_id: String,
     step_type: StepType,
     created_at_ns: i64,
+    /// [F13 2026-10-20] Whether THIS SESSION has ever carried an Execute.
+    ///
+    /// The old detector only looked at the immediately-preceding step
+    /// (`last.step_type == Execute`) plus a ≤1s gap. That is not a test for
+    /// "was anything executed", it is a test for "was the previous step an
+    /// Execute" — and A-FORGE's `forwardLegacyReceipt` emits exactly that
+    /// pattern legitimately (Execute then a paired Verify, same session, both
+    /// `cost_ns: 0`, "post-execution observation"). 21 legitimate A-FORGE
+    /// receipts were refused on 2026-10-20 because the shapes are identical.
+    ///
+    /// This flag makes the question cumulative: has this session EVER executed
+    /// anything? `balance-verify-*` never did (0 Execute across 22 receipts),
+    /// so it is caught; A-FORGE always does, so it is not.
+    seen_execute: bool,
 }
 
 fn handle_client(
@@ -928,28 +942,55 @@ fn handle_client(
                             {
                                 let mut tracker = session_tracker.lock().unwrap();
                                 let key = receipt.session_id.clone();
+                                // CUMULATIVE per-session Execute history. Read BEFORE
+                                // the parentage block below, and evaluated even when the
+                                // session is brand new (tracker miss → seen_execute
+                                // false). That is the whole point: `balance-verify-*`
+                                // used a FRESH session id with zero Execute receipts,
+                                // so a rule nested under `if let Some(last)` would skip
+                                // it entirely. First live run of this rule caught that
+                                // exact bug — the orphan probe ingested clean.
+                                let seen_execute = tracker
+                                    .get(&key)
+                                    .map(|l| l.seen_execute)
+                                    .unwrap_or(false);
                                 if let Some(last) = tracker.get(&key) {
                                     // P2: derived sequence-parent within session
                                     if receipt.parent_receipt_ids.is_empty() {
                                         receipt.parent_receipt_ids = vec![last.receipt_id.clone()];
                                     }
-                                    // P3: mechanical dual-emission detection — a Verify
-                                    // by the same actor immediately (≤1s) after that
-                                    // actor's Execute, with zero measured cost, is
-                                    // transport coupling, not verification work.
-                                    if receipt.step_type == StepType::Verify
-                                        && last.step_type == StepType::Execute
-                                        && last.actor_id == receipt.actor_id
-                                        && receipt.cost_ns == 0
-                                        && receipt
-                                            .created_at
-                                            .timestamp_nanos_opt()
-                                            .unwrap_or(0)
-                                            .saturating_sub(last.created_at_ns)
-                                            <= 1_000_000_000
-                                    {
-                                        receipt.mechanical_self_verify = true;
-                                    }
+                                }
+
+                                // P3: session-orphan detection (REVISED 2026-10-20).
+                                //
+                                // The previous rule was: Verify by the same actor
+                                // ≤1s after that actor's Execute, at cost_ns==0.
+                                // That measures "was the PREVIOUS step an Execute",
+                                // not "was anything executed" — and A-FORGE's
+                                // forwardLegacyReceipt() emits exactly that shape
+                                // legitimately (Execute, then a paired Verify,
+                                // same session, both cost_ns:0, reason
+                                // "post-execution observation"). On 2026-10-20 that
+                                // refused 21 real A-FORGE receipts plus 333-agi and
+                                // governance-drift-batch: a constitutional gate
+                                // blocking a healthy organ.
+                                //
+                                // The revised test is cumulative and semantic: has
+                                // THIS SESSION ever carried an Execute?
+                                //   - balance-verify-* (22 forged receipts, 2026-10-19)
+                                //     never did -> refused. Still caught.
+                                //   - A-FORGE always does -> allowed. No longer misfiring.
+                                //
+                                // Evaluated OUTSIDE the parentage `if let`, so a
+                                // first-ever receipt in a fresh session is judged
+                                // rather than skipped.
+                                if receipt.step_type == StepType::Verify && !seen_execute {
+                                    receipt.mechanical_self_verify = true;
+                                    eprintln!(
+                                        "[arifFlow] SESSION-ORPHAN VERIFY: session '{}' has no Execute — receipt {} cannot CLEAR a hold (still counted in verify_count; see P3 note on quotient exclusion)",
+                                        key,
+                                        receipt.receipt_id
+                                    );
                                 }
                                 tracker.insert(
                                     key,
@@ -961,6 +1002,8 @@ fn handle_client(
                                             .created_at
                                             .timestamp_nanos_opt()
                                             .unwrap_or(0),
+                                        seen_execute: seen_execute
+                                            || receipt.step_type == StepType::Execute,
                                     },
                                 );
                                 // bounded memory: hard reset past 100k sessions
@@ -1173,15 +1216,31 @@ fn handle_client(
                                 // would re-create the one-way ratchet AUTO-RELEASE was
                                 // added to fix (35,812 holds at scan time). The gate here
                                 // is evidence-quality, not authority.
+                                // [F13 2026-10-20 — AUTO-RELEASE GAP CLOSED]
+                                // The loop above is legitimate evidence and stays. What
+                                // is closed is the variant the organ itself detects as
+                                // NOT evidence: a Verify whose SESSION never executed
+                                // anything (session-orphan). Nothing was run, so nothing
+                                // can have been verified. Timing and cost_ns are no
+                                // longer part of the test — see the detector note, where
+                                // the old ≤1s rule is shown to misfire on A-FORGE's
+                                // legitimate paired receipts.
+                                //
+                                // Deliberately NOT routed through arifOS here: a genuine
+                                // Verify receipt IS the protocol's evidence, and arifOS
+                                // currently returns HOLD for these actors (measured), which
+                                // would re-create the one-way ratchet AUTO-RELEASE was
+                                // added to fix (35,812 holds at scan time). The gate here
+                                // is evidence-quality, not authority.
                                 if receipt.mechanical_self_verify {
                                     eprintln!(
-                                        "[arifFlow] AUTO-RELEASE REFUSED: {} hold NOT cleared on mechanical_self_verify receipt {} — transport coupling is not verification",
+                                        "[arifFlow] AUTO-RELEASE REFUSED: {} hold NOT cleared — session-orphan Verify receipt {} (session never executed)",
                                         receipt.actor_id, receipt.receipt_id
                                     );
                                     append_release_audit(&serde_json::json!({
                                         "surface": "arifFlow:7073/ingest",
                                         "decision": "REFUSED",
-                                        "reason": "mechanical_self_verify_not_evidence",
+                                        "reason": "session_orphan_verify_not_evidence",
                                         "target_actor": receipt.actor_id,
                                         "receipt_id": receipt.receipt_id.to_string(),
                                         "routed_organ": "arifFlow",
@@ -1823,6 +1882,43 @@ fn daemon_mode() {
             store.len(),
             enf.actors.len()
         );
+
+        // [F13 2026-10-20] Seed the session-orphan tracker's Execute history.
+        //
+        // The orphan rule asks "has this session EVER executed?". After a
+        // restart the tracker is empty, so the first Verify in ANY session would
+        // look orphaned and be refused — re-breaking the A-FORGE case this rule
+        // was written to fix. Replaying the persisted receipts restores the
+        // per-session Execute history so the question is answerable again.
+        {
+            let mut tracker = session_tracker.lock().unwrap();
+            for receipt in store.all() {
+                let entry = tracker
+                    .entry(receipt.session_id.clone())
+                    .or_insert_with(|| SessionLastReceipt {
+                        receipt_id: receipt.receipt_id.to_string(),
+                        actor_id: receipt.actor_id.clone(),
+                        step_type: receipt.step_type.clone(),
+                        created_at_ns: receipt
+                            .created_at
+                            .timestamp_nanos_opt()
+                            .unwrap_or(0),
+                        seen_execute: false,
+                    });
+                if receipt.step_type == StepType::Execute {
+                    entry.seen_execute = true;
+                }
+                entry.step_type = receipt.step_type.clone();
+                entry.actor_id = receipt.actor_id.clone();
+                entry.receipt_id = receipt.receipt_id.to_string();
+            }
+            let with_exec = tracker.values().filter(|t| t.seen_execute).count();
+            eprintln!(
+                "[arifFlow] Seeded session-orphan tracker: {} sessions ({} with Execute history)",
+                tracker.len(),
+                with_exec
+            );
+        }
         // [F13 2026-10-20] Restore durable holds AFTER seeding. Seeding recomputes
         // `held` from the receipt window, so any actor under threshold comes back
         // un-held. Re-apply the persisted verdicts so a restart cannot silently
