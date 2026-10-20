@@ -29,6 +29,7 @@ use arifflow::receipt::{
     ExplanationClass, FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE, FLOW_INVARIANT_EXPLANATION_CLASS,
     FlowReceipt, ReceiptStore, StepType,
 };
+use arifflow::governance::HoldRecord;
 use arifflow::scheduler::{FlowNode, SuperStepScheduler, TopologyKind, VerdictClass};
 use arifflow::vector::{Dimension, Epistemology, IndependenceMonitor, VectorStore};
 use serde::{Deserialize, Serialize};
@@ -386,6 +387,98 @@ fn http_bad_request(body: &str) -> Vec<u8> {
         body
     )
     .into_bytes()
+}
+
+/// HTTP 403 response helper (F13: authorization denied, not malformed input)
+fn http_forbidden(body: &str) -> Vec<u8> {
+    format!(
+        "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+    .into_bytes()
+}
+
+/// Append a release-authorization decision to the VAULT999 audit log (F5).
+///
+/// Denials are witnessed with the same force as approvals. A refused attempt to
+/// clear a constitutional hold is evidence that the gate held — losing it would
+/// make the gate look unused when in fact it was probed.
+fn append_release_audit(entry: &serde_json::Value) {
+    match OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(vault_log_path())
+    {
+        Ok(mut f) => {
+            let _ = writeln!(f, "{}", entry);
+        }
+        Err(e) => {
+            eprintln!(
+                "[arifFlow] WARN: release audit unwritable at {}: {} — decision NOT witnessed",
+                vault_log_path(),
+                e
+            );
+        }
+    }
+}
+
+/// Durable hold-ledger path. Separate from the receipt log: receipts are
+/// evidence, holds are verdicts. Re-deriving verdicts from evidence is what made
+/// them volatile; the ledger makes them survive a restart.
+fn hold_ledger_path() -> String {
+    std::env::var("ARIFLOW_HOLD_LEDGER_PATH")
+        .unwrap_or_else(|_| "/var/lib/arifflow/holds.json".into())
+}
+
+/// Persist the current held-actor set durably.
+fn persist_hold_ledger(enf: &InvariantEnforcer) {
+    let snapshot = enf.held_snapshot();
+    let path = hold_ledger_path();
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // Write-then-rename so a crash mid-write cannot truncate the ledger and
+    // silently drop every hold — the exact failure class this fixes.
+    let tmp = format!("{}.tmp", path);
+    let payload = serde_json::json!({
+        "schema": "arifflow.hold_ledger/v1",
+        "written_at_ns": arifflow::governance::now_ns(),
+        "hold_count": snapshot.len(),
+        "holds": snapshot,
+    });
+    match std::fs::write(&tmp, payload.to_string())
+        .and_then(|_| std::fs::rename(&tmp, &path))
+    {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!(
+                "[arifFlow] WARN: hold ledger unwritable at {}: {} — holds are IN-MEMORY ONLY",
+                path, e
+            );
+        }
+    }
+}
+
+/// Load persisted holds. A missing file is not an error (first boot).
+fn load_hold_ledger() -> Vec<HoldRecord> {
+    let path = hold_ledger_path();
+    match std::fs::read_to_string(&path) {
+        Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(v) => match serde_json::from_value::<Vec<HoldRecord>>(v.get("holds").cloned().unwrap_or_default().clone()) {
+                Ok(records) => records,
+                Err(e) => {
+                    eprintln!("[arifFlow] WARN: hold ledger malformed at {}: {}", path, e);
+                    Vec::new()
+                }
+            },
+            Err(e) => {
+                eprintln!("[arifFlow] WARN: hold ledger unparseable at {}: {}", path, e);
+                Vec::new()
+            }
+        },
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Extract JSON body from HTTP request (after \r\n\r\n)
@@ -1063,8 +1156,50 @@ fn handle_client(
                                     .get(&receipt.actor_id)
                                     .map(|s| s.held || s.throttled)
                                     .unwrap_or(false);
-                                if was_held {
+                                // [F13 2026-10-20 — AUTO-RELEASE GAP CLOSED]
+                                // The loop above is legitimate evidence and stays. What
+                                // is closed is the variant the organ itself detects as
+                                // NOT evidence: mechanical_self_verify — a Verify by the
+                                // same actor ≤1 s after its own Execute at cost_ns==0.
+                                // That is transport coupling (a client emitting a paired
+                                // receipt), not verification work. Letting it clear a
+                                // hold means "I checked my own work" can be manufactured
+                                // by assertion, which is exactly what a hold records the
+                                // ABSENCE of.
+                                //
+                                // Deliberately NOT routed through arifOS here: a genuine
+                                // Verify receipt IS the protocol's evidence, and arifOS
+                                // currently returns HOLD for these actors (measured), which
+                                // would re-create the one-way ratchet AUTO-RELEASE was
+                                // added to fix (35,812 holds at scan time). The gate here
+                                // is evidence-quality, not authority.
+                                if receipt.mechanical_self_verify {
+                                    eprintln!(
+                                        "[arifFlow] AUTO-RELEASE REFUSED: {} hold NOT cleared on mechanical_self_verify receipt {} — transport coupling is not verification",
+                                        receipt.actor_id, receipt.receipt_id
+                                    );
+                                    append_release_audit(&serde_json::json!({
+                                        "surface": "arifFlow:7073/ingest",
+                                        "decision": "REFUSED",
+                                        "reason": "mechanical_self_verify_not_evidence",
+                                        "target_actor": receipt.actor_id,
+                                        "receipt_id": receipt.receipt_id.to_string(),
+                                        "routed_organ": "arifFlow",
+                                    }));
+                                } else if was_held {
                                     enf.release_hold(&receipt.actor_id);
+                                    // [F13 2026-10-20] A release is a verdict change —
+                                    // it must reach the durable ledger immediately or a
+                                    // restart would resurrect the hold.
+                                    persist_hold_ledger(&enf);
+                                    append_release_audit(&serde_json::json!({
+                                        "surface": "arifFlow:7073/ingest",
+                                        "decision": "RELEASED",
+                                        "reason": "verify_receipt",
+                                        "target_actor": receipt.actor_id,
+                                        "receipt_id": receipt.receipt_id.to_string(),
+                                        "routed_organ": "arifFlow",
+                                    }));
                                     eprintln!(
                                         "[arifFlow] AUTO-RELEASE: hold cleared for {} on Verify receipt {}",
                                         receipt.actor_id, receipt.receipt_id
@@ -1321,27 +1456,131 @@ fn handle_client(
                 }
             } else if request.starts_with("POST /release") {
                 // ── Release hold on actor (called after verification) ──
-                // [L0↔L2] Self-release governance requires SCT cryptographic identity,
-                // not plaintext string comparison. The plaintext requester_id check was
-                // reverted (2026-08-10 L2↔L3 runtime probe: broken API contract —
-                // Python client doesn't send requester_id → all clients get 400).
-                // Defer to F13 SOVEREIGN decision. Until then, release remains open.
-                // Documented as honest governance gap, not hidden.
+                // [F13 2026-10-20 — GAP CLOSED] This endpoint was previously an
+                // unauthenticated constitutional bypass: any caller who could reach
+                // :7073 could clear any actor's hold with {"actor_id":"..."} and no
+                // proof of verification. The 2026-08-10 revert that removed the
+                // requester_id check (it broke clients that never sent the field)
+                // left it open, and the daemon never re-gated it.
+                //
+                // arifFlow does not adjudicate whether a hold may be lifted — arifOS
+                // does. A hold exists because evidence is missing; only a
+                // constitutional authority can attest that the evidence is now
+                // present. So every release is now arbitrated by arifOS 888_JUDGE
+                // (arif_judge mode=intercept) over the existing bridge.
+                //
+                // Consequence to be explicit about: until arifOS grants ALLOW for a
+                // given (target, requester) pair, holds are NOT clearable this way.
+                // That is the intended posture — fail-closed. The legitimate
+                // self-service path remains the Verify-receipt auto-release in
+                // /ingest, which is backed by an actual verification receipt.
                 match extract_body(&request) {
                     Some(raw_json) => {
                         #[derive(Deserialize)]
                         struct ReleaseRequest {
                             actor_id: String,
+                            /// Identity asking for the release. Required — a release
+                            /// with no requester is exactly the anonymous bypass.
+                            #[serde(default)]
+                            requester_id: Option<String>,
                         }
                         match serde_json::from_str::<ReleaseRequest>(raw_json.trim()) {
                             Ok(req) => {
-                                let mut enf = enforcer.lock().unwrap();
-                                enf.release_hold(&req.actor_id);
-                                let body = serde_json::json!({
-                                    "status": "released",
-                                    "actor": req.actor_id,
-                                });
-                                http_ok(&body.to_string())
+                                let requester = req
+                                    .requester_id
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|r| !r.is_empty());
+                                match requester {
+                                    None => {
+                                        append_release_audit(&serde_json::json!({
+                                            "surface": "arifFlow:7073/release",
+                                            "decision": "DENIED",
+                                            "reason": "missing_requester_id",
+                                            "target_actor": req.actor_id,
+                                            "routed_organ": "arifFlow",
+                                        }));
+                                        let body = serde_json::json!({
+                                            "status": "denied",
+                                            "reason": "missing_requester_id",
+                                            "message": "release requires requester_id — arifOS arbitrates hold removal",
+                                        });
+                                        http_forbidden(&body.to_string())
+                                    }
+                                    Some(requester) => {
+                                        let bridge = ArifOSGovernanceBridge::new();
+                                        match bridge.authorize_hold_release(&req.actor_id, requester) {
+                                            Ok((verdict_id, verdict_class))
+                                                if verdict_class == "SEAL" =>
+                                            {
+                                                let mut enf = enforcer.lock().unwrap();
+                                                enf.release_hold(&req.actor_id);
+                                                // [F13 2026-10-20] Release is a verdict change —
+                                                // push it to the durable ledger before
+                                                // answering, so a restart cannot resurrect it.
+                                                persist_hold_ledger(&enf);
+                                                drop(enf);
+                                                append_release_audit(&serde_json::json!({
+                                                    "surface": "arifFlow:7073/release",
+                                                    "decision": "RELEASED",
+                                                    "target_actor": req.actor_id,
+                                                    "requester": requester,
+                                                    "verdict_id": verdict_id,
+                                                    "verdict_class": verdict_class,
+                                                    "authority": "arifOS:888_JUDGE",
+                                                    "routed_organ": "arifFlow",
+                                                }));
+                                                let body = serde_json::json!({
+                                                    "status": "released",
+                                                    "actor": req.actor_id,
+                                                    "verdict_id": verdict_id,
+                                                    "verdict_class": verdict_class,
+                                                    "authority": "arifOS:888_JUDGE",
+                                                });
+                                                http_ok(&body.to_string())
+                                            }
+                                            Ok((verdict_id, verdict_class)) => {
+                                                append_release_audit(&serde_json::json!({
+                                                    "surface": "arifFlow:7073/release",
+                                                    "decision": "DENIED",
+                                                    "reason": "arifOS_verdict_not_seal",
+                                                    "target_actor": req.actor_id,
+                                                    "requester": requester,
+                                                    "verdict_id": verdict_id,
+                                                    "verdict_class": verdict_class,
+                                                    "routed_organ": "arifFlow",
+                                                }));
+                                                let body = serde_json::json!({
+                                                    "status": "denied",
+                                                    "reason": "arifOS_verdict_not_seal",
+                                                    "verdict_class": verdict_class,
+                                                    "verdict_id": verdict_id,
+                                                    "message": "arifOS did not authorize this hold release",
+                                                });
+                                                http_forbidden(&body.to_string())
+                                            }
+                                            Err(e) => {
+                                                // Fail closed. arifOS unreachable or erroring
+                                                // must never be read as permission.
+                                                append_release_audit(&serde_json::json!({
+                                                    "surface": "arifFlow:7073/release",
+                                                    "decision": "DENIED",
+                                                    "reason": "arifos_unreachable",
+                                                    "target_actor": req.actor_id,
+                                                    "requester": requester,
+                                                    "error": format!("{}", e),
+                                                    "routed_organ": "arifFlow",
+                                                }));
+                                                let body = serde_json::json!({
+                                                    "status": "denied",
+                                                    "reason": "arifos_unreachable",
+                                                    "message": "constitutional authority unavailable — failing closed",
+                                                });
+                                                http_forbidden(&body.to_string())
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             Err(e) => {
                                 let body = serde_json::json!({"status": "invalid", "error": format!("{}", e)}).to_string();
@@ -1360,7 +1599,7 @@ Connection: close
                         }
                     }
                     None => {
-                        let body = r#"{"status":"error","message":"Empty body. Send {\"actor_id\":\"...\"}"}"#;
+                        let body = r#"{"status":"error","message":"Empty body. Send {\"actor_id\":\"...\",\"requester_id\":\"...\"}"}"#;
                         format!(
                             "HTTP/1.1 400 Bad Request
 Content-Type: application/json
@@ -1445,6 +1684,9 @@ Connection: close
                 // ── Manually trigger enforcement cycle ──
                 let mut enf = enforcer.lock().unwrap();
                 let report = enf.enforce();
+                // [F13 2026-10-20] This cycle may have applied new holds; push them
+                // to the durable ledger so they cannot evaporate on next restart.
+                persist_hold_ledger(&enf);
                 let body = serde_json::json!({
                     "status": "enforced",
                     "overall": format!("{:?}", report.overall_status),
@@ -1581,6 +1823,39 @@ fn daemon_mode() {
             store.len(),
             enf.actors.len()
         );
+        // [F13 2026-10-20] Restore durable holds AFTER seeding. Seeding recomputes
+        // `held` from the receipt window, so any actor under threshold comes back
+        // un-held. Re-apply the persisted verdicts so a restart cannot silently
+        // drop a hold, and WITNESS every restored hold in the audit trail —
+        // durability that resurrects ghosts without a receipt is its own kind of
+        // dishonesty.
+        let persisted = load_hold_ledger();
+        if !persisted.is_empty() {
+            let restored = enf.restore_holds(&persisted);
+            eprintln!(
+                "[arifFlow] Hold ledger: {} persisted, {} restored (absent after seeding)",
+                persisted.len(),
+                restored.len()
+            );
+            for actor in &restored {
+                append_release_audit(&serde_json::json!({
+                    "surface": "arifFlow:7073/boot",
+                    "decision": "RESTORED",
+                    "reason": "hold_rederived_clear_on_restart",
+                    "target_actor": actor,
+                    "persisted_holds": persisted.len(),
+                    "routed_organ": "arifFlow",
+                }));
+            }
+            if !restored.is_empty() {
+                eprintln!(
+                    "[arifFlow] RESTORED holds that re-derivation had cleared: {}",
+                    restored.join(", ")
+                );
+            }
+        }
+        drop(enf);
+        persist_hold_ledger(&enforcer.lock().unwrap());
     }
 
     // ── E1 PHASE E ACTIVATION: arifOS governance bridge boot lease ──
@@ -1656,6 +1931,9 @@ fn daemon_mode() {
                 Err(p) => p.into_inner(),
             };
             let report = enf.enforce();
+            // [F13 2026-10-20] This cycle may have applied new holds. Persist them
+            // every cycle so a restart cannot drop a hold that this cycle applied.
+            persist_hold_ledger(&enf);
             // FIX 3 (audit 2026-08-10): single-line cycle log on every enforce.
             eprintln!("[arifFlow] enforce cycle #{} complete", enf.cycle_count);
             if report.blocking_count > 0 || report.warn_count > 0 {

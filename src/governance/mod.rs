@@ -16,8 +16,8 @@ pub mod vault999;
 pub use checkpoint::{CheckpointError, CheckpointManager, CheckpointState};
 pub use cooling::{Convergence, CoolingEntry, CoolingLedger, CoolingSummary, DriftSeverity};
 pub use invariants::{
-    ActorFlowState, EnforcerAction, FlowInvariant, FqThresholds, InvariantCheck, InvariantEnforcer,
-    InvariantReport, InvariantStatus,
+    ActorFlowState, EnforcerAction, FlowInvariant, FqThresholds, HoldRecord, InvariantCheck,
+    InvariantEnforcer, InvariantReport, InvariantStatus, now_ns,
 };
 pub use kabarkan::KabarkanTracer;
 pub use kabarkan_fq::{

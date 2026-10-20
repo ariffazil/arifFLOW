@@ -223,6 +223,17 @@ impl InvariantReport {
 /// FQ measures current behaviour, not lifetime age; older receipts age out.
 const ACTOR_FQ_WINDOW: usize = 50;
 
+/// Wall-clock nanoseconds since UNIX epoch. Used for durable hold timestamps
+/// (held_since_ns) so a hold's first-application time survives a restart —
+/// Instant alone is process-local and useless for persistence.
+pub fn now_ns() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0)
+}
+
 /// Tracked state for a single actor in the flow plane.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActorFlowState {
@@ -254,6 +265,11 @@ pub struct ActorFlowState {
     /// Counts are decremented when an old step ages out.
     #[serde(default)]
     pub window: VecDeque<u8>,
+    /// [F13 2026-10-20] When this hold was first applied. 0 = never held.
+    /// Durable timestamp carried into HoldRecord so a restart cannot silently
+    /// clear a hold by re-deriving it as under-threshold.
+    #[serde(default)]
+    pub held_since_ns: i64,
 }
 
 impl ActorFlowState {
@@ -274,6 +290,7 @@ impl ActorFlowState {
             last_seen_ns: 0,
             mechanical_verify_count: 0,
             window: VecDeque::new(),
+            held_since_ns: 0,
         }
     }
 
@@ -722,6 +739,12 @@ impl InvariantEnforcer {
                         {
                             state.held = true;
                             state.throttled = true;
+                            // [F13 2026-10-20] Stamp first-application time so the hold
+                            // can be persisted durably and survive a restart instead of
+                            // being silently re-derived away. Only set on first hold.
+                            if state.held_since_ns == 0 {
+                                state.held_since_ns = now_ns();
+                            }
                             self.hold_count += 1;
 
                             // Record cooling entry for HOLD
@@ -825,8 +848,94 @@ impl InvariantEnforcer {
             state.held = false;
             state.throttled = false;
             state.consecutive_executes_without_verify = 0;
+            // [F13 2026-10-20] Cleared with the hold — a released hold must not
+            // resurrect on the next boot from a stale timestamp.
+            state.held_since_ns = 0;
         }
     }
+
+    // ── F13 2026-10-20: durable hold ledger ────────────────────────────
+    //
+    // A hold is a constitutional verdict, not a derived statistic. Before this
+    // it existed only in memory: on boot the daemon re-ingested receipts to seed
+    // per-actor FQ, which recomputed `held` from CURRENT counters. An actor that
+    // was no longer over threshold therefore came back un-held after every
+    // restart, deploy or crash — with no audit entry. Observed live on
+    // 2026-10-20: `fi-002` lost its hold across a deploy, 8 → 7 holds, no
+    // RELEASED record anywhere.
+    //
+    // These two methods make the verdict durable. Persist/restore is deliberately
+    // SEPARATE from enforce()/release_hold() so the enforcer stays a pure
+    // in-memory state machine and the daemon owns all file IO.
+
+    /// Snapshot every currently-held actor for durable persistence.
+    pub fn held_snapshot(&self) -> Vec<HoldRecord> {
+        self.actors
+            .values()
+            .filter(|s| s.held)
+            .map(|s| HoldRecord {
+                actor_id: s.actor_id.clone(),
+                held_since_ns: s.held_since_ns,
+            })
+            .collect()
+    }
+
+    /// Re-apply persisted holds after boot seeding.
+    ///
+    /// Restored holds are returned so the caller can WITNESS each one — a hold
+    /// that is restored rather than re-derived must be visible in the audit
+    /// trail, otherwise durability silently resurrects ghosts with no witness.
+    /// Returns the records that were restored (i.e. were absent after seeding).
+    pub fn restore_holds(&mut self, records: &[HoldRecord]) -> Vec<String> {
+        let mut restored = Vec::new();
+        for rec in records {
+            // Canonicalize: seeding canonicalizes actor ids to lowercase, so a
+            // persisted mixed-case id must fold to the same key.
+            let key = rec.actor_id.to_ascii_lowercase();
+            let already = self
+                .actors
+                .get(&key)
+                .map(|s| s.held)
+                .unwrap_or(false);
+            if already {
+                // Already held from re-derivation — keep the EARLIER timestamp
+                // (it is the true first-application time).
+                if let Some(state) = self.actors.get_mut(&key)
+                    && state.held_since_ns == 0
+                {
+                    state.held_since_ns = rec.held_since_ns;
+                }
+                continue;
+            }
+            // Restoring a hold for an actor with no state at all: create a shell
+            // so the verdict is not lost just because the receipt window aged out.
+            let entry = self
+                .actors
+                .entry(key)
+                .or_insert_with(|| ActorFlowState::new(rec.actor_id.clone()));
+            entry.held = true;
+            entry.throttled = true;
+            entry.held_since_ns = if rec.held_since_ns != 0 {
+                rec.held_since_ns
+            } else {
+                now_ns()
+            };
+            restored.push(rec.actor_id.clone());
+        }
+        restored
+    }
+}
+
+/// A durable record of one held actor.
+///
+/// [F13 2026-10-20] A hold is a constitutional verdict with a lifetime; it is
+/// not a function of the current receipt window. This is the on-disk form that
+/// makes that true across restarts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HoldRecord {
+    pub actor_id: String,
+    /// When the hold was first applied (wall-clock ns). 0 = unknown.
+    pub held_since_ns: i64,
 }
 
 impl Default for InvariantEnforcer {

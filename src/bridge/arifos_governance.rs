@@ -222,6 +222,77 @@ impl ArifOSGovernanceBridge {
         Ok((verdict_id, verdict_class))
     }
 
+    /// Authorize clearing a constitutional hold on an actor.
+    ///
+    /// F13 (2026-10-20): closing the /release governance gap. arifFlow does not
+    /// adjudicate whether a hold may be lifted — arifOS does. This asks 888_JUDGE
+    /// via arif_judge(mode="intercept") and returns (verdict_id, verdict_class)
+    /// using the SAME class mapping as submit_verdict, which already defaults to
+    /// HOLD whenever the kernel answers ambiguously or not at all. That default is
+    /// load-bearing: an unreachable or unparseable arifOS therefore DENIES rather
+    /// than admits (fail-closed, F2).
+    ///
+    /// `target_actor` is the actor whose hold is being cleared; `requester` is the
+    /// identity asking for it. They are deliberately distinct so a kernel verdict
+    /// is bound to a specific (target, requester) pair and cannot be replayed
+    /// against a different target.
+    pub fn authorize_hold_release(
+        &self,
+        target_actor: &str,
+        requester: &str,
+    ) -> Result<(String, String), String> {
+        let result = call_arifos_tool(
+            "arif_judge",
+            &json!({
+                "mode": "intercept",
+                "actor": requester,
+                "intent": "arifflow_hold_release",
+                "requested_capability": "arifflow.hold_release",
+                "reversibility_level": "R2",
+                "blast_radius": "ORGAN",
+                "epistemic_state": "OBSERVED",
+                "evidence": [{
+                    "surface": "arifFlow:7073/release",
+                    "target_actor": target_actor,
+                    "requester": requester,
+                    "source": "arifFlow_release_gate"
+                }]
+            }),
+        )?;
+
+        let verdict_id = result
+            .get("verdict_id")
+            .and_then(|v| v.as_str())
+            .or_else(|| result.get("constitutional_chain_id").and_then(|v| v.as_str()))
+            .unwrap_or("no_verdict")
+            .to_string();
+
+        // Identical classification to submit_verdict — ambiguity resolves to HOLD,
+        // never to SEAL. Do not "improve" this into a permissive mapping.
+        let verdict_class = if let Some(decision) = result.get("decision").and_then(|v| v.as_str())
+        {
+            match decision {
+                "ALLOW" | "ADMIT_MUTATE" | "ADMIT_READ" => "SEAL",
+                "ESCALATE" | "CLASSIFICATION_HOLD" => "HOLD",
+                "DENY" => "VOID",
+                "SIMULATE" => "SABAR",
+                _ => "HOLD",
+            }
+        } else if let Some(hold) = result.get("hold_required").and_then(|v| v.as_bool()) {
+            if hold { "HOLD" } else { "SEAL" }
+        } else {
+            "HOLD"
+        }
+        .to_string();
+
+        eprintln!(
+            "[arifFlow] HOLD-RELEASE verdict from arifOS: target={} requester={} verdict={} class={}",
+            target_actor, requester, verdict_id, verdict_class
+        );
+
+        Ok((verdict_id, verdict_class))
+    }
+
     /// Validate a checkpoint against the constitutional chain.
     /// Sends: arif_judge(mode="validate", constitutional_chain_id="...")
     pub fn validate_checkpoint(&self, chain_id: &str, _verdict_id: &str) -> Result<bool, String> {
