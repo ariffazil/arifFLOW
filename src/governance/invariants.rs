@@ -641,7 +641,13 @@ impl InvariantEnforcer {
         // RED-002: canonicalize actor identity — case-variant IDs are ONE actor
         // ("A-FORGE" ≡ "a-forge"). Original case is preserved on the receipt;
         // the FQ state key is canonical.
-        let actor_id = receipt.actor_id.to_ascii_lowercase();
+        //
+        // [B3/A3 identity-canon 2026-10-22] Also collapse a lane-qualified handle
+        // ("kimi-code/FI-008") onto an existing canonical key ("fi-008") so one
+        // principal does not accrue two FQ states. Collapse-to-existing only —
+        // a first-seen handle is never re-keyed on a guess.
+        let raw = receipt.actor_id.to_ascii_lowercase();
+        let actor_id = self.resolve_actor_key(&raw).unwrap_or(raw);
         let entry = self
             .actors
             .entry(actor_id.clone())
@@ -804,10 +810,51 @@ impl InvariantEnforcer {
         InvariantReport::new(checks, Some(fq))
     }
 
+    /// Resolve a raw actor handle to the registered canonical key.
+    ///
+    /// [B3/A3 identity-canon 2026-10-22] A caller may present a lane-qualified
+    /// handle (`kimi-code/FI-008`) while the actor registry is keyed by the
+    /// canonical id (`fi-008`). Raw-string lookup then misses and the same
+    /// principal is judged on a phantom state. Resolution order mirrors
+    /// `contracts/identity_canon.py` comparison_key: exact, then separators
+    /// stripped (`- _ space .`), then slash head/tail for `name/FI-nnn` forms.
+    fn resolve_actor_key(&self, actor_id: &str) -> Option<String> {
+        if self.actors.contains_key(actor_id) {
+            return Some(actor_id.to_string());
+        }
+        fn key_norm(s: &str) -> String {
+            s.to_lowercase()
+                .chars()
+                .filter(|c| !matches!(c, '-' | '_' | ' ' | '.'))
+                .collect()
+        }
+        let n = key_norm(actor_id);
+        if !n.is_empty()
+            && let Some(k) = self.actors.keys().find(|k| key_norm(k) == n)
+        {
+            return Some(k.clone());
+        }
+        if let Some((head, tail)) = actor_id.split_once('/') {
+            for part in [head.trim(), tail.trim()] {
+                let np = key_norm(part);
+                if np.is_empty() {
+                    continue;
+                }
+                if let Some(k) = self.actors.keys().find(|k| key_norm(k) == np) {
+                    return Some(k.clone());
+                }
+            }
+        }
+        None
+    }
+
     /// Check if a specific actor is allowed to execute.
     /// Returns (allowed, reason, action).
     pub fn check_actor(&self, actor_id: &str) -> (bool, String, EnforcerAction) {
-        if let Some(state) = self.actors.get(actor_id) {
+        // Resolve the raw handle to the registered canonical key before lookup.
+        let resolved = self.resolve_actor_key(actor_id);
+        let lookup = resolved.as_deref().unwrap_or(actor_id);
+        if let Some(state) = self.actors.get(lookup) {
             // [A 2026-10-20] RE-DERIVE from live counters first — the sticky
             // `held` flag is a latch, not the source of truth. This is the
             // check_actor-side half of the shared-derivation fix: the same
@@ -1138,6 +1185,66 @@ mod tests {
         let (allowed, reason, action) = enforcer.check_actor("healthy");
         assert!(allowed, "Healthy actor should be allowed: {}", reason);
         assert_eq!(action, EnforcerAction::Allow);
+    }
+
+    #[test]
+    fn test_check_actor_resolves_lane_qualified_handle() {
+        // B3/A3 identity-canon (2026-10-22): a lane-qualified handle
+        // ("kimi-code/FI-008") must resolve to the canonical registered key
+        // ("fi-008") — one principal, one key. Before the resolver, the raw
+        // lookup missed and the actor was judged on a phantom state.
+        let mut enforcer = InvariantEnforcer::default();
+        for (i, st) in [(1u64, StepType::Execute), (2u64, StepType::Verify)] {
+            let r = FlowReceipt::new_first(
+                "fi-008",
+                &format!("s{}", i),
+                st,
+                EpistemicLabel::Observation,
+                1_000_000,
+            );
+            enforcer.ingest(&r);
+        }
+        let canonical = enforcer.check_actor("fi-008");
+        let qualified = enforcer.check_actor("kimi-code/FI-008");
+        assert_eq!(
+            canonical.0, qualified.0,
+            "lane-qualified handle must resolve to the same principal state"
+        );
+        assert!(
+            qualified.0,
+            "balanced fi-008 seen through a lane-qualified handle must be allowed: {}",
+            qualified.1
+        );
+    }
+
+    #[test]
+    fn test_ingest_collapses_lane_qualified_handle() {
+        // B3/A3 identity-canon (2026-10-22): two handles for one principal must
+        // accrue ONE FQ state. Execute via "fi-008", verify via
+        // "kimi-code/FI-008" — if they collapse, the principal is balanced.
+        let mut enforcer = InvariantEnforcer::default();
+        let r1 = FlowReceipt::new_first(
+            "fi-008",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1_000_000,
+        );
+        enforcer.ingest(&r1);
+        let r2 = FlowReceipt::new_first(
+            "kimi-code/FI-008",
+            "s2",
+            StepType::Verify,
+            EpistemicLabel::Derivation,
+            500_000,
+        );
+        enforcer.ingest(&r2);
+        let (allowed, reason, _) = enforcer.check_actor("fi-008");
+        assert!(
+            allowed,
+            "one principal must be balanced after exec+verify across two handles: {}",
+            reason
+        );
     }
 
     #[test]
