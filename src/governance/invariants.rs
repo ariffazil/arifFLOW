@@ -1251,7 +1251,7 @@ mod tests {
     fn test_release_hold() {
         let mut enforcer = InvariantEnforcer::default();
 
-        // Make actor stuck
+        // Make actor stuck: 6 executes, 0 verifies → quotient 0.0 < 0.5 floor.
         for _ in 0..6 {
             let r = FlowReceipt::new_first(
                 "test",
@@ -1267,10 +1267,41 @@ mod tests {
         let (allowed, _, _) = enforcer.check_actor("test");
         assert!(!allowed);
 
-        // Release hold
+        // [6f7ee12 doctrine] release_hold clears the LATCH; the gate
+        // re-derives the hold from live counters ([A 2026-10-20] shared F3
+        // derivation) and /release is arifOS-arbitrated fail-closed. A
+        // release without verification evidence must NOT free a measured
+        // STUCK actor — the quotient governs, not the flag. This test
+        // previously asserted flag-era semantics and went red the day the
+        // re-derive commit landed; it now pins the doctrine instead.
         enforcer.release_hold("test");
-        let (allowed2, _, _) = enforcer.check_actor("test");
-        assert!(allowed2, "Actor should be released after hold release");
+        let (allowed2, reason2, _) = enforcer.check_actor("test");
+        assert!(
+            !allowed2,
+            "release without verify evidence must not clear a measured STUCK hold: {}",
+            reason2
+        );
+
+        // The legitimate path (mirrors /ingest auto-release): verify up to
+        // the metabolic floor. 6 executes need quotient ≥ 0.5 → 3 verifies
+        // (3/6 = 0.5, not < floor) — then the re-derived condition lifts.
+        for _ in 0..3 {
+            let v = FlowReceipt::new_first(
+                "test",
+                "s1",
+                StepType::Verify,
+                EpistemicLabel::Derivation,
+                1_000_000,
+            );
+            enforcer.ingest(&v);
+        }
+        enforcer.release_hold("test");
+        let (allowed3, reason3, _) = enforcer.check_actor("test");
+        assert!(
+            allowed3,
+            "actor at the quotient floor must pass after verify + release: {}",
+            reason3
+        );
     }
 
     #[test]
