@@ -483,6 +483,83 @@ pub struct InvariantEnforcer {
     pub pending_explanation_violations: Vec<InvariantCheck>,
 }
 
+/// Shared F3 hold derivation — the ONE place the three Calhoun poles are
+/// evaluated. Consumed by both `enforce()` (report) and `check_actor()` (gate),
+/// so a report and a gate cannot disagree about the same actor in the same
+/// instant. Returns (reason, detail) when the actor is held, None when clear.
+///
+/// [A 2026-10-20] Before this, enforce() derived from live counters while
+/// check_actor() trusted a sticky `held` flag it never re-derived — measured
+/// live as /enforce "not blocking" vs /check "HOLD, 403" for fi-002.
+fn f3_hold_condition(
+    actor_id: &str,
+    state: &ActorFlowState,
+    thresholds: &FqThresholds,
+) -> Option<(String, String)> {
+    // FQ gate: the policy floor (stuck_threshold, 0.5) is the binding gate;
+    // the risk-class floor can only raise it, never lower it. Canonical
+    // quantity is `quotient` (count-based); `fq` is the deprecated alias.
+    let fq_value = state.quotient.unwrap_or(0.0);
+    let fq_required = state
+        .last_risk_class
+        .fq_required()
+        .max(thresholds.stuck_threshold);
+
+    // STUCK — below the floor.
+    if fq_value < fq_required && state.execute_count > 0 {
+        return Some((
+            format!(
+                "Actor '{}' is STUCK: FQ={:.2} < fq_required={:.2} (risk_class={}). execute={} verify={}",
+                actor_id,
+                fq_value,
+                fq_required,
+                state.last_risk_class.code(),
+                state.execute_count,
+                state.verify_count
+            ),
+            format!(
+                "FQ={:.2} execute_count={} verify_count={} consecutive_without_verify={}",
+                fq_value, state.execute_count, state.verify_count,
+                state.consecutive_executes_without_verify
+            ),
+        ));
+    }
+
+    // BURN pole — execute:verify > 10:1, motion without witness.
+    // v2.2: both Calhoun poles are equal-weight holds (Codex requirement).
+    if state.fq < (1.0 / thresholds.overheat_threshold) && state.execute_count > 0 {
+        return Some((
+            format!(
+                "Actor '{}' is BURNING: FQ={:.2} (execute:verify > 10:1). Motion without witness.",
+                actor_id, state.fq
+            ),
+            format!(
+                "FQ={:.2} execute_count={} verify_count={} — Helix Codex Lock 2 burn pole",
+                state.fq, state.execute_count, state.verify_count
+            ),
+        ));
+    }
+
+    // FOSSILISATION pole — verify:execute > 3:1, contact exists, nothing moves.
+    if let Some(q) = state.quotient
+        && q > thresholds.fossilisation_threshold
+        && state.execute_count > 0
+    {
+        return Some((
+            format!(
+                "Actor '{}' is FOSSILIZED: FQ={:.2} > {:.2} (verify:execute > 3:1). Contact exists, nothing moves.",
+                actor_id, q, thresholds.fossilisation_threshold
+            ),
+            format!(
+                "FQ={:.2} execute_count={} verify_count={} — Helix Codex Lock 2 fossilisation pole",
+                q, state.execute_count, state.verify_count
+            ),
+        ));
+    }
+
+    None
+}
+
 impl InvariantEnforcer {
     pub fn new(thresholds: FqThresholds) -> Self {
         Self {
@@ -582,74 +659,19 @@ impl InvariantEnforcer {
         let mut checks = Vec::new();
 
         for (actor_id, state) in &self.actors {
-            // FQ gate: the policy floor (stuck_threshold, 0.5) is the binding
-            // gate; the risk-class floor can only raise it, never lower it.
-            // Use quotient (canonical) not the deprecated fq alias.
-            let fq_value = state.quotient.unwrap_or(0.0);
-            let fq_required = state
-                .last_risk_class
-                .fq_required()
-                .max(self.thresholds.stuck_threshold);
-            if fq_value < fq_required && state.execute_count > 0 {
+            // [A 2026-10-20] F3 poles come from the shared derivation below —
+            // the same one check_actor() uses. Before this, enforce() derived
+            // from live counters while check_actor() trusted a sticky `held`
+            // flag, so /enforce and /check could report opposite verdicts for
+            // the same actor in the same instant (measured live: fi-002
+            // allowed by /enforce, 403 by /check).
+            if let Some((reason, detail)) = f3_hold_condition(actor_id, state, &self.thresholds) {
                 checks.push(InvariantCheck::new(
                     FlowInvariant::F3_ObserveNeverInterpret,
                     InvariantStatus::Hold,
-                    format!(
-                        "Actor '{}' is STUCK: FQ={:.2} < fq_required={:.2} (risk_class={}). execute={} verify={}",
-                        actor_id,
-                        fq_value,
-                        fq_required,
-                        state.last_risk_class.code(),
-                        state.execute_count,
-                        state.verify_count
-                    ),
-                    format!(
-                        "FQ={:.2} execute_count={} verify_count={} consecutive_without_verify={}",
-                        fq_value,
-                        state.execute_count,
-                        state.verify_count,
-                        state.consecutive_executes_without_verify
-                    ),
+                    reason,
+                    detail,
                 ));
-            }
-
-            // Helix Codex Lock 2: BURN pole
-            // execute:verify > 10:1 → motion without witness → HOLD
-            // v2.2: both Calhoun poles are equal-weight holds (Codex requirement).
-            if state.fq < (1.0 / self.thresholds.overheat_threshold) && state.execute_count > 0 {
-                checks.push(InvariantCheck::new(
-                    FlowInvariant::F3_ObserveNeverInterpret,
-                    InvariantStatus::Hold,
-                    format!(
-                        "Actor '{}' is BURNING: FQ={:.2} (execute:verify > 10:1). Motion without witness.",
-                        actor_id, state.fq
-                    ),
-                    format!(
-                        "FQ={:.2} execute_count={} verify_count={} — Helix Codex Lock 2 burn pole",
-                        state.fq, state.execute_count, state.verify_count
-                    ),
-                ));
-            }
-
-            // Helix Codex Lock 2: FOSSILISATION pole
-            // verify:execute > 3:1 → contact exists, nothing moves → HOLD
-            // Both poles are Calhoun sink: fossilisation AND burning.
-            if let Some(q) = state.quotient
-                && q > self.thresholds.fossilisation_threshold
-                && state.execute_count > 0
-            {
-                checks.push(InvariantCheck::new(
-                        FlowInvariant::F3_ObserveNeverInterpret,
-                        InvariantStatus::Hold,
-                        format!(
-                            "Actor '{}' is FOSSILIZED: FQ={:.2} > {:.2} (verify:execute > 3:1). Contact exists, nothing moves.",
-                            actor_id, q, self.thresholds.fossilisation_threshold
-                        ),
-                        format!(
-                            "FQ={:.2} execute_count={} verify_count={} — Helix Codex Lock 2 fossilisation pole",
-                            q, state.execute_count, state.verify_count
-                        ),
-                    ));
             }
 
             // Consecutive executes without verify → THROTTLE → HOLD
@@ -786,6 +808,16 @@ impl InvariantEnforcer {
     /// Returns (allowed, reason, action).
     pub fn check_actor(&self, actor_id: &str) -> (bool, String, EnforcerAction) {
         if let Some(state) = self.actors.get(actor_id) {
+            // [A 2026-10-20] RE-DERIVE from live counters first — the sticky
+            // `held` flag is a latch, not the source of truth. This is the
+            // check_actor-side half of the shared-derivation fix: the same
+            // f3_hold_condition() that drives enforce() answers here, so
+            // /check and /enforce cannot report opposite verdicts for one actor.
+            if let Some((reason, _detail)) =
+                f3_hold_condition(actor_id, state, &self.thresholds)
+            {
+                return (false, reason, EnforcerAction::Hold);
+            }
             if state.held {
                 return (
                     false,

@@ -230,16 +230,16 @@ def flow_ingest(
     topology_id: str | None = None,
     lane_id: int | None = None,
     previous_receipt_hash: str | None = None,
-    witness_organs: list[str] | None = None,
+    witness_organs: Any = None,
     routed_organ: str | None = None,
     session_token: str | None = None,
     harness_fingerprint: str | None = None,
-    parent_receipt_ids: list[str] | None = None,
-    parent_receipt_hashes: list[str] | None = None,
+    parent_receipt_ids: Any = None,
+    parent_receipt_hashes: Any = None,
     jcs_body_hash: str | None = None,
-    supersedes_receipt_ids: list[str] | None = None,
-    supersedes_receipt_hashes: list[str] | None = None,
-    payload: dict[str, Any] | None = None,
+    supersedes_receipt_ids: Any = None,
+    supersedes_receipt_hashes: Any = None,
+    payload: Any = None,
 ) -> dict[str, Any]:
     """Mint and ingest a FlowReceipt into the arifFlow metabolic ledger
     (POST /ingest). Records one governed step: identity, step_type, cost,
@@ -250,6 +250,46 @@ def flow_ingest(
     receipt(s). The daemon already accepts these fields on /ingest; the bridge
     exposed parent_* but not supersedes_*, which left agents on the governed
     path structurally unable to retract a claim."""
+    # Boundary adapter (2026-10-20): some MCP clients stringify structured
+    # args, so {"a":1} arrives as the STRING '{"a":1}' and pydantic rejects it
+    # before this body runs. Annotated as Any so FastMCP still registers the
+    # tool; coerced here so the governed write path is actually reachable.
+    def _as_list(v):
+        if v is None:
+            return None
+        if isinstance(v, list):
+            return [str(x) for x in v]
+        if isinstance(v, str):
+            t = v.strip()
+            if t.startswith("["):
+                try:
+                    parsed = json.loads(t)
+                    if isinstance(parsed, list):
+                        return [str(x) for x in parsed]
+                except Exception:
+                    pass
+            return [t] if t else []
+        return None
+
+    def _as_dict(v):
+        if isinstance(v, dict):
+            return v
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                pass
+        return {}
+
+    witness_organs = _as_list(witness_organs)
+    parent_receipt_ids = _as_list(parent_receipt_ids)
+    parent_receipt_hashes = _as_list(parent_receipt_hashes)
+    supersedes_receipt_ids = _as_list(supersedes_receipt_ids)
+    supersedes_receipt_hashes = _as_list(supersedes_receipt_hashes)
+    payload = _as_dict(payload)
+
     receipt: dict[str, Any] = {
         "receipt_id": str(uuid.uuid4()),
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -313,7 +353,32 @@ def flow_ingest(
         receipt["jcs_body_hash"] = jcs_body_hash
     if payload:
         receipt["payload"] = payload
-    return _flow_post("/ingest", receipt)
+    resp = _flow_post("/ingest", receipt)
+    # Response-layer noise removal (2026-10-20). These keys are computed on the
+    # daemon's /ingest RESPONSE, not stored on the receipt, so dropping empty
+    # values here cannot touch compute_jcs_body_hash or any sealed receipt.
+    # explanation_gate is CM-1 (2026-09-19) and stays in the engine — it stays
+    # visible whenever it actually fires. We only stop printing its
+    # NOT_APPLICABLE shell with four nulls on every single receipt.
+    if isinstance(resp, dict):
+        gate = resp.get("explanation_gate")
+        if isinstance(gate, dict):
+            # Drop only the N/A SHELL: outcome says not-applicable AND every
+            # other field is empty. A gate that actually fired (class/code set,
+            # outcome anything else) must stay visible — that one carries meaning.
+            others = {k: v for k, v in gate.items() if k != "outcome"}
+            dormant = (gate.get("outcome") == "NOT_APPLICABLE" and
+                       not any(v not in (None, "", [], {}) for v in others.values()))
+            if dormant:
+                resp.pop("explanation_gate", None)
+        prov = resp.get("provenance")
+        if isinstance(prov, dict):
+            for k in list(prov):
+                if prov[k] in (None, "", [], {}):
+                    prov.pop(k, None)
+            if not prov:
+                resp.pop("provenance", None)
+    return resp
 
 
 @mcp.tool()
