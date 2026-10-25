@@ -245,62 +245,62 @@ impl ArifOSGovernanceBridge {
     /// load-bearing: an unreachable or unparseable arifOS therefore DENIES rather
     /// than admits (fail-closed, F2).
     ///
-    /// `target_actor` is the actor whose hold is being cleared; `requester` is the
-    /// identity asking for it. They are deliberately distinct so a kernel verdict
-    /// is bound to a specific (target, requester) pair and cannot be replayed
-    /// against a different target.
+    /// `target_actor` is the actor whose hold is being cleared;
+    /// `claimed_requester` is the identity the CALLER CLAIMS. They are
+    /// deliberately distinct so a kernel verdict is bound to a specific
+    /// (target, claimed-requester) pair and cannot be replayed against a
+    /// different target.
+    ///
+    /// [F-5 2026-10-25] Three identities, never conflated:
+    ///   - CLAIMED requester: `claimed_requester`, a string in the request.
+    ///   - AUTHENTICATED caller: NONE — the arifFlow :7073 surface is plain
+    ///     local HTTP with no transport authentication. Recorded as null.
+    ///   - SERVICE actor: arifFlow itself (`SERVICE_ACTOR`), which owns the
+    ///     session the judge is asked under.
+    /// Authority is never minted in the name of an unverified string.
     pub fn authorize_hold_release(
         &self,
         target_actor: &str,
-        requester: &str,
+        claimed_requester: &str,
     ) -> Result<(String, String), String> {
-        let result = call_arifos_tool(
-            "arif_judge",
-            &json!({
-                "mode": "intercept",
-                "actor": requester,
-                "intent": "arifflow_hold_release",
-                "requested_capability": "arifflow.hold_release",
-                "reversibility_level": "R2",
-                "blast_radius": "ORGAN",
-                "epistemic_state": "OBSERVED",
-                "evidence": [{
-                    "surface": "arifFlow:7073/release",
-                    "target_actor": target_actor,
-                    "requester": requester,
-                    "source": "arifFlow_release_gate"
-                }]
-            }),
+        // [F-5 2026-10-25] Live kernel probe 2026-10-25 (127.0.0.1:8088,
+        // disposable sessions, no hold released): a bare actor_id arif_init
+        // returns actor_verified=false, authority=OBSERVE_ONLY,
+        // effective_verdict=HOLD; arif_judge on that session returns
+        // verdict=HOLD, mutation_allowed=false, seal_allowed=false. The
+        // kernel refuses judgment authority to unverified identities — and
+        // the bridge must not mint authority in their name regardless.
+        let init_res = call_arifos_tool(
+            "arif_init",
+            &hold_release_init_args(target_actor, claimed_requester),
         )?;
 
-        let verdict_id = result
-            .get("verdict_id")
+        let session_id = init_res
+            .get("session_id")
+            .or_else(|| init_res.pointer("/result/session_id"))
             .and_then(|v| v.as_str())
-            .or_else(|| result.get("constitutional_chain_id").and_then(|v| v.as_str()))
-            .unwrap_or("no_verdict")
-            .to_string();
+            .unwrap_or("");
+        let session_token = init_res
+            .get("session_token")
+            .or_else(|| init_res.pointer("/result/session_token"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
-        // Identical classification to submit_verdict — ambiguity resolves to HOLD,
-        // never to SEAL. Do not "improve" this into a permissive mapping.
-        let verdict_class = if let Some(decision) = result.get("decision").and_then(|v| v.as_str())
-        {
-            match decision {
-                "ALLOW" | "ADMIT_MUTATE" | "ADMIT_READ" => "SEAL",
-                "ESCALATE" | "CLASSIFICATION_HOLD" => "HOLD",
-                "DENY" => "VOID",
-                "SIMULATE" => "SABAR",
-                _ => "HOLD",
-            }
-        } else if let Some(hold) = result.get("hold_required").and_then(|v| v.as_bool()) {
-            if hold { "HOLD" } else { "SEAL" }
-        } else {
-            "HOLD"
-        }
-        .to_string();
+        let result = call_arifos_tool(
+            "arif_judge",
+            &hold_release_judge_args(target_actor, claimed_requester, session_id, session_token),
+        )?;
+
+        let verdict_id = extract_verdict_id(&result);
+
+        // [F-6 2026-10-25] Shared canonical-first classification — ambiguity
+        // resolves to HOLD, never to SEAL. Do not "improve" this into a
+        // permissive mapping.
+        let verdict_class = verdict_class_from_judge(&result);
 
         eprintln!(
-            "[arifFlow] HOLD-RELEASE verdict from arifOS: target={} requester={} verdict={} class={}",
-            target_actor, requester, verdict_id, verdict_class
+            "[arifFlow] HOLD-RELEASE verdict from arifOS: target={} claimed_requester={} (CLAIMED_UNVERIFIED; authenticated_caller=none; service={}) verdict={} class={}",
+            target_actor, claimed_requester, SERVICE_ACTOR, verdict_id, verdict_class
         );
 
         Ok((verdict_id, verdict_class))
@@ -326,6 +326,174 @@ impl ArifOSGovernanceBridge {
             .unwrap_or(false);
 
         Ok(valid)
+    }
+}
+
+// ── Hold-release identity binding (F-5, 2026-10-25) ─────────────────────
+
+/// The identity arifFlow itself acts under (SERVICE actor). The boot lease in
+/// main.rs already uses this name. Judge sessions for hold-release
+/// adjudication are ALWAYS minted for this actor — never for a caller-supplied
+/// requester string. Authority is never minted in the name of an unverified
+/// identity.
+pub const SERVICE_ACTOR: &str = "arifflow-daemon";
+
+/// Build the arif_init args for a hold-release adjudication session.
+///
+/// [F-5 2026-10-25] Three identities are kept distinct:
+///   - CLAIMED requester  — `claimed_requester`, a string in the request.
+///     Unauthenticated; recorded as DATA only.
+///   - AUTHENTICATED caller — none exists on the arifFlow :7073 HTTP surface
+///     (plain local HTTP, no transport auth). `None` is recorded as such.
+///   - SERVICE actor — arifFlow itself (`SERVICE_ACTOR`), which owns the
+///     session and the judgment call.
+pub fn hold_release_init_args(target_actor: &str, claimed_requester: &str) -> Value {
+    json!({
+        "mode": "init",
+        "actor_id": SERVICE_ACTOR,
+        "requested_authority": "LIMITED_MUTATE",
+        "intent": format!(
+            "arifFlow hold release adjudication for target={} (claimed requester='{}' is CLAIMED_UNVERIFIED request data, not session identity)",
+            target_actor, claimed_requester
+        ),
+    })
+}
+
+/// Build the arif_judge args for a hold-release adjudication. The session is
+/// the SERVICE actor's; the claimed requester rides as claim/evidence DATA.
+pub fn hold_release_judge_args(
+    target_actor: &str,
+    claimed_requester: &str,
+    session_id: &str,
+    session_token: &str,
+) -> Value {
+    json!({
+        "mode": "intercept",
+        "actor_id": SERVICE_ACTOR,
+        "session_id": session_id,
+        "session_token": session_token,
+        "candidate": format!(
+            "arifflow_hold_release: target={} claimed_requester={}",
+            target_actor, claimed_requester
+        ),
+        "domain": "governance",
+        "action_class": "AUDIT_RECORD",
+        "reversibility_level": "R2",
+        "blast_radius": "LEDGER",
+        "requested_capability": "arifflow.hold_release",
+        "claim_class": "MEASURED",
+        "claim_text": format!(
+            "arifFlow service request to release a stale zero-counter hold on target={}. \
+             Claimed requester='{}' is CLAIMED_UNVERIFIED request data: the caller of \
+             arifFlow:7073/release is unauthenticated and no identity is asserted for it.",
+            target_actor, claimed_requester
+        ),
+        "evidence": {
+            "surface": "arifFlow:7073/release",
+            "observed_state": "hold_release_adjudication",
+            "target_actor": target_actor,
+            "claimed_requester": claimed_requester,
+            "claimed_requester_identity_class": "CLAIMED_UNVERIFIED",
+            "authenticated_caller": null,
+            "service_actor": SERVICE_ACTOR,
+            "source": "arifFlow_release_gate"
+        }
+    })
+}
+
+#[cfg(test)]
+mod identity_binding_tests {
+    use super::*;
+
+    // ── F-5 (2026-10-25): requester binding in hold-release adjudication ──
+
+    /// The fabricated-requester probe envelope, captured live from the kernel
+    /// on 2026-10-25 (arif_init(actor_id="probe-impersonation-20261025",
+    /// requested_authority="LIMITED_MUTATE") → arif_judge intercept). The
+    /// kernel answered OBSERVE_ONLY / HOLD / mutation_allowed=false.
+    fn probe_envelope_impersonation() -> Value {
+        json!({
+            "status": "completed",
+            "tool": "arif_judge",
+            "verdict": "HOLD",
+            "actor": {
+                "actor_id": "probe-impersonation-20261025",
+                "actor_verified": false,
+                "authority_level": "OBSERVE_ONLY"
+            },
+            "actor_id": "probe-impersonation-20261025",
+            "actor_verified": false,
+            "authority": "OBSERVE_ONLY",
+            "effective_verdict": "HOLD",
+            "reason_code": "NEEDS_REVIEW",
+            "constitutional_check": {
+                "hold_required": true,
+                "hold_reason": "effective_verdict=HOLD reason_code=NEEDS_REVIEW",
+                "session_state": "OBSERVE_ONLY",
+                "agency_level": "OBSERVE_ONLY"
+            },
+            "result": {
+                "mutation_allowed": false,
+                "seal_allowed": false
+            }
+        })
+    }
+
+    #[test]
+    fn test_hold_release_init_binds_service_actor_not_claimed_requester() {
+        // A claimed requester must NEVER become session identity.
+        for claimed in [
+            "probe-impersonation-20261025",
+            "333-AGI",
+            "888-APEX",
+            "test",
+            "attacker",
+        ] {
+            let init_args = hold_release_init_args("fi-002", claimed);
+            assert_eq!(
+                init_args.get("actor_id").and_then(|v| v.as_str()),
+                Some(SERVICE_ACTOR),
+                "arif_init must bind the SERVICE actor, not claimed '{}'",
+                claimed
+            );
+            assert_ne!(init_args["actor_id"], claimed);
+            // The claim survives as DATA inside the intent string only.
+            assert!(init_args["intent"].as_str().unwrap().contains(claimed));
+        }
+    }
+
+    #[test]
+    fn test_hold_release_judge_args_record_claimed_requester_as_data() {
+        let args =
+            hold_release_judge_args("fi-002", "probe-impersonation-20261025", "SEAL-xyz", "tok");
+        assert_eq!(args["actor_id"], SERVICE_ACTOR);
+        assert_eq!(
+            args["evidence"]["claimed_requester"],
+            "probe-impersonation-20261025"
+        );
+        assert_eq!(
+            args["evidence"]["claimed_requester_identity_class"],
+            "CLAIMED_UNVERIFIED"
+        );
+        // The authenticated-caller slot is honestly NULL (unauthenticated HTTP).
+        assert!(args["evidence"]["authenticated_caller"].is_null());
+        assert_eq!(args["evidence"]["service_actor"], SERVICE_ACTOR);
+        // The claim text states the claim is unverified data.
+        assert!(args["claim_text"]
+            .as_str()
+            .unwrap()
+            .contains("CLAIMED_UNVERIFIED"));
+    }
+
+    #[test]
+    fn test_impersonation_probe_does_not_authorize_release() {
+        // Reproduced behavior (OBS): the fabricated requester's session came
+        // back OBSERVE_ONLY/HOLD. That envelope must not yield a release.
+        let env = probe_envelope_impersonation();
+        let class = verdict_class_from_judge(&env);
+        assert_eq!(class, "HOLD");
+        let vid = extract_verdict_id(&env);
+        assert!(!release_authorized(&vid, &class));
     }
 }
 
@@ -385,38 +553,6 @@ pub extern "C" fn ariflow_request_lease(json_request: *const c_char) -> *mut c_c
     CString::new(json_out).unwrap().into_raw()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_bridge_construction() {
-        let bridge = ArifOSGovernanceBridge::new();
-        // ZST unit struct — size_of_val is 0, still valid
-        _ = bridge;
-    }
-
-    #[test]
-    fn test_request_lease_handles_connection_refused() {
-        let bridge = ArifOSGovernanceBridge;
-        let result = bridge.request_lease("test_actor", "test_context");
-        // Environment-conditional: if arifOS is running, a successful lease is valid;
-        // if it is unreachable, an error with a message is valid. Both are honest.
-        if let Err(err) = result {
-            assert!(!err.is_empty(), "Error message should not be empty");
-        }
-    }
-
-    #[test]
-    fn test_submit_verdict_handles_connection_refused() {
-        let bridge = ArifOSGovernanceBridge;
-        let hash = MerkleRoot::ZERO;
-        let result = bridge.submit_verdict("test_lease", &hash);
-        if let Err(err) = result {
-            assert!(!err.is_empty(), "Error message should not be empty");
-        }
-    }
-}
 // ── Shared verdict classification + release gate (F-6, 2026-10-25) ──────
 
 /// Extract the verdict id from a kernel judge envelope.
@@ -505,6 +641,37 @@ pub fn release_authorized(verdict_id: &str, verdict_class: &str) -> bool {
     verdict_class == "SEAL" && !verdict_id.is_empty() && verdict_id != "no_verdict"
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bridge_construction() {
+        let bridge = ArifOSGovernanceBridge::new();
+        // ZST unit struct — size_of_val is 0, still valid
+        _ = bridge;
+    }
+
+    #[test]
+    fn test_request_lease_handles_connection_refused() {
+        let bridge = ArifOSGovernanceBridge;
+        let result = bridge.request_lease("test_actor", "test_context");
+        // Environment-conditional: if arifOS is running, a successful lease is valid;
+        // if it is unreachable, an error with a message is valid. Both are honest.
+        if let Err(err) = result {
+            assert!(!err.is_empty(), "Error message should not be empty");
+        }
+    }
+
+    #[test]
+    fn test_submit_verdict_handles_connection_refused() {
+        let bridge = ArifOSGovernanceBridge;
+        let hash = MerkleRoot::ZERO;
+        let result = bridge.submit_verdict("test_lease", &hash);
+        if let Err(err) = result {
+            assert!(!err.is_empty(), "Error message should not be empty");
+        }
+    }
 
     // ── F-6 (2026-10-25): verdict mapping semantics ──────────────────────
 
@@ -649,3 +816,4 @@ pub fn release_authorized(verdict_id: &str, verdict_class: &str) -> bool {
             assert!(!release_authorized("cc_abc123", class), "class {}", class);
         }
     }
+}

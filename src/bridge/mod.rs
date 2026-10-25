@@ -13,5 +13,5 @@ pub use arif_init_client::{
     ToolsRegistered, Uninitialized,
 };
 pub use arifos_governance::{
-    ArifOSGovernanceBridge, GovernanceRequest, GovernanceResponse, LeaseInfo,
+    release_authorized, ArifOSGovernanceBridge, GovernanceRequest, GovernanceResponse, LeaseInfo,
 };

@@ -21,7 +21,9 @@
 //
 // DITEMPA BUKAN DIBERI — arifOS = law, arifFlow = flow, A-FORGE = hands
 
-use arifflow::bridge::{AForgeExecutorBridge, ArifOSGovernanceBridge, ExecutionRequest};
+use arifflow::bridge::{
+    AForgeExecutorBridge, ArifOSGovernanceBridge, ExecutionRequest, release_authorized,
+};
 use arifflow::channel::ChannelMode;
 use arifflow::governance::Vault999Sealer;
 use arifflow::governance::entity_class::ClassRegistry;
@@ -38,10 +40,10 @@ use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use std::os::unix::io::AsRawFd;
 
 // F5 (audit 2026-08-10): VAULT999 canonical witness-trail log.
 // arifFlow appends sealed receipts here; VAULT999 is the only immutable store.
@@ -51,9 +53,6 @@ fn vault_log_path() -> String {
         .unwrap_or_else(|_| "/root/arifOS/VAULT999/arifflow_sealed.jsonl".into())
 }
 
-// ── Protocol Messages ──────────────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
 /// Append one JSON line under an exclusive OS file lock, and refuse to
 /// concatenate onto a previous line that lost its newline (2026-10-23
 /// repair: two live lines carried `...}}{` because concurrent appends
@@ -99,6 +98,9 @@ fn append_line_locked(path: &str, line: &str) -> std::io::Result<()> {
     result
 }
 
+// ── Protocol Messages ──────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 enum StdinMsg {
     #[serde(rename = "configure")]
@@ -648,12 +650,12 @@ fn handle_client(
                                 "quotient": state.quotient,
                                 "verdict": format!("{}", state.verdict),
                                 "diagnosis": actor_dx,
-                                "held": state.held,
-                                "throttled": state.throttled,
                                 // [F-4 2026-10-25] Classification stamped at
                                 // registration — visible so an excluded
                                 // fixture is auditable, not invisible.
                                 "class": state.actor_class,
+                                "held": state.held,
+                                "throttled": state.throttled,
                                 "consecutive_exec_no_verify": state.consecutive_executes_without_verify,
                                 "risk_class": state.last_risk_class.code(),
                                 "fq_required": state.last_risk_class.fq_required(),
@@ -1606,9 +1608,18 @@ fn handle_client(
                                     }
                                     Some(requester) => {
                                         let bridge = ArifOSGovernanceBridge::new();
+                                        // [F-5 2026-10-25] `requester` is a
+                                        // CLAIMED identity from the request
+                                        // body — the :7073 surface has no
+                                        // transport authentication, so the
+                                        // AUTHENTICATED caller is null. The
+                                        // bridge adjudicates as the SERVICE
+                                        // actor and records the claim as data;
+                                        // it never mints authority in this
+                                        // string's name.
                                         match bridge.authorize_hold_release(&req.actor_id, requester) {
                                             Ok((verdict_id, verdict_class))
-                                                if verdict_class == "SEAL" =>
+                                                if release_authorized(&verdict_id, &verdict_class) =>
                                             {
                                                 let mut enf = enforcer.lock().unwrap();
                                                 enf.release_hold(&req.actor_id);
@@ -1622,6 +1633,10 @@ fn handle_client(
                                                     "decision": "RELEASED",
                                                     "target_actor": req.actor_id,
                                                     "requester": requester,
+                                                    "requester_identity": "CLAIMED_UNVERIFIED",
+                                                    "authenticated_caller": null,
+                                                    "auth_channel": "unauthenticated_http",
+                                                    "service_actor": "arifflow-daemon",
                                                     "verdict_id": verdict_id,
                                                     "verdict_class": verdict_class,
                                                     "authority": "arifOS:888_JUDGE",
@@ -1643,6 +1658,10 @@ fn handle_client(
                                                     "reason": "arifOS_verdict_not_seal",
                                                     "target_actor": req.actor_id,
                                                     "requester": requester,
+                                                    "requester_identity": "CLAIMED_UNVERIFIED",
+                                                    "authenticated_caller": null,
+                                                    "auth_channel": "unauthenticated_http",
+                                                    "service_actor": "arifflow-daemon",
                                                     "verdict_id": verdict_id,
                                                     "verdict_class": verdict_class,
                                                     "routed_organ": "arifFlow",
@@ -1665,6 +1684,10 @@ fn handle_client(
                                                     "reason": "arifos_unreachable",
                                                     "target_actor": req.actor_id,
                                                     "requester": requester,
+                                                    "requester_identity": "CLAIMED_UNVERIFIED",
+                                                    "authenticated_caller": null,
+                                                    "auth_channel": "unauthenticated_http",
+                                                    "service_actor": "arifflow-daemon",
                                                     "error": format!("{}", e),
                                                     "routed_organ": "arifFlow",
                                                 }));
@@ -1835,29 +1858,6 @@ fn daemon_mode() {
     let start_time = Instant::now();
     let receipt_store = Arc::new(Mutex::new(ReceiptStore::new(1000)));
     let enforcer = Arc::new(Mutex::new(InvariantEnforcer::default()));
-    // ── P2/P3 (2026-10-15): per-session last-receipt tracker for derived
-    // parentage stamps and mechanical self-verify detection. Bounded at 100k.
-    let session_tracker = Arc::new(Mutex::new(std::collections::HashMap::<
-        String,
-        SessionLastReceipt,
-    >::new()));
-    // ── QG.V0.3 VECTOR ENGINE (2026-08-14) ──
-    let vector_store = Arc::new(Mutex::new(VectorStore::new()));
-    let independence = Arc::new(Mutex::new(IndependenceMonitor::new(200)));
-
-    // ── VAULT999 sealer (audit 2026-08-10, F5) ──
-    // Receipts are sealed into the VAULT999 immutable hash chain (see F5:
-    // "Flow writes receipts, never owns memory"). In-memory chain + JSONL log.
-    let vault_sealer = Arc::new(Mutex::new(Vault999Sealer::new()));
-
-    // ── Daemon-side receipt persistence (audit 2026-08-10) ──
-    // Load existing receipts on startup, then append new receipts as they arrive.
-    // 2026-10-15: env override for staging runs (default unchanged — live path).
-    let persist_path = PathBuf::from(
-        std::env::var("ARIFLOW_PERSIST_PATH")
-            .unwrap_or_else(|_| "/var/lib/arifflow/receipts.jsonl".into()),
-    );
-    let persist_mutex = Arc::new(Mutex::new(()));
 
     // ── F-4 (2026-10-25): validated actor classification registry ──
     // Fixture exclusion from the federation FQ aggregate is decided by
@@ -1896,6 +1896,29 @@ fn daemon_mode() {
         };
         enforcer.lock().unwrap().set_class_registry(registry);
     }
+    // ── P2/P3 (2026-10-15): per-session last-receipt tracker for derived
+    // parentage stamps and mechanical self-verify detection. Bounded at 100k.
+    let session_tracker = Arc::new(Mutex::new(std::collections::HashMap::<
+        String,
+        SessionLastReceipt,
+    >::new()));
+    // ── QG.V0.3 VECTOR ENGINE (2026-08-14) ──
+    let vector_store = Arc::new(Mutex::new(VectorStore::new()));
+    let independence = Arc::new(Mutex::new(IndependenceMonitor::new(200)));
+
+    // ── VAULT999 sealer (audit 2026-08-10, F5) ──
+    // Receipts are sealed into the VAULT999 immutable hash chain (see F5:
+    // "Flow writes receipts, never owns memory"). In-memory chain + JSONL log.
+    let vault_sealer = Arc::new(Mutex::new(Vault999Sealer::new()));
+
+    // ── Daemon-side receipt persistence (audit 2026-08-10) ──
+    // Load existing receipts on startup, then append new receipts as they arrive.
+    // 2026-10-15: env override for staging runs (default unchanged — live path).
+    let persist_path = PathBuf::from(
+        std::env::var("ARIFLOW_PERSIST_PATH")
+            .unwrap_or_else(|_| "/var/lib/arifflow/receipts.jsonl".into()),
+    );
+    let persist_mutex = Arc::new(Mutex::new(()));
     if let Some(parent) = persist_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
