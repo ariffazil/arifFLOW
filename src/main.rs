@@ -24,7 +24,8 @@
 use arifflow::bridge::{AForgeExecutorBridge, ArifOSGovernanceBridge, ExecutionRequest};
 use arifflow::channel::ChannelMode;
 use arifflow::governance::Vault999Sealer;
-use arifflow::governance::invariants::InvariantEnforcer;
+use arifflow::governance::entity_class::ClassRegistry;
+use arifflow::governance::invariants::{InvariantEnforcer, federation_fq_aggregate};
 use arifflow::receipt::{
     ExplanationClass, FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE, FLOW_INVARIANT_EXPLANATION_CLASS,
     FlowReceipt, ReceiptStore, StepType,
@@ -572,34 +573,19 @@ fn handle_client(
                 vs.tick();
                 let fq = store.flow_quotient(100);
 
-                // Minimum-Gated Harmonic Mean (Tugas 2.2 / Gate 2):
-                // If any active executing actor has FQ < 0.50, gate immediately to min_i(FQ_i).
-                // Otherwise, compute the Harmonic Mean across all active executing actors.
-                let active_fqs: Vec<f64> = enf
-                    .actors
-                    .values()
-                    .filter_map(|state| {
-                        if state.execute_count > 0 {
-                            state.quotient
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                let fed_quotient: Option<f64> = if active_fqs.is_empty() {
-                    fq.quotient
-                } else if let Some(&min_fq) = active_fqs.iter().min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)) {
-                    if min_fq < 0.50 {
-                        Some(min_fq)
-                    } else {
-                        let sum_inv: f64 = active_fqs.iter().map(|&q| 1.0 / q.max(0.001)).sum();
-                        let h_mean = active_fqs.len() as f64 / sum_inv;
-                        Some(h_mean)
-                    }
-                } else {
-                    fq.quotient
-                };
+                // Minimum-Gated Harmonic Mean (Tugas 2.2 / Gate 2) — computed
+                // by the shared governance function (the ONE place this
+                // constitutional aggregate lives). 2026-10-23 F13 YES: the
+                // aggregate must not be scored by declared test fixtures. Raw
+                // per-actor data stays visible.
+                //
+                // [F-4 2026-10-25] Fixture exclusion is by validated CLASS
+                // stamped at registration (config/entity_classes.yaml
+                // declarations), never by a name deny-list — a name is
+                // caller-supplied and therefore spoofable. No validated
+                // classification → the actor COUNTS (fail-closed).
+                let fed_quotient: Option<f64> =
+                    federation_fq_aggregate(&enf.actors).or(fq.quotient);
 
                 // Inject live FQ into the vector engine (MEASURE·LIVE)
                 vs.inject_fq(fed_quotient);
@@ -664,6 +650,10 @@ fn handle_client(
                                 "diagnosis": actor_dx,
                                 "held": state.held,
                                 "throttled": state.throttled,
+                                // [F-4 2026-10-25] Classification stamped at
+                                // registration — visible so an excluded
+                                // fixture is auditable, not invisible.
+                                "class": state.actor_class,
                                 "consecutive_exec_no_verify": state.consecutive_executes_without_verify,
                                 "risk_class": state.last_risk_class.code(),
                                 "fq_required": state.last_risk_class.fq_required(),
@@ -1868,6 +1858,44 @@ fn daemon_mode() {
             .unwrap_or_else(|_| "/var/lib/arifflow/receipts.jsonl".into()),
     );
     let persist_mutex = Arc::new(Mutex::new(()));
+
+    // ── F-4 (2026-10-25): validated actor classification registry ──
+    // Fixture exclusion from the federation FQ aggregate is decided by
+    // DECLARED, validated classification stamped at registration — never by a
+    // name deny-list at the gate (actor_id is caller-supplied, so a name list
+    // is spoofable). Declarations come from the federation's existing entity
+    // registry (config/entity_classes.yaml, `synthetic` class = fixtures).
+    // Fail-closed: no validated declaration → the actor COUNTS toward the
+    // aggregate. Loaded BEFORE seeding so every actor state is stamped at
+    // registration.
+    {
+        let class_path = std::env::var("ARIFLOW_ENTITY_CLASSES")
+            .unwrap_or_else(|_| "/root/arifFlow/config/entity_classes.yaml".into());
+        let registry = match std::fs::read_to_string(&class_path) {
+            Ok(text) => {
+                let reg = ClassRegistry::from_entity_classes_yaml(&text);
+                eprintln!(
+                    "[arifFlow] Actor classification: {} declarations ({} fixtures) from {} — {} rejected (fail-closed: unclassified actors COUNT toward the FQ aggregate)",
+                    reg.len(),
+                    reg.fixture_count(),
+                    class_path,
+                    reg.rejects().len()
+                );
+                for r in reg.rejects() {
+                    eprintln!("[arifFlow]   classification rejected: {}", r);
+                }
+                reg
+            }
+            Err(e) => {
+                eprintln!(
+                    "[arifFlow] Actor classification registry unreadable at {}: {} — empty registry (fail-closed: EVERY actor counts toward the FQ aggregate)",
+                    class_path, e
+                );
+                ClassRegistry::default()
+            }
+        };
+        enforcer.lock().unwrap().set_class_registry(registry);
+    }
     if let Some(parent) = persist_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }

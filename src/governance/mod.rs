@@ -6,6 +6,7 @@
 
 pub mod checkpoint;
 pub mod cooling;
+pub mod entity_class;
 pub mod invariants;
 pub mod kabarkan;
 pub mod kabarkan_fq;
@@ -15,9 +16,10 @@ pub mod vault999;
 
 pub use checkpoint::{CheckpointError, CheckpointManager, CheckpointState};
 pub use cooling::{Convergence, CoolingEntry, CoolingLedger, CoolingSummary, DriftSeverity};
+pub use entity_class::{ActorClass, ClassDeclaration, ClassRegistry, DeclarationSource};
 pub use invariants::{
     ActorFlowState, EnforcerAction, FlowInvariant, FqThresholds, HoldRecord, InvariantCheck,
-    InvariantEnforcer, InvariantReport, InvariantStatus, now_ns,
+    InvariantEnforcer, InvariantReport, InvariantStatus, federation_fq_aggregate, now_ns,
 };
 pub use kabarkan::KabarkanTracer;
 pub use kabarkan_fq::{

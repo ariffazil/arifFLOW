@@ -15,6 +15,7 @@
 // execution invariants (A1-A6) enforced in scheduler.rs.
 
 use crate::governance::cooling::{Convergence, CoolingEntry, CoolingLedger, DriftSeverity};
+use crate::governance::entity_class::{ActorClass, ClassRegistry};
 use crate::receipt::{
     ExplanationClass, ExplanationGate, FLOW_CODE_EXPLANATION_CLASS_INELIGIBLE,
     FLOW_INVARIANT_EXPLANATION_CLASS, FlowQuotient, FlowReceipt, FlowVerdict, ReceiptStore,
@@ -270,6 +271,12 @@ pub struct ActorFlowState {
     /// clear a hold by re-deriving it as under-threshold.
     #[serde(default)]
     pub held_since_ns: i64,
+    /// [F-4 2026-10-25] Classification recorded at registration from the
+    /// validated ClassRegistry. NEVER settable by a receipt or request payload.
+    /// Default (and any unknown token on disk) is `Unclassified`, which COUNTS
+    /// toward the federation FQ aggregate — fail-closed.
+    #[serde(default)]
+    pub actor_class: ActorClass,
 }
 
 impl ActorFlowState {
@@ -291,6 +298,7 @@ impl ActorFlowState {
             mechanical_verify_count: 0,
             window: VecDeque::new(),
             held_since_ns: 0,
+            actor_class: ActorClass::Unclassified,
         }
     }
 
@@ -481,6 +489,11 @@ pub struct InvariantEnforcer {
     /// Refusals recorded since the last enforcement cycle — surfaced in the
     /// next report, then drained.
     pub pending_explanation_violations: Vec<InvariantCheck>,
+    /// [F-4 2026-10-25] Validated classification declarations. Consulted ONCE
+    /// per actor, at registration (first ingest), to stamp `actor_class`.
+    /// Nothing on the wire can write to this registry; a receipt's actor_id
+    /// only selects a key, it never grants a class by itself.
+    pub class_registry: ClassRegistry,
 }
 
 /// Shared F3 hold derivation — the ONE place the three Calhoun poles are
@@ -560,6 +573,37 @@ fn f3_hold_condition(
     None
 }
 
+/// Federation FQ aggregate — Minimum-Gated Harmonic Mean (Tugas 2.2 / Gate 2):
+/// if any active executing actor has FQ < 0.50, the aggregate is gated to
+/// min_i(FQ_i); otherwise the harmonic mean over all active executing actors.
+///
+/// [F-4 2026-10-25] The ONE place this constitutional aggregate is computed.
+/// Exclusion is by validated `actor_class == Fixture` ONLY — a name never
+/// exempts. An actor with no validated classification counts (fail-closed).
+/// An actor is "active" exactly as before: execute_count > 0 and a measured
+/// quotient (the pre-existing window semantics are preserved, not loosened).
+///
+/// Returns `None` when no actor qualifies (the caller falls back to the pool
+/// quotient, preserving the historical shape).
+pub fn federation_fq_aggregate(actors: &BTreeMap<String, ActorFlowState>) -> Option<f64> {
+    let active_fqs: Vec<f64> = actors
+        .iter()
+        .filter(|(_, state)| {
+            state.actor_class.counts_toward_federation_aggregate() && state.execute_count > 0
+        })
+        .filter_map(|(_, state)| state.quotient)
+        .collect();
+    let &min_fq = active_fqs
+        .iter()
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))?;
+    if min_fq < 0.50 {
+        Some(min_fq)
+    } else {
+        let sum_inv: f64 = active_fqs.iter().map(|&q| 1.0 / q.max(0.001)).sum();
+        Some(active_fqs.len() as f64 / sum_inv)
+    }
+}
+
 impl InvariantEnforcer {
     pub fn new(thresholds: FqThresholds) -> Self {
         Self {
@@ -574,7 +618,18 @@ impl InvariantEnforcer {
             explanation_refusals: 0,
             last_explanation_violation: None,
             pending_explanation_violations: Vec::new(),
+            class_registry: ClassRegistry::default(),
         }
+    }
+
+    /// [F-4 2026-10-25] Install the validated classification registry.
+    /// Call this BEFORE seeding/ingest so every actor state is stamped at
+    /// registration. Returns the rejection log from the registry so the
+    /// caller can surface it (rejected declarations never exempt anyone).
+    pub fn set_class_registry(&mut self, registry: ClassRegistry) -> Vec<String> {
+        let rejects = registry.rejects().to_vec();
+        self.class_registry = registry;
+        rejects
     }
 
     /// CM-1 (2026-09-19) — record a REFUSED execution-class receipt as a
@@ -648,10 +703,17 @@ impl InvariantEnforcer {
         // a first-seen handle is never re-keyed on a guess.
         let raw = receipt.actor_id.to_ascii_lowercase();
         let actor_id = self.resolve_actor_key(&raw).unwrap_or(raw);
+        // [F-4 2026-10-25] Stamp class at REGISTRATION (first ingest) from the
+        // validated registry — the receipt payload never sets it.
+        let actor_class = self.class_registry.classify(&actor_id);
         let entry = self
             .actors
             .entry(actor_id.clone())
-            .or_insert_with(|| ActorFlowState::new(actor_id));
+            .or_insert_with(|| {
+                let mut state = ActorFlowState::new(actor_id);
+                state.actor_class = actor_class;
+                state
+            });
         entry.ingest(receipt);
     }
 
@@ -1000,10 +1062,17 @@ impl InvariantEnforcer {
             }
             // Restoring a hold for an actor with no state at all: create a shell
             // so the verdict is not lost just because the receipt window aged out.
+            // [F-4 2026-10-25] The shell gets the same registration-time class
+            // stamp as an ingested actor (fail-closed when undeclared).
+            let shell_class = self.class_registry.classify(&key);
             let entry = self
                 .actors
                 .entry(key)
-                .or_insert_with(|| ActorFlowState::new(rec.actor_id.clone()));
+                .or_insert_with(|| {
+                    let mut state = ActorFlowState::new(rec.actor_id.clone());
+                    state.actor_class = shell_class;
+                    state
+                });
             entry.held = true;
             entry.throttled = true;
             entry.held_since_ns = if rec.held_since_ns != 0 {
@@ -1340,6 +1409,256 @@ mod tests {
         assert_eq!(t.stuck_threshold, 0.5);
         assert_eq!(t.overheat_threshold, 10.0);
         assert_eq!(t.max_consecutive_executes, 5);
+    }
+
+    // ── F-4 (2026-10-25): fixture exclusion by validated CLASS, never name ──
+
+    use crate::governance::entity_class::{ClassDeclaration, DeclarationSource};
+
+    /// 4 Executes + 1 Verify → quotient 0.25 (below the 0.50 min-gate).
+    fn ingest_low_fq(enf: &mut InvariantEnforcer, actor: &str) {
+        for _ in 0..4 {
+            enf.ingest(&FlowReceipt::new_first(
+                actor,
+                "s-low",
+                StepType::Execute,
+                EpistemicLabel::Observation,
+                1_000_000,
+            ));
+        }
+        enf.ingest(&FlowReceipt::new_first(
+            actor,
+            "s-low",
+            StepType::Verify,
+            EpistemicLabel::Derivation,
+            500_000,
+        ));
+    }
+
+    /// 2 Executes + 2 Verifies → quotient 1.0.
+    fn ingest_healthy(enf: &mut InvariantEnforcer, actor: &str) {
+        for _ in 0..2 {
+            enf.ingest(&FlowReceipt::new_first(
+                actor,
+                "s-ok",
+                StepType::Execute,
+                EpistemicLabel::Observation,
+                1_000_000,
+            ));
+            enf.ingest(&FlowReceipt::new_first(
+                actor,
+                "s-ok",
+                StepType::Verify,
+                EpistemicLabel::Derivation,
+                500_000,
+            ));
+        }
+    }
+
+    /// (a) An ordinary actor literally named "test" with low FQ IS included:
+    /// its 0.25 gates the aggregate. A name is not a classification.
+    #[test]
+    fn test_aggregate_includes_ordinary_actor_named_test() {
+        let mut enf = InvariantEnforcer::default();
+        ingest_low_fq(&mut enf, "test");
+        ingest_healthy(&mut enf, "healthy");
+        assert_eq!(
+            enf.actors.get("test").unwrap().actor_class,
+            ActorClass::Unclassified
+        );
+        let agg = federation_fq_aggregate(&enf.actors).unwrap();
+        assert!(
+            (agg - 0.25).abs() < 1e-9,
+            "actor named 'test' with no validated declaration must gate the aggregate, got {}",
+            agg
+        );
+    }
+
+    /// (b) A genuine fixture with VALIDATED fixture provenance IS excluded
+    /// from the aggregate (raw per-actor data stays visible).
+    #[test]
+    fn test_aggregate_excludes_validated_fixture() {
+        let mut enf = InvariantEnforcer::default();
+        let mut reg = ClassRegistry::new();
+        reg.register(
+            ClassDeclaration::validate(
+                "test",
+                ActorClass::Fixture,
+                "operator:scenario-harness-2026-10-25",
+                DeclarationSource::TestHarness,
+            )
+            .expect("validated fixture declaration"),
+        )
+        .expect("registration");
+        enf.set_class_registry(reg);
+
+        ingest_low_fq(&mut enf, "test");
+        ingest_healthy(&mut enf, "healthy");
+        assert_eq!(
+            enf.actors.get("test").unwrap().actor_class,
+            ActorClass::Fixture
+        );
+        let agg = federation_fq_aggregate(&enf.actors).unwrap();
+        assert!(
+            (agg - 1.0).abs() < 1e-9,
+            "validated fixture must be excluded from the aggregate, got {}",
+            agg
+        );
+        // The fixture's own numbers remain visible per-actor.
+        assert_eq!(enf.actors.get("test").unwrap().execute_count, 4);
+    }
+
+    /// (c) Unknown or invalid classification is NOT exempt — fail-closed to
+    /// counting the actor. Every rejected declaration leaves it Unclassified.
+    #[test]
+    fn test_aggregate_fail_closed_on_invalid_classification() {
+        let mut enf = InvariantEnforcer::default();
+        let mut reg = ClassRegistry::new();
+        // Self-declaration.
+        assert!(ClassDeclaration::validate(
+            "test",
+            ActorClass::Fixture,
+            "test",
+            DeclarationSource::TestHarness
+        )
+        .is_err());
+        // Empty declarer.
+        assert!(ClassDeclaration::validate(
+            "test",
+            ActorClass::Fixture,
+            "   ",
+            DeclarationSource::OperatorConfig
+        )
+        .is_err());
+        // Unclassified is not a declarable exemption.
+        assert!(ClassDeclaration::validate(
+            "test",
+            ActorClass::Unclassified,
+            "operator",
+            DeclarationSource::OperatorConfig
+        )
+        .is_err());
+        // Caller-supplied labels are not a declaration source.
+        assert!(DeclarationSource::parse("fixture").is_err());
+        assert!(DeclarationSource::parse("self").is_err());
+        assert!(reg.is_empty());
+
+        enf.set_class_registry(reg);
+        ingest_low_fq(&mut enf, "test");
+        ingest_healthy(&mut enf, "healthy");
+        let agg = federation_fq_aggregate(&enf.actors).unwrap();
+        assert!(
+            (agg - 0.25).abs() < 1e-9,
+            "invalid classification must not exempt: the actor counts, got {}",
+            agg
+        );
+    }
+
+    /// A "fixture" label on the wire cannot self-exempt: ingestion is the
+    /// only wire path into actor state and it never stamps a class.
+    #[test]
+    fn test_caller_supplied_fixture_label_does_not_self_exempt() {
+        let mut enf = InvariantEnforcer::default();
+        ingest_low_fq(&mut enf, "staged_agent");
+        ingest_healthy(&mut enf, "healthy");
+        assert_eq!(
+            enf.actors.get("staged_agent").unwrap().actor_class,
+            ActorClass::Unclassified,
+            "receipts cannot classify themselves"
+        );
+        let agg = federation_fq_aggregate(&enf.actors).unwrap();
+        assert!((agg - 0.25).abs() < 1e-9, "got {}", agg);
+    }
+
+    /// Strictness pin: the constitutional formula is preserved exactly —
+    /// min < 0.50 gates to the min; otherwise harmonic mean. Fixture
+    /// exclusion may only REMOVE declared fixtures, never loosen the gate.
+    #[test]
+    fn test_aggregate_min_gate_and_harmonic_mean_preserved() {
+        let mut enf = InvariantEnforcer::default();
+        // low: 5 exec / 2 verify → 0.4 ; high: 1 exec / 2 verify → 2.0
+        for _ in 0..5 {
+            enf.ingest(&FlowReceipt::new_first(
+                "low",
+                "s1",
+                StepType::Execute,
+                EpistemicLabel::Observation,
+                1_000_000,
+            ));
+        }
+        for _ in 0..2 {
+            enf.ingest(&FlowReceipt::new_first(
+                "low",
+                "s1",
+                StepType::Verify,
+                EpistemicLabel::Derivation,
+                500_000,
+            ));
+        }
+        enf.ingest(&FlowReceipt::new_first(
+            "high",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1_000_000,
+        ));
+        for _ in 0..2 {
+            enf.ingest(&FlowReceipt::new_first(
+                "high",
+                "s1",
+                StepType::Verify,
+                EpistemicLabel::Derivation,
+                500_000,
+            ));
+        }
+        // min 0.4 < 0.50 → gate to the min.
+        assert!((federation_fq_aggregate(&enf.actors).unwrap() - 0.4).abs() < 1e-9);
+
+        // Both actors ≥ 0.50 (mid 5 exec / 3 verify → 0.6, high 1 / 2 → 2.0):
+        // h = 2 / (1/0.6 + 1/2.0) — harmonic mean, no min-gate.
+        let mut enf2 = InvariantEnforcer::default();
+        for _ in 0..5 {
+            enf2.ingest(&FlowReceipt::new_first(
+                "mid",
+                "s2",
+                StepType::Execute,
+                EpistemicLabel::Observation,
+                1_000_000,
+            ));
+        }
+        for _ in 0..3 {
+            enf2.ingest(&FlowReceipt::new_first(
+                "mid",
+                "s2",
+                StepType::Verify,
+                EpistemicLabel::Derivation,
+                500_000,
+            ));
+        }
+        enf2.ingest(&FlowReceipt::new_first(
+            "high",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1_000_000,
+        ));
+        for _ in 0..2 {
+            enf2.ingest(&FlowReceipt::new_first(
+                "high",
+                "s1",
+                StepType::Verify,
+                EpistemicLabel::Derivation,
+                500_000,
+            ));
+        }
+        let agg = federation_fq_aggregate(&enf2.actors).unwrap();
+        let expected = 2.0 / (1.0 / 0.6 + 1.0 / 2.0);
+        assert!(
+            (agg - expected).abs() < 1e-9,
+            "harmonic mean must be preserved, got {} expected {}",
+            agg,
+            expected
+        );
     }
 
     // ── CM-1 explanatory-class refusals (2026-09-19) ─────────────────────
