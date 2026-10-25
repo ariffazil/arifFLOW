@@ -222,23 +222,10 @@ impl ArifOSGovernanceBridge {
             .unwrap_or("no_verdict")
             .to_string();
 
-        // Determine verdict class from result
-        let verdict_class = if let Some(decision) = result.get("decision").and_then(|v| v.as_str())
-        {
-            match decision {
-                "ALLOW" | "ADMIT_MUTATE" | "ADMIT_READ" => "SEAL",
-                "ESCALATE" | "CLASSIFICATION_HOLD" => "HOLD",
-                "DENY" => "VOID",
-                "SIMULATE" => "SABAR",
-                _ => "HOLD",
-            }
-        } else if let Some(hold) = result.get("hold_required").and_then(|v| v.as_bool()) {
-            if hold { "HOLD" } else { "SEAL" }
-        } else {
-            // If arif_judge responds but no clear verdict, default HOLD
-            "HOLD"
-        }
-        .to_string();
+        // [F-6 2026-10-25] Shared canonical-first classification — identical
+        // in submit_verdict and authorize_hold_release by construction.
+        // Ambiguity resolves to HOLD, never to SEAL.
+        let verdict_class = verdict_class_from_judge(&result);
 
         eprintln!(
             "[arifFlow] Verdict from arifOS: {} | class={}",
@@ -430,3 +417,235 @@ mod tests {
         }
     }
 }
+// ── Shared verdict classification + release gate (F-6, 2026-10-25) ──────
+
+/// Extract the verdict id from a kernel judge envelope.
+pub fn extract_verdict_id(result: &Value) -> String {
+    result
+        .get("verdict_id")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            result
+                .get("constitutional_chain_id")
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| {
+            result
+                .pointer("/meta/constitutional_chain_id")
+                .and_then(|v| v.as_str())
+        })
+        .unwrap_or("no_verdict")
+        .to_string()
+}
+
+/// Classify a kernel judge envelope into a verdict class
+/// (SEAL / HOLD / VOID / SABAR).
+///
+/// [F-6 2026-10-25] Producer-traced precedence. The kernel's CANONICAL
+/// verdict channel is `effective_verdict` (arifOS runtime/verdict.py:
+/// "effective_verdict is the canonical field — K7 one source per question";
+/// `verdict` is aligned to it on divergence, and `canonical_verdict` is
+/// materialized for JSON clients). The legacy `decision` /
+/// `meta.kernel_intercept.decision` vocabulary is consulted ONLY when no
+/// reconciled verdict exists in the envelope: the kernel's own
+/// decision-contract walker records a live payload where
+/// `meta.kernel_intercept.decision = ALLOW` contradicted
+/// `verdict = effective_verdict = HOLD`, so a raw decision must never
+/// outvote the reconciled verdict.
+///
+/// Fail-closed, never permissive: an unrecognized token maps to HOLD;
+/// `hold_required` can only force HOLD — a missing verdict is never read as
+/// permission. Do not "improve" this into a permissive mapping.
+pub fn verdict_class_from_judge(result: &Value) -> String {
+    // 1. Canonical reconciled verdict channels (kernel-owned vocabulary).
+    for pointer in ["/effective_verdict", "/verdict", "/canonical_verdict"] {
+        if let Some(tok) = result.pointer(pointer).and_then(|v| v.as_str()) {
+            // Closed token vocabulary, case-insensitive but NOT forgiving of
+            // anything else: an unclassifiable token is an inconsistency and
+            // fails closed to HOLD (mirrors the kernel's own closed-token rule).
+            return match tok.to_ascii_uppercase().as_str() {
+                "SEAL" => "SEAL",
+                "VOID" => "VOID",
+                "SABAR" => "SABAR",
+                // HOLD, 888_HOLD, OBSERVE_ONLY, DEGRADED and every unknown
+                // token: non-authorizing.
+                _ => "HOLD",
+            }
+            .to_string();
+        }
+    }
+    // 2. Legacy decision vocabulary (kernel-intercept KernelOutput.decision /
+    //    meta.kernel_intercept.decision) — only when NO reconciled verdict
+    //    exists. Unknown tokens are non-authorizing.
+    let decision = result.get("decision").and_then(|v| v.as_str()).or_else(|| {
+        result
+            .pointer("/meta/kernel_intercept/decision")
+            .and_then(|v| v.as_str())
+    });
+    if let Some(decision) = decision {
+        return match decision {
+            "ALLOW" | "ADMIT_MUTATE" | "ADMIT_READ" | "SEAL" => "SEAL",
+            "ESCALATE" | "CLASSIFICATION_HOLD" | "HOLD" => "HOLD",
+            "DENY" | "VOID" => "VOID",
+            "SIMULATE" | "SABAR" => "SABAR",
+            _ => "HOLD",
+        }
+        .to_string();
+    }
+    // 3. hold_required may only force HOLD. `hold_required == false` with no
+    //    verdict is NOT authorization (the old mapping read it as SEAL).
+    "HOLD".to_string()
+}
+
+/// [F-5 2026-10-25] A hold release is authorized ONLY by a real kernel
+/// verdict whose class is SEAL. The `no_verdict` placeholder (the envelope
+/// carried no verdict id at all) never authorizes, and neither does any
+/// other class or unknown value.
+pub fn release_authorized(verdict_id: &str, verdict_class: &str) -> bool {
+    verdict_class == "SEAL" && !verdict_id.is_empty() && verdict_id != "no_verdict"
+}
+
+
+    // ── F-6 (2026-10-25): verdict mapping semantics ──────────────────────
+
+    #[test]
+    fn test_verdict_class_maps_every_supported_token() {
+        // Canonical channel (kernel-produced verdict vocabulary).
+        for (tok, want) in [
+            ("SEAL", "SEAL"),
+            ("HOLD", "HOLD"),
+            ("VOID", "VOID"),
+            ("SABAR", "SABAR"),
+            ("888_HOLD", "HOLD"),
+            ("OBSERVE_ONLY", "HOLD"),
+            ("DEGRADED", "HOLD"),
+        ] {
+            assert_eq!(
+                verdict_class_from_judge(&json!({ "effective_verdict": tok })),
+                want,
+                "effective_verdict={}",
+                tok
+            );
+            assert_eq!(
+                verdict_class_from_judge(&json!({ "verdict": tok })),
+                want,
+                "verdict={}",
+                tok
+            );
+        }
+        // Legacy decision channel (kernel-intercept vocabulary).
+        for (tok, want) in [
+            ("ALLOW", "SEAL"),
+            ("ADMIT_MUTATE", "SEAL"),
+            ("ADMIT_READ", "SEAL"),
+            ("SEAL", "SEAL"),
+            ("ESCALATE", "HOLD"),
+            ("CLASSIFICATION_HOLD", "HOLD"),
+            ("HOLD", "HOLD"),
+            ("DENY", "VOID"),
+            ("VOID", "VOID"),
+            ("SIMULATE", "SABAR"),
+            ("SABAR", "SABAR"),
+        ] {
+            assert_eq!(
+                verdict_class_from_judge(&json!({ "decision": tok })),
+                want,
+                "decision={}",
+                tok
+            );
+            assert_eq!(
+                verdict_class_from_judge(
+                    &json!({ "meta": { "kernel_intercept": { "decision": tok } } })
+                ),
+                want,
+                "meta.kernel_intercept.decision={}",
+                tok
+            );
+        }
+    }
+
+    #[test]
+    fn test_verdict_class_unknown_values_are_non_authorizing() {
+        for tok in [
+            "APPROVE", "approve", "allow", "SEAL ", "sealed", "", "PROCEED", "OK", "ALLOWED",
+        ] {
+            let class = verdict_class_from_judge(&json!({ "effective_verdict": tok }));
+            assert_ne!(class, "SEAL", "unknown token '{}' must not authorize", tok);
+            let class = verdict_class_from_judge(&json!({ "decision": tok }));
+            assert_ne!(
+                class, "SEAL",
+                "unknown decision '{}' must not authorize",
+                tok
+            );
+        }
+        // Missing everything entirely.
+        assert_eq!(verdict_class_from_judge(&json!({})), "HOLD");
+        assert_eq!(
+            verdict_class_from_judge(&json!({ "decision": null })),
+            "HOLD"
+        );
+    }
+
+    #[test]
+    fn test_verdict_class_canonical_channel_wins_over_kernel_intercept_allow() {
+        // The kernel's decision-contract walker recorded exactly this live
+        // payload (arifOS runtime/verdict.py): verdict == effective_verdict ==
+        // HOLD while meta.kernel_intercept.decision = ALLOW contradicted it.
+        // The old mapping read `decision` FIRST and classified it SEAL.
+        let env = json!({
+            "verdict": "HOLD",
+            "effective_verdict": "HOLD",
+            "meta": { "kernel_intercept": { "decision": "ALLOW" } }
+        });
+        assert_eq!(verdict_class_from_judge(&env), "HOLD");
+    }
+
+    #[test]
+    fn test_verdict_class_legacy_decision_only_without_reconciled_verdict() {
+        // A legacy envelope with no reconciled verdict still classifies
+        // through the decision vocabulary — but any reconciled verdict
+        // overrides it.
+        assert_eq!(
+            verdict_class_from_judge(&json!({ "decision": "ALLOW" })),
+            "SEAL"
+        );
+        assert_eq!(
+            verdict_class_from_judge(&json!({ "decision": "ALLOW", "verdict": "VOID" })),
+            "VOID"
+        );
+        assert_eq!(
+            verdict_class_from_judge(&json!({ "decision": "ALLOW", "effective_verdict": "HOLD" })),
+            "HOLD"
+        );
+    }
+
+    #[test]
+    fn test_hold_required_never_authorizes() {
+        // hold_required=false with no verdict is NOT permission. (The old
+        // mapping read it as SEAL — a permissive default on missing data.)
+        assert_eq!(
+            verdict_class_from_judge(&json!({ "hold_required": false })),
+            "HOLD"
+        );
+        assert_eq!(
+            verdict_class_from_judge(&json!({ "hold_required": true })),
+            "HOLD"
+        );
+        assert_eq!(
+            verdict_class_from_judge(
+                &json!({ "constitutional_check": { "hold_required": false } })
+            ),
+            "HOLD"
+        );
+    }
+
+    #[test]
+    fn test_release_authorized_requires_seal_and_real_verdict_id() {
+        assert!(release_authorized("cc_abc123", "SEAL"));
+        // No verdict id (envelope carried none) never releases, even as SEAL.
+        assert!(!release_authorized("no_verdict", "SEAL"));
+        assert!(!release_authorized("", "SEAL"));
+        for class in ["HOLD", "VOID", "SABAR", "hold", "SEALISH", ""] {
+            assert!(!release_authorized("cc_abc123", class), "class {}", class);
+        }
+    }
