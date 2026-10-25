@@ -19,6 +19,7 @@ dependencies = [
  "blake3",
  "chrono",
  "hex",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",

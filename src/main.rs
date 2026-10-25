@@ -35,11 +35,12 @@ use arifflow::vector::{Dimension, Epistemology, IndependenceMonitor, VectorStore
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use std::os::unix::io::AsRawFd;
 
 // F5 (audit 2026-08-10): VAULT999 canonical witness-trail log.
 // arifFlow appends sealed receipts here; VAULT999 is the only immutable store.
@@ -52,6 +53,51 @@ fn vault_log_path() -> String {
 // ── Protocol Messages ──────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
+/// Append one JSON line under an exclusive OS file lock, and refuse to
+/// concatenate onto a previous line that lost its newline (2026-10-23
+/// repair: two live lines carried `...}}{` because concurrent appends
+/// raced). The lock file is a sibling `*.lock`; all writers must use it.
+fn append_line_locked(path: &str, line: &str) -> std::io::Result<()> {
+    // Lock must live in a directory the service can write without
+    // CAP_DAC_OVERRIDE. The VAULT999 parent is 770 ariffazil:ariffazil, so a
+    // sibling `path.lock` fails for the root service. `/var/lib/arifflow`
+    // is in ReadWritePaths and is the shared lock location.
+    let lock_path = std::env::var("ARIFLOW_VAULT_LOCK_PATH")
+        .unwrap_or_else(|_| "/var/lib/arifflow/arifflow_sealed.lock".into());
+    let lock = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)?;
+    let lock_fd = lock.as_raw_fd();
+    let rc = unsafe { libc::flock(lock_fd, libc::LOCK_EX) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let result = (|| -> std::io::Result<()> {
+        let needs_newline = match std::fs::metadata(path) {
+            Ok(m) if m.len() > 0 => {
+                let mut rf = File::open(path)?;
+                rf.seek(SeekFrom::End(-1))?;
+                let mut last = [0u8; 1];
+                rf.read_exact(&mut last)?;
+                last[0] != b'\n'
+            }
+            _ => false,
+        };
+        let mut f = OpenOptions::new().create(true).append(true).open(path)?;
+        if needs_newline {
+            f.write_all(b"\n")?;
+        }
+        writeln!(f, "{}", line)?;
+        f.flush()?;
+        Ok(())
+    })();
+    unsafe {
+        libc::flock(lock_fd, libc::LOCK_UN);
+    }
+    result
+}
+
 #[serde(tag = "type")]
 enum StdinMsg {
     #[serde(rename = "configure")]
@@ -405,21 +451,12 @@ fn http_forbidden(body: &str) -> Vec<u8> {
 /// clear a constitutional hold is evidence that the gate held — losing it would
 /// make the gate look unused when in fact it was probed.
 fn append_release_audit(entry: &serde_json::Value) {
-    match OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(vault_log_path())
-    {
-        Ok(mut f) => {
-            let _ = writeln!(f, "{}", entry);
-        }
-        Err(e) => {
-            eprintln!(
-                "[arifFlow] WARN: release audit unwritable at {}: {} — decision NOT witnessed",
-                vault_log_path(),
-                e
-            );
-        }
+    if let Err(e) = append_line_locked(&vault_log_path(), &entry.to_string()) {
+        eprintln!(
+            "[arifFlow] WARN: release audit unwritable at {}: {} — decision NOT witnessed",
+            vault_log_path(),
+            e
+        );
     }
 }
 
@@ -1174,20 +1211,11 @@ fn handle_client(
                                             "routed_organ": receipt.routed_organ,
                                         })
                                         .to_string();
-                                        match OpenOptions::new()
-                                            .create(true)
-                                            .append(true)
-                                            .open(vault_log_path())
-                                        {
-                                            Ok(mut f) => {
-                                                let _ = writeln!(f, "{}", line);
-                                            }
-                                            Err(e) => {
-                                                eprintln!(
-                                                    "[arifFlow] WARN: VAULT999 log unwritable at {}: {} — seal kept in-memory",
-                                                    vault_log_path(), e
-                                                );
-                                            }
+                                        if let Err(e) = append_line_locked(&vault_log_path(), &line) {
+                                            eprintln!(
+                                                "[arifFlow] WARN: VAULT999 log unwritable at {}: {} — seal kept in-memory",
+                                                vault_log_path(), e
+                                            );
                                         }
                                     }
                                     Err(e) => {
@@ -2299,5 +2327,104 @@ fn main() {
         daemon_mode();
     } else {
         stdin_protocol_loop();
+    }
+}
+
+// ── append_line_locked regression tests (2026-10-25 repair gate) ─────────
+//
+// Retained-candidate fix: flock + missing-newline repair for the `...}}{`
+// VAULT999 append race (two live lines carried `...}}{` because concurrent
+// appends raced). These tests pin the contract: concurrent appends serialize
+// under the lock, a previous line that lost its newline is repaired before
+// the append (existing damage is preserved for forensics, never hidden), and
+// every newly written line is standalone parseable JSON.
+#[cfg(test)]
+mod append_line_locked_tests {
+    use super::append_line_locked;
+    use std::sync::Mutex;
+
+    // append_line_locked reads ARIFLOW_VAULT_LOCK_PATH; serialize the tests
+    // that set it so parallel test threads cannot race the environment.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn scratch(name: &str) -> (String, String) {
+        let dir = std::env::temp_dir().join("arifflow_append_line_locked_tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        (
+            dir.join(format!("{}.jsonl", name))
+                .to_string_lossy()
+                .to_string(),
+            dir.join(format!("{}.lock", name))
+                .to_string_lossy()
+                .to_string(),
+        )
+    }
+
+    #[test]
+    fn test_append_line_locked_repairs_missing_newline_before_append() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let (path, lock) = scratch("newline_repair");
+        unsafe {
+            std::env::set_var("ARIFLOW_VAULT_LOCK_PATH", &lock);
+        }
+        // A previous append that lost its newline (the raced `...}}{` tail).
+        std::fs::write(&path, "{\"a\":1}{\"b\":2}").unwrap();
+        append_line_locked(&path, "{\"c\":3}").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        // Existing damage is preserved verbatim; a newline is inserted so the
+        // NEW line stands alone and cannot merge with the next append.
+        assert_eq!(content, "{\"a\":1}{\"b\":2}\n{\"c\":3}\n");
+        let last = content.lines().last().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(last).unwrap();
+        assert_eq!(parsed["c"], 3);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_append_line_locked_clean_append_and_file_creation() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let (path, lock) = scratch("clean_append");
+        unsafe {
+            std::env::set_var("ARIFLOW_VAULT_LOCK_PATH", &lock);
+        }
+        let _ = std::fs::remove_file(&path);
+        // Missing file is created; every line is standalone JSON.
+        append_line_locked(&path, "{\"n\":1}").unwrap();
+        append_line_locked(&path, "{\"n\":2}").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "{\"n\":1}\n{\"n\":2}\n");
+        for line in content.lines() {
+            serde_json::from_str::<serde_json::Value>(line).expect("each line is valid JSON");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_append_line_locked_concurrent_appends_never_merge() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let (path, lock) = scratch("concurrent");
+        unsafe {
+            std::env::set_var("ARIFLOW_VAULT_LOCK_PATH", &lock);
+        }
+        let _ = std::fs::remove_file(&path);
+        let n = 8usize;
+        std::thread::scope(|s| {
+            for i in 0..n {
+                let p = path.clone();
+                s.spawn(move || {
+                    append_line_locked(&p, &format!("{{\"writer\":{}}}", i)).unwrap();
+                });
+            }
+        });
+        let content = std::fs::read_to_string(&path).unwrap();
+        let mut seen = vec![];
+        for line in content.lines() {
+            let v: serde_json::Value =
+                serde_json::from_str(line).expect("raced appends must never merge lines");
+            seen.push(v["writer"].as_i64().unwrap());
+        }
+        seen.sort_unstable();
+        assert_eq!(seen, (0..n as i64).collect::<Vec<_>>());
+        let _ = std::fs::remove_file(&path);
     }
 }

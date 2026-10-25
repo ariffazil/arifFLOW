@@ -11,7 +11,7 @@
 
 use crate::merkle::MerkleRoot;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -71,12 +71,17 @@ fn call_arifos_tool(tool: &str, args: &Value) -> Result<Value, String> {
         }
     });
 
-    let resp = client.post(KERNEL_URL).json(&body).send().map_err(|e| {
-        format!(
-            "HTTP request to arifOS failed: {} — is arifOS running on :8088?",
-            e
-        )
-    })?;
+    let resp = client
+        .post(KERNEL_URL)
+        .header("Accept", "application/json, text/event-stream")
+        .json(&body)
+        .send()
+        .map_err(|e| {
+            format!(
+                "HTTP request to arifOS failed: {} — is arifOS running on :8088?",
+                e
+            )
+        })?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -92,10 +97,26 @@ fn call_arifos_tool(tool: &str, args: &Value) -> Result<Value, String> {
         return Err(format!("arifOS MCP error: {:?}", err));
     }
 
-    resp_json
+    let outer = resp_json
         .get("result")
-        .ok_or_else(|| "arifOS response missing 'result' field".into())
-        .cloned()
+        .ok_or_else(|| "arifOS response missing 'result' field".to_string())?;
+
+    // FastMCP wraps the tool payload inside `structuredContent` (or JSON text
+    // inside `content[0].text`). Unwrap to the tool's dictionary so callers can
+    // inspect `session_id`, `decision`, `meta.kernel_intercept`, etc.
+    if let Some(sc) = outer.get("structuredContent") {
+        if sc.is_object() {
+            return Ok(sc.clone());
+        }
+    }
+    if let Some(text) = outer.pointer("/content/0/text").and_then(|v| v.as_str()) {
+        if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+            if parsed.is_object() {
+                return Ok(parsed);
+            }
+        }
+    }
+    Ok(outer.clone())
 }
 
 // ── Bridge implementation ───────────────────────────────────────────
@@ -122,7 +143,12 @@ impl ArifOSGovernanceBridge {
             &json!({
                 "mode": "init",
                 "actor_id": actor_id,
-                "requested_authority": "LIMITED_MUTATE"
+                "requested_authority": "LIMITED_MUTATE",
+                // 2026-10-23: arif_init now refuses a session without a
+                // stated purpose ("requires intent"). The bridge was still
+                // calling it without one, so boot fell back to OBSERVE_ONLY
+                // and the vector dimensions stayed unwired.
+                "intent": format!("E1 arifFlow governance bridge lease: {}", _context)
             }),
         )?;
 
