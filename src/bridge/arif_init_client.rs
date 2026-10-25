@@ -8,9 +8,9 @@
 // State Machine:
 //   InitBuilder -> EnvLoaded -> ProviderResolved -> ToolsRegistered -> GovernedSession<EngineMounted>
 
-use std::marker::PhantomData;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::marker::PhantomData;
 use thiserror::Error;
 
 #[derive(Error, Debug, Clone)]
@@ -80,7 +80,9 @@ impl InitClient<Uninitialized> {
     pub fn new(actor_id: impl Into<String>) -> Result<Self, InitError> {
         let aid = actor_id.into().trim().to_string();
         if aid.is_empty() {
-            return Err(InitError::InvalidActor("Actor ID cannot be empty".to_string()));
+            return Err(InitError::InvalidActor(
+                "Actor ID cannot be empty".to_string(),
+            ));
         }
         Ok(Self {
             actor_id: aid,
@@ -103,7 +105,10 @@ impl InitClient<Uninitialized> {
     /// Step 1: Load environment context and constitutional flags.
     pub fn load_env(self) -> Result<InitClient<EnvLoaded>, InitError> {
         let mut env_map = serde_json::Map::new();
-        env_map.insert("ARIFOS_ENV".to_string(), json!(std::env::var("ARIFOS_ENV").unwrap_or_else(|_| "production".to_string())));
+        env_map.insert(
+            "ARIFOS_ENV".to_string(),
+            json!(std::env::var("ARIFOS_ENV").unwrap_or_else(|_| "production".to_string())),
+        );
         env_map.insert("FLOORS_ENFORCED".to_string(), json!("F1-F13"));
         env_map.insert("IDENTITY_VERIFIED".to_string(), json!(true));
 
@@ -125,14 +130,19 @@ impl InitClient<Uninitialized> {
 
 impl InitClient<EnvLoaded> {
     /// Step 2: Resolve AI model provider (fed_federation / primary route).
-    pub fn resolve_provider(self, provider_id: Option<&str>) -> Result<InitClient<ProviderResolved>, InitError> {
+    pub fn resolve_provider(
+        self,
+        provider_id: Option<&str>,
+    ) -> Result<InitClient<ProviderResolved>, InitError> {
         let resolved = provider_id
             .map(|s| s.to_string())
             .or_else(|| std::env::var("ARIFOS_PRIMARY_PROVIDER").ok())
             .unwrap_or_else(|| "fed_federation".to_string());
 
         if resolved.is_empty() {
-            return Err(InitError::ProviderError("Resolved provider cannot be empty".to_string()));
+            return Err(InitError::ProviderError(
+                "Resolved provider cannot be empty".to_string(),
+            ));
         }
 
         Ok(InitClient {
@@ -153,9 +163,14 @@ impl InitClient<EnvLoaded> {
 
 impl InitClient<ProviderResolved> {
     /// Step 3: Register canonical tools with schema validation.
-    pub fn register_tools(self, tools: Vec<String>) -> Result<InitClient<ToolsRegistered>, InitError> {
+    pub fn register_tools(
+        self,
+        tools: Vec<String>,
+    ) -> Result<InitClient<ToolsRegistered>, InitError> {
         if tools.is_empty() {
-            return Err(InitError::ToolRegistrationError("At least one canonical tool must be registered".to_string()));
+            return Err(InitError::ToolRegistrationError(
+                "At least one canonical tool must be registered".to_string(),
+            ));
         }
 
         Ok(InitClient {
@@ -240,9 +255,17 @@ mod tests {
     fn test_typestate_success_flow() {
         let client = InitClient::new("333-agi").expect("Builder created");
         let env_loaded = client.load_env().expect("Env loaded");
-        let provider_resolved = env_loaded.resolve_provider(Some("fed_federation")).expect("Provider resolved");
-        let tools = vec!["arif_think".to_string(), "arif_judge".to_string(), "arif_seal".to_string()];
-        let tools_registered = provider_resolved.register_tools(tools).expect("Tools registered");
+        let provider_resolved = env_loaded
+            .resolve_provider(Some("fed_federation"))
+            .expect("Provider resolved");
+        let tools = vec![
+            "arif_think".to_string(),
+            "arif_judge".to_string(),
+            "arif_seal".to_string(),
+        ];
+        let tools_registered = provider_resolved
+            .register_tools(tools)
+            .expect("Tools registered");
         let session = tools_registered.mount_engine().expect("Engine mounted");
 
         assert!(session.is_authorized());
@@ -250,7 +273,9 @@ mod tests {
         assert_eq!(session.authority_tier, "SOVEREIGN");
         assert_eq!(session.tools_count, 3);
 
-        let res = session.execute_action("audit_check", &json!({"scope": "F1-F13"})).expect("Action executed");
+        let res = session
+            .execute_action("audit_check", &json!({"scope": "F1-F13"}))
+            .expect("Action executed");
         assert_eq!(res["status"], "EXECUTED");
         assert_eq!(res["receipt"]["verdict"], "SEAL");
     }
@@ -269,7 +294,10 @@ mod tests {
         let client = InitClient::new("test_agent").unwrap();
         let env_loaded = client.load_env().unwrap();
         let provider = env_loaded.resolve_provider(None).unwrap();
-        let err = provider.register_tools(vec![]).err().expect("Empty tools should fail");
+        let err = provider
+            .register_tools(vec![])
+            .err()
+            .expect("Empty tools should fail");
         match err {
             InitError::ToolRegistrationError(_) => (),
             _ => panic!("Expected ToolRegistrationError"),
