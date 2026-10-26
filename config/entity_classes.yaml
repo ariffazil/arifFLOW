@@ -113,3 +113,13 @@ synthetic:
   - chatgpt-arif-audit
   # selfcheck gate rows (session "audit-test")
   - verified
+  # 2026-10-25 IDENTITY_ATTRIBUTION_EMD_REPAIR phase 2b — now ACTIVE.
+  # Kernel ART evidence-gate self-check rows: 35 Verify receipts,
+  # topology_id=art-evidence-gate, session_id empty, cost_ns=250000000,
+  # gates selfcheck/sufficient_context/atomic_decomposition.
+  # Phase 2a LANDED 2026-10-26 (arifOS 823c4c488): pre_execution_gate.py now
+  # stamps actor_id='kernel:art-evidence-gate' instead of falling through to the
+  # literal bucket "anonymous". Without this declaration those rows would land
+  # as ActorClass::Unclassified instead of Synthetic, so the exclusion below is
+  # load-bearing, not decorative.
+  - kernel:art-evidence-gate
