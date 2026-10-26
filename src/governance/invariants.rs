@@ -1038,13 +1038,34 @@ impl InvariantEnforcer {
     /// Restored holds are returned so the caller can WITNESS each one — a hold
     /// that is restored rather than re-derived must be visible in the audit
     /// trail, otherwise durability silently resurrects ghosts with no witness.
-    /// Returns the records that were restored (i.e. were absent after seeding).
-    pub fn restore_holds(&mut self, records: &[HoldRecord]) -> Vec<String> {
-        let mut restored = Vec::new();
+    ///
+    /// ## Evidence test (2026-10-26) — HOLD_LATCH_OUTLIVES_EVIDENCE
+    ///
+    /// A hold is re-applied ONLY when the actor exists in the state seeded from
+    /// the live receipt window. An actor with zero receipts cannot justify a
+    /// hold, and — worse — cannot clear one: `/check` blocks its execution, so
+    /// it never runs, so it never emits the session-backed Verify that the
+    /// auto-release path requires. A block no legitimate action can lift is a
+    /// permanent BAN, and F2 says arifFlow checkpoints, never judges. Those
+    /// records are returned as `unsupported`; the caller witnesses the drop.
+    ///
+    /// Measured case (2026-10-26): `anonymous`, `codex`, `fi-008-cron` and
+    /// `grok-build` were resurrected as shell actors on every boot while holding
+    /// 0 receipts between them — `grok-build`'s 6,577 receipts (including Verify
+    /// entries) had been archived out of the live ledger on 2026-09-14.
+    pub fn restore_holds(&mut self, records: &[HoldRecord]) -> RestoreOutcome {
+        let mut outcome = RestoreOutcome::default();
         for rec in records {
             // Canonicalize: seeding canonicalizes actor ids to lowercase, so a
             // persisted mixed-case id must fold to the same key.
             let key = rec.actor_id.to_ascii_lowercase();
+
+            // Evidence test — no receipts in the live window means no hold.
+            if !self.actors.contains_key(&key) {
+                outcome.unsupported.push(rec.actor_id.clone());
+                continue;
+            }
+
             let already = self
                 .actors
                 .get(&key)
@@ -1060,9 +1081,9 @@ impl InvariantEnforcer {
                 }
                 continue;
             }
-            // Restoring a hold for an actor with no state at all: create a shell
-            // so the verdict is not lost just because the receipt window aged out.
-            // [F-4 2026-10-25] The shell gets the same registration-time class
+            // Live evidence exists and re-derivation left the actor un-held →
+            // re-apply the durable verdict on top of the re-derived state.
+            // [F-4 2026-10-25] The state keeps the same registration-time class
             // stamp as an ingested actor (fail-closed when undeclared).
             let shell_class = self.class_registry.classify(&key);
             let entry = self
@@ -1080,10 +1101,23 @@ impl InvariantEnforcer {
             } else {
                 now_ns()
             };
-            restored.push(rec.actor_id.clone());
+            outcome.restored.push(rec.actor_id.clone());
         }
-        restored
+        outcome
     }
+}
+
+/// Outcome of re-applying the durable hold ledger after boot seeding.
+///
+/// `restored`  — holds re-applied on top of a state that exists in the live
+///               receipt window (the actor is real and still under floor).
+/// `unsupported` — hold records dropped because the actor has ZERO receipts in
+///               the live window. The evidence that produced the hold is gone,
+///               so the hold has no basis. See `restore_holds` evidence test.
+#[derive(Debug, Default, Clone)]
+pub struct RestoreOutcome {
+    pub restored: Vec<String>,
+    pub unsupported: Vec<String>,
 }
 
 /// A durable record of one held actor.
@@ -1158,6 +1192,61 @@ mod tests {
         // v2.1: 1 exec + 1 verify → quotient = 1/1 = 1.0 (verify_count < 2 → Caution verdict)
         assert!((state.fq - 1.0).abs() < 0.01);
         assert_eq!(state.verdict, FlowVerdict::Caution);
+    }
+
+    // ── 2026-10-26: a durable hold must not outlive its evidence ─────────
+    //
+    // Regression class HOLD_LATCH_OUTLIVES_EVIDENCE. Measured live: four actors
+    // were resurrected as held shell actors on every boot while holding zero
+    // receipts between them. /check blocked them, so they could never Execute,
+    // so they could never emit the Verify that releases them — a permanent ban.
+
+    #[test]
+    fn restore_holds_drops_hold_for_actor_with_no_live_evidence() {
+        let mut enf = InvariantEnforcer::default();
+        // No receipts seeded → the actor does not exist in the live window.
+        let records = vec![HoldRecord {
+            actor_id: "ghost-actor".to_string(),
+            held_since_ns: 1_700_000_000_000_000_000,
+        }];
+        let outcome = enf.restore_holds(&records);
+        assert!(
+            outcome.restored.is_empty(),
+            "a hold with no live evidence must not be restored"
+        );
+        assert_eq!(outcome.unsupported, vec!["ghost-actor".to_string()]);
+        assert!(
+            !enf.actors.contains_key("ghost-actor"),
+            "no shell actor may be created for a ghost hold"
+        );
+        assert!(enf.held_snapshot().is_empty());
+    }
+
+    #[test]
+    fn restore_holds_reapplies_hold_for_actor_with_live_evidence() {
+        let mut enf = InvariantEnforcer::default();
+        // Live evidence: one Execute, no Verify → under the FQ floor.
+        let r = FlowReceipt::new_first(
+            "live-actor",
+            "s1",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1_000_000,
+        );
+        enf.ingest(&r);
+        let records = vec![HoldRecord {
+            actor_id: "live-actor".to_string(),
+            held_since_ns: 1_700_000_000_000_000_000,
+        }];
+        let outcome = enf.restore_holds(&records);
+        assert_eq!(outcome.restored, vec!["live-actor".to_string()]);
+        assert!(outcome.unsupported.is_empty());
+        let state = enf.actors.get("live-actor").expect("actor must exist");
+        assert!(state.held, "hold must be re-applied on top of live evidence");
+        assert_eq!(
+            state.held_since_ns, 1_700_000_000_000_000_000,
+            "first-application time must survive the restore"
+        );
     }
 
     #[test]

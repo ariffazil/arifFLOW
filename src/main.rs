@@ -622,6 +622,9 @@ fn handle_client(
                 // The scalar masks per-actor pathology (e.g. one actor stuck at 0.0
                 // while automated heartbeats inflate the global verify count).
                 // per_actor exposes the vector so diagnosis is actor-specific.
+                // [2026-10-26 DUAL_POLICY_FLOOR_DRIFT] Hoist the binding floor so the
+                // reported `fq_required` matches what check_actor/enforce gate on.
+                let stuck_floor = enf.thresholds.stuck_threshold;
                 let per_actor: BTreeMap<String, serde_json::Value> = enf
                     .actors
                     .iter()
@@ -658,7 +661,14 @@ fn handle_client(
                                 "throttled": state.throttled,
                                 "consecutive_exec_no_verify": state.consecutive_executes_without_verify,
                                 "risk_class": state.last_risk_class.code(),
-                                "fq_required": state.last_risk_class.fq_required(),
+                                // Effective gate = max(risk-class floor, stuck_threshold).
+                                // Reporting the bare risk floor told operators a T0 actor
+                                // needed 0.1 while /check actually demanded 0.50.
+                                "fq_required": state
+                                    .last_risk_class
+                                    .fq_required()
+                                    .max(stuck_floor),
+                                "fq_required_risk_class": state.last_risk_class.fq_required(),
                             }),
                         )
                     })
@@ -2026,13 +2036,14 @@ fn daemon_mode() {
         // dishonesty.
         let persisted = load_hold_ledger();
         if !persisted.is_empty() {
-            let restored = enf.restore_holds(&persisted);
+            let outcome = enf.restore_holds(&persisted);
             eprintln!(
-                "[arifFlow] Hold ledger: {} persisted, {} restored (absent after seeding)",
+                "[arifFlow] Hold ledger: {} persisted, {} restored, {} unsupported (no live evidence)",
                 persisted.len(),
-                restored.len()
+                outcome.restored.len(),
+                outcome.unsupported.len()
             );
-            for actor in &restored {
+            for actor in &outcome.restored {
                 append_release_audit(&serde_json::json!({
                     "surface": "arifFlow:7073/boot",
                     "decision": "RESTORED",
@@ -2042,11 +2053,33 @@ fn daemon_mode() {
                     "routed_organ": "arifFlow",
                 }));
             }
-            if !restored.is_empty() {
+            if !outcome.restored.is_empty() {
                 eprintln!(
                     "[arifFlow] RESTORED holds that re-derivation had cleared: {}",
-                    restored.join(", ")
+                    outcome.restored.join(", ")
                 );
+            }
+            // [2026-10-26 HOLD_LATCH_OUTLIVES_EVIDENCE] A hold whose actor has no
+            // receipts in the live window can never be cleared by any action the
+            // actor is permitted to take: /check blocks it, so it never Executes,
+            // so it never emits the Verify the auto-release path requires. Restoring
+            // that block is a permanent ban, not a checkpoint (F2: arifFlow
+            // checkpoints, never judges). Drop the record, witness the drop, and let
+            // the persist_hold_ledger() below purge it from disk.
+            for actor in &outcome.unsupported {
+                eprintln!(
+                    "[arifFlow] HOLD DROPPED — no receipts in live window to justify it: {}",
+                    actor
+                );
+                append_release_audit(&serde_json::json!({
+                    "surface": "arifFlow:7073/boot",
+                    "decision": "DROPPED",
+                    "reason": "no_live_evidence_for_hold",
+                    "target_actor": actor,
+                    "persisted_holds": persisted.len(),
+                    "authority": "arifFlow:F2_checkpoint_never_judge",
+                    "routed_organ": "arifFlow",
+                }));
             }
         }
         drop(enf);
