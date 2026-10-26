@@ -558,6 +558,32 @@ fn f3_hold_condition(
         && q > thresholds.fossilisation_threshold
         && state.execute_count > 0
     {
+        // [F13 2026-10-26 — option C, ratified by Arif] VERIFICATION-NATIVE ROLE
+        // EXEMPTION. A role whose assignment IS verification cannot be
+        // "fossilised" for verifying: the pole would punish the job it was given
+        // (measured case: grok-build archived 3271 Verify / 38 Execute across
+        // months — 86:1 is its nature, not a stall).
+        //
+        // Scope of the exemption — deliberately narrow:
+        //   * the HOLD is suppressed; the FOSSILIZED label still prints (it is a
+        //     true statement about the window) and the actor still counts toward
+        //     the federation aggregate;
+        //   * declaration is explicit and auditable, never a silent
+        //     reclassification (entity_class.rs §register: first declaration wins):
+        //         ARIFLOW_VERIFY_NATIVE_ACTORS="grok-build"
+        //   * an executor is not eligible: claude-fi-002 carries 1527 lifetime
+        //     Execute receipts, so declaring it verification-native would be
+        //     misclassification, not relief.
+        let verify_native = std::env::var("ARIFLOW_VERIFY_NATIVE_ACTORS")
+            .map(|v| {
+                v.split(',')
+                    .map(|t| t.trim())
+                    .any(|t| !t.is_empty() && t.eq_ignore_ascii_case(actor_id))
+            })
+            .unwrap_or(false);
+        if verify_native {
+            return None;
+        }
         return Some((
             format!(
                 "Actor '{}' is FOSSILIZED: FQ={:.2} > {:.2} (verify:execute > 3:1). Contact exists, nothing moves.",

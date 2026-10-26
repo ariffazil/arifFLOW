@@ -551,6 +551,53 @@ struct SessionLastReceipt {
     seen_execute: bool,
 }
 
+fn read_http_request(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+    let mut data = Vec::with_capacity(4096);
+    let mut buf = [0u8; 4096];
+    let mut body_expected: Option<usize> = None;
+    let mut header_len: Option<usize> = None;
+
+    loop {
+        let n = stream.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        data.extend_from_slice(&buf[..n]);
+
+        if header_len.is_none() {
+            if let Some(pos) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                let h_len = pos + 4;
+                header_len = Some(h_len);
+                let headers_str = String::from_utf8_lossy(&data[..pos]);
+                for line in headers_str.lines() {
+                    let line_trim = line.trim();
+                    if line_trim.to_ascii_lowercase().starts_with("content-length:") {
+                        if let Some((_, val)) = line_trim.split_once(':') {
+                            if let Ok(cl) = val.trim().parse::<usize>() {
+                                body_expected = Some(cl);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(h_len) = header_len {
+            let cl = body_expected.unwrap_or(0);
+            if data.len() >= h_len + cl {
+                break;
+            }
+        }
+
+        if data.len() > 16 * 1024 * 1024 {
+            break;
+        }
+    }
+    Ok(data)
+}
+
 fn handle_client(
     mut stream: TcpStream,
     start_time: Instant,
@@ -563,11 +610,12 @@ fn handle_client(
     vault_sealer: &Arc<Mutex<Vault999Sealer>>,
     session_tracker: &Arc<Mutex<std::collections::HashMap<String, SessionLastReceipt>>>,
 ) {
-    let mut buf = [0u8; 16384];
-    match stream.read(&mut buf) {
-        Ok(n) if n > 0 => {
-            let request = String::from_utf8_lossy(&buf[..n]);
-            let response = if request.starts_with("GET /health") {
+    let req_bytes = match read_http_request(&mut stream) {
+        Ok(b) if !b.is_empty() => b,
+        _ => return,
+    };
+    let request = String::from_utf8_lossy(&req_bytes);
+    let response = if request.starts_with("GET /health") {
                 let store = receipt_store.lock().unwrap();
                 let enf = enforcer.lock().unwrap();
                 let mut vs = vector_store.lock().unwrap();
@@ -1853,9 +1901,6 @@ Connection: close
                 .into_bytes()
             };
             let _ = stream.write_all(&response);
-        }
-        _ => {}
-    }
 }
 
 /// Daemon mode — TCP listener on ARIFLOW_PORT (default 7073)
@@ -2035,7 +2080,34 @@ fn daemon_mode() {
         // durability that resurrects ghosts without a receipt is its own kind of
         // dishonesty.
         let persisted = load_hold_ledger();
-        if !persisted.is_empty() {
+        // [F13 2026-10-26 — "HOLD TTL IKUT EVIDENCE" (option A), ratified by Arif]
+        // A hold may not outlive the evidence window that justified it. The receipt
+        // store is built EMPTY at boot (window_basis = process_lifetime_since_start),
+        // so at boot there is no evidence supporting any persisted hold: under option
+        // A every persisted hold EXPIRES and must be re-earned by fresh receipts in
+        // the new window. Reversible at runtime without a rebuild:
+        //   ARIFLOW_HOLD_RESTORE_ON_BOOT=1  -> previous restore-on-boot behaviour.
+        let restore_on_boot = std::env::var("ARIFLOW_HOLD_RESTORE_ON_BOOT")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if !persisted.is_empty() && !restore_on_boot {
+            for rec in &persisted {
+                eprintln!(
+                    "[arifFlow] HOLD EXPIRED — evidence window restarted, hold must be re-earned: {}",
+                    rec.actor_id
+                );
+                append_release_audit(&serde_json::json!({
+                    "surface": "arifFlow:7073/boot",
+                    "decision": "EXPIRED",
+                    "reason": "hold_ttl_evidence_window_reset",
+                    "target_actor": rec.actor_id,
+                    "held_since_ns": rec.held_since_ns,
+                    "persisted_holds": persisted.len(),
+                    "authority": "F13 2026-10-26 option_A_hold_ttl_follows_evidence",
+                    "routed_organ": "arifFlow",
+                }));
+            }
+        } else if !persisted.is_empty() {
             let outcome = enf.restore_holds(&persisted);
             eprintln!(
                 "[arifFlow] Hold ledger: {} persisted, {} restored, {} unsupported (no live evidence)",
