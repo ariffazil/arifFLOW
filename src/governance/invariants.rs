@@ -310,7 +310,9 @@ impl ActorFlowState {
         // Windowed FQ (2026-10-19): count only the most recent ACTOR_FQ_WINDOW
         // steps. A lifetime counter measures age, not current behaviour; one
         // old execute can pin an actor (and the min-gated federation) forever.
-        let kind: u8 = if receipt.step_type.is_work_execution() {
+        // [Projection Correction 2026-10-28] Invariant: T0Observe ⟹ step_type ≠ Execute
+        let is_work = receipt.step_type.is_work_execution() && receipt.risk_class != RiskClass::T0Observe;
+        let kind: u8 = if is_work {
             1
         } else if receipt.step_type.is_verification() {
             2

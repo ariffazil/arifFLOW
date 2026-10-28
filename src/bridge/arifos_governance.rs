@@ -18,8 +18,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// arifOS kernel endpoint (configurable via env)
 const KERNEL_URL: &str = "http://127.0.0.1:8088/mcp";
-/// Request timeout — 10s per call
-const REQUEST_TIMEOUT_S: u64 = 10;
+/// Request timeout — 25s per call (accounts for multi-organ probe during arif_init)
+const REQUEST_TIMEOUT_S: u64 = 25;
 
 // ── Data models ─────────────────────────────────────────────────────
 

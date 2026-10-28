@@ -750,7 +750,8 @@ impl FlowQuotient {
         let mut barrier_count = 0usize;
 
         for r in receipts {
-            if r.step_type.is_work_execution() {
+            // [Projection Correction 2026-10-28] Invariant: T0Observe ⟹ step_type ≠ Execute
+            if r.step_type.is_work_execution() && r.risk_class != RiskClass::T0Observe {
                 execute_cost += r.cost_ns;
                 execute_count += 1;
             }
@@ -1054,8 +1055,12 @@ impl FlowReceipt {
             actor_id: actor_id.into(),
             session_id: session_id.into(),
             session_token: None,
+            risk_class: if step_type.is_work_execution() {
+                RiskClass::T1Mutate
+            } else {
+                RiskClass::T0Observe
+            },
             step_type,
-            risk_class: RiskClass::default(),
             topology_id: None,
             lane_id: None,
             step_number: 0,
@@ -1107,8 +1112,12 @@ impl FlowReceipt {
             actor_id: actor_id.into(),
             session_id: session_id.into(),
             session_token: None,
+            risk_class: if step_type.is_work_execution() {
+                RiskClass::T1Mutate
+            } else {
+                RiskClass::T0Observe
+            },
             step_type,
-            risk_class: RiskClass::default(),
             topology_id: None,
             lane_id: None,
             step_number: previous.step_number + 1,

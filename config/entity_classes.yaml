@@ -19,6 +19,9 @@
 # MUST be classified as consequence-bearing for governance FQ to be computable.
 human_agent:
   - arif
+  - arifos:ariffazil
+  - ariffazil
+  - arif-fazil
   - qwen-code
   - fi-003-qwen-code
   - FI-003
@@ -36,6 +39,8 @@ human_agent:
   - hermes-asi
   - hermes-prime
   - 333-AGI
+  - 333-agi
+  - arifos:333-agi
   - FI-009
   - antigravity
   - agy
@@ -123,3 +128,31 @@ synthetic:
   # as ActorClass::Unclassified instead of Synthetic, so the exclusion below is
   # load-bearing, not decorative.
   - kernel:art-evidence-gate
+  # 2026-10-28 FI-008/APEX-ZEN: Canary and edge test probe actors — synthetic fixtures.
+  - arifos:auto-anon
+  - arifos:f006-edge-probe
+  - arifos:test_actor
+  - arifos:conformance-spine
+  - arifos:audit-agent/fi-001
+  - arifos:agi-gate-002-full
+  - arifos:agi-gate-002-mut
+  - arifos:agi-gate-004-declared
+  - arifos:agi-gate-004-echo
+  - arifos:agi-gate-004-light
+  - arifos:agi-gate-005
+  - arifos:kitaran-test-actor
+  - arifos:proof-epoch-probe
+  - arifos:arif-capability-probe
+  - auto-anon
+  - f006-edge-probe
+  - test_actor
+  - test
+  - test_agent
+  - honest_agent
+  - adversarial_agent
+  - attacker
+  - unstable_agent
+  - staged_agent
+  - arifos:unsigned
+  - unsigned
+  - fix
