@@ -145,6 +145,25 @@ def flow_entity_report() -> dict[str, Any]:
                     entity_class = _v
                     break
         if entity_class is None:
+            # Organ-scoped key fallback (333-AGI, 2026-10-28): arifOS records
+            # receipts as `<organ>:<actor>` while the registry declares the bare
+            # `<actor>`. Without this, a correct declaration is INERT and a
+            # probe actor recorded under an organ prefix is reported as a real
+            # consequence-bearing actor.
+            #
+            # SAFETY: exact match runs first, then case-insensitive, so no actor
+            # can change from one declared class to another. The fallback only
+            # makes an actor whose BARE form is already declared reachable; the
+            # only reachable change is unknown -> declared. An undeclared bare
+            # form stays "unknown". Mirrors the Rust aggregate's
+            # `entity_class.rs::classify` (commit ad79fe4) so the report and the
+            # aggregate can no longer disagree.
+            _bare = actor_id.split(":", 1)[1] if ":" in actor_id else actor_id
+            for _k, _v in _ENTITY_CLASSES.items():
+                if _k.lower() == _bare.lower():
+                    entity_class = _v
+                    break
+        if entity_class is None:
             entity_class = "unknown"
         consequence_bearing = entity_class in ("human_agent", "interactive_session")
         entry = {
