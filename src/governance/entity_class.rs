@@ -206,10 +206,28 @@ impl ClassRegistry {
     /// → `Unclassified` → counts toward the aggregate.
     pub fn classify(&self, actor_key: &str) -> ActorClass {
         let key = actor_key.trim().to_ascii_lowercase();
-        self.declarations
-            .get(&key)
-            .map(|d| d.class)
-            .unwrap_or(ActorClass::Unclassified)
+        // EXACT match first — preserves every currently-resolved classification.
+        if let Some(d) = self.declarations.get(&key) {
+            return d.class;
+        }
+        // Organ-scoped fallback (2026-10-28, 333-AGI): arifOS records receipts as
+        // `<organ>:<actor>` while the registry declares the bare `<actor>`.
+        // Without this, a correct declaration is INERT (e.g. declared
+        // `kimi-code/FI-008` vs recorded `arifos:kimi-code/fi-008`), and an
+        // Unclassified actor below 0.50 min-gates the federation FQ — a probe
+        // class reddens a constitutional floor.
+        //
+        // SAFETY: exact-match runs first, so no actor can change from one
+        // declared class to another. The fallback only makes an actor whose
+        // BARE form is already declared reachable; the only reachable change is
+        // Unclassified -> declared. A key whose bare form is undeclared stays
+        // Unclassified.
+        if let Some((_organ, bare)) = key.split_once(':') {
+            if let Some(d) = self.declarations.get(bare) {
+                return d.class;
+            }
+        }
+        ActorClass::Unclassified
     }
 
     pub fn len(&self) -> usize {
@@ -529,5 +547,48 @@ garbage line without dash
         let reg = ClassRegistry::from_entity_classes_yaml("");
         assert!(reg.is_empty());
         assert_eq!(reg.classify("test"), ActorClass::Unclassified);
+    }
+}
+
+#[cfg(test)]
+mod organ_prefix_normalisation_tests {
+    // 333-AGI 2026-10-28 — the F1 min-gate root cause: an organ-scoped key
+    // (`arifos:<actor>`) could never reach its declared bare form, so a
+    // correct declaration was INERT and Unclassified actors min-gated the
+    // federation FQ. Safety contract, mutation-tested in BOTH directions:
+    //   A: delete the fallback block      => tests 1 and 2 MUST fail
+    //   B: delete the exact-match branch  => test 3 MUST fail
+    use super::{ActorClass, ClassRegistry};
+
+    const YAML: &str = "human_agent:\n  - 333-agi\n  - kimi-code/FI-008\nsynthetic:\n  - auto-anon\n";
+
+    #[test]
+    fn test_classify_strips_organ_prefix_when_bare_form_declared() {
+        let reg = ClassRegistry::from_entity_classes_yaml(YAML);
+        assert_eq!(reg.classify("333-agi"), reg.classify("arifos:333-agi"));
+        assert_eq!(
+            reg.classify("kimi-code/FI-008"),
+            reg.classify("arifos:kimi-code/fi-008")
+        );
+        assert_eq!(reg.classify("333-agi"), reg.classify("ARIFOS:333-AGI"));
+    }
+
+    #[test]
+    fn test_classify_organ_prefix_fallback_cannot_invent_a_class() {
+        let reg = ClassRegistry::from_entity_classes_yaml(YAML);
+        assert_eq!(reg.classify("arifos:never-declared"), ActorClass::Unclassified);
+        assert_eq!(reg.classify("arifos:auto-anon"), reg.classify("auto-anon"));
+    }
+
+    #[test]
+    fn test_classify_exact_match_still_wins_over_the_fallback() {
+        // A key declared under an organ-scoped spelling must keep that class
+        // even when a bare spelling is declared differently.
+        // `arifos:333-agi` is declared synthetic; the bare `333-agi` is a
+        // human_agent. The EXACT match must win: organ-scoped -> Fixture.
+        let yaml = "human_agent:\n  - 333-agi\nsynthetic:\n  - arifos:333-agi\n";
+        let reg = ClassRegistry::from_entity_classes_yaml(yaml);
+        assert_eq!(reg.classify("arifos:333-agi"), ActorClass::Fixture);
+        assert_ne!(reg.classify("arifos:333-agi"), reg.classify("333-agi"));
     }
 }
