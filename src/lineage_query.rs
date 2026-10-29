@@ -521,10 +521,77 @@ pub fn consequences(
         let Some(pl) = r.payload.as_ref().and_then(|p| p.as_object()) else {
             continue;
         };
-        let Some(c) = pl.get("consequence").and_then(|v| v.as_object()) else {
+        let Some(cv) = pl.get("consequence") else {
             continue;
         };
-        let g = |k: &str| c.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        // Two producer dialects exist in the same ledger and both are real:
+        //
+        //  (a) OBJECT form — claim_slug / observed_outcome / evidence /
+        //      outcome_class. Written by agents that attribute a consequence
+        //      to a named claim.
+        //  (b) STRING form — "VERIFIED_EXIT" | "VERIFIED_CHANGE" | "FAILED" |
+        //      "NO_CHANGE", emitted by federation_hook_engine with the witness
+        //      basis alongside (tool, target, exit_code, pre/post sha256).
+        //
+        // Until 2026-10-28 only (a) was read. fq_graph counted invoices with
+        // `contains_key`, so it reported 8,441 invoices while this reader
+        // returned 0: counted but unreadable. The two surfaces disagreed and
+        // the ledger looked like it had no outcome data. Both dialects are
+        // read now, and the producer's own word is preserved verbatim in
+        // observed_outcome.
+        let (claim_slug, observed_outcome, evidence, outcome_class) = match cv {
+            serde_json::Value::Object(c) => {
+                let g = |k: &str| c.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                (
+                    g("claim_slug"),
+                    g("observed_outcome"),
+                    g("evidence"),
+                    g("outcome_class"),
+                )
+            }
+            serde_json::Value::String(s) => {
+                let field = |k: &str| pl.get(k).and_then(|v| v.as_str()).unwrap_or("");
+                let tool = field("tool");
+                let target = field("target");
+                let witness = field("witness");
+                let exit_code = pl
+                    .get("exit_code")
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "null".into());
+                let short = |k: &str| {
+                    pl.get(k)
+                        .and_then(|v| v.as_str())
+                        .map(|x| x.chars().take(12).collect::<String>())
+                        .unwrap_or_default()
+                };
+                let (pre, post) = (short("pre_sha256"), short("post_sha256"));
+
+                let mut ev = format!("witness={witness}; exit_code={exit_code}");
+                if !pre.is_empty() || !post.is_empty() {
+                    ev.push_str(&format!("; pre={pre} post={post}"));
+                }
+                if !target.is_empty() {
+                    ev.push_str(&format!("; target={target}"));
+                }
+                let slug = if target.is_empty() {
+                    tool.to_string()
+                } else {
+                    format!("{tool}:{target}")
+                };
+                // Deterministic normalisation of the PRODUCER'S OWN word into
+                // the recovery|regression|neutral axis. Not a verdict: the raw
+                // word stays in observed_outcome, and unknown words are
+                // reported as "unclassified" rather than guessed.
+                let class = match s.as_str() {
+                    "VERIFIED_CHANGE" => "recovery",
+                    "FAILED" => "regression",
+                    "VERIFIED_EXIT" | "NO_CHANGE" => "neutral",
+                    _ => "unclassified",
+                };
+                (slug, s.clone(), ev, class.to_string())
+            }
+            _ => continue,
+        };
         let mut superseded_by = Vec::new();
         for k in &ledger.receipts[..=scan_end] {
             if let Some(i) = k
@@ -553,10 +620,10 @@ pub fn consequences(
             receipt_id: r.receipt_id.to_string(),
             created_at: r.created_at.to_rfc3339(),
             actor_id: r.actor_id.clone(),
-            claim_slug: g("claim_slug"),
-            observed_outcome: g("observed_outcome"),
-            evidence: g("evidence"),
-            outcome_class: g("outcome_class"),
+            claim_slug,
+            observed_outcome,
+            evidence,
+            outcome_class,
             attributed_to: r.parent_receipt_ids.clone(),
             belief_status: if superseded_by.is_empty() {
                 "active".into()
@@ -626,7 +693,11 @@ pub struct FqGraphReport {
     /// that died. Sample-size honesty: meaningless below ~30 beliefs.
     pub revision_rate: f64,
     /// invoices / policies — did compressed scars ever get billed by reality?
-    pub invoice_yield: f64,
+    /// `None` when no policy exists. Division by zero is "not computable", not
+    /// 0.0: the old 0.0 read as "reality never billed us" when the truth was
+    /// "no policy was ever emitted to bill" — an absent denominator wearing the
+    /// costume of a measurement.
+    pub invoice_yield: Option<f64>,
     /// belief born → belief died, milliseconds (per supersession, from
     /// target created_at to killer created_at).
     pub belief_lifetime_ms: Vec<u64>,
@@ -848,9 +919,9 @@ pub fn fq_graph(ledger: &LoadedLedger) -> FqGraphReport {
             0.0
         },
         invoice_yield: if policies > 0 {
-            invoices as f64 / policies as f64
+            Some(invoices as f64 / policies as f64)
         } else {
-            0.0
+            None
         },
         belief_lifetime_ms,
         scar_to_policy_ms,
@@ -1124,9 +1195,91 @@ mod tests {
         let rep = fq_graph(&ledger);
         assert_eq!(rep.policies_emitted, 1);
         assert_eq!(rep.invoices_received, 1);
-        assert_eq!(rep.invoice_yield, 1.0);
+        assert_eq!(rep.invoice_yield, Some(1.0));
         assert_eq!(rep.scar_to_policy_ms, vec![3_600_000]);
         assert_eq!(rep.policy_to_invoice_ms, vec![7_200_000]);
+    }
+
+    /// 2026-10-28: the ledger carries TWO consequence dialects. The string one
+    /// (federation_hook_engine) was invisible to RG-7 while fq_graph counted it,
+    /// so invoices_received=8441 and consequences=0 held at the same time.
+    #[test]
+    fn rg7_reads_string_consequence_dialect() {
+        let dir = tempfile::tempdir().unwrap();
+        let exec = stamp(FlowReceipt::new_first(
+            "a",
+            "s",
+            StepType::Execute,
+            EpistemicLabel::Specification,
+            0,
+        ));
+        let pid = exec.receipt_id.to_string();
+        let ph = exec.jcs_body_hash.clone().unwrap();
+
+        let mk = |consequence: &str, exit_code: i64, target: &str| {
+            let mut r =
+                FlowReceipt::new_first("a", "s", StepType::Verify, EpistemicLabel::Observation, 0)
+                    .with_causal_parents(vec![pid.clone()], vec![ph.clone()]);
+            r.payload = Some(serde_json::json!({
+                "action_id": "call_1",
+                "consequence": consequence,
+                "engine": "federation_hook_engine",
+                "exit_code": exit_code,
+                "pre_sha256": "aaaa1111bbbb2222cccc",
+                "post_sha256": "aaaa1111bbbb2222cccc",
+                "target": target,
+                "tool": "shell",
+                "witness": "exit_code"
+            }));
+            stamp(r)
+        };
+
+        let held = mk("VERIFIED_EXIT", 0, "");
+        let changed = mk("VERIFIED_CHANGE", 0, "/root/x.md");
+        let failed = mk("FAILED", 1, "");
+        let ledger = write_ledger(dir.path(), &[exec, held, changed, failed]);
+
+        // Both surfaces must now agree: counted == readable.
+        let rep = fq_graph(&ledger);
+        assert_eq!(rep.invoices_received, 3);
+        let recs = consequences(&ledger, None).unwrap();
+        assert_eq!(
+            recs.len(),
+            rep.invoices_received,
+            "counted invoices must equal readable consequences"
+        );
+
+        // Producer's own word preserved verbatim; class is normalised, not judged.
+        assert_eq!(recs[0].observed_outcome, "VERIFIED_EXIT");
+        assert_eq!(recs[0].outcome_class, "neutral");
+        assert_eq!(recs[1].observed_outcome, "VERIFIED_CHANGE");
+        assert_eq!(recs[1].outcome_class, "recovery");
+        assert_eq!(recs[1].claim_slug, "shell:/root/x.md");
+        assert_eq!(recs[2].observed_outcome, "FAILED");
+        assert_eq!(recs[2].outcome_class, "regression");
+
+        // Witness basis stays falsifiable, and attribution survives.
+        assert!(recs[2].evidence.contains("exit_code=1"));
+        assert!(recs[2].evidence.contains("witness=exit_code"));
+        assert!(recs[1].evidence.contains("target=/root/x.md"));
+        assert_eq!(recs[0].attributed_to, vec![pid]);
+    }
+
+    /// A zero denominator must not render as a measurement.
+    #[test]
+    fn invoice_yield_is_null_when_no_policy_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let exec = stamp(FlowReceipt::new_first(
+            "a",
+            "s",
+            StepType::Execute,
+            EpistemicLabel::Specification,
+            0,
+        ));
+        let ledger = write_ledger(dir.path(), &[exec]);
+        let rep = fq_graph(&ledger);
+        assert_eq!(rep.policies_emitted, 0);
+        assert_eq!(rep.invoice_yield, None, "0/0 must be null, not 0.0");
     }
 
     #[test]

@@ -17,13 +17,14 @@ Stdlib only. MCP stdio = newline-delimited JSON-RPC 2.0.
 """
 
 import json
+import os
 import socket
 import sys
 import uuid
 from datetime import datetime, timezone
 
-FLOW_HOST = "127.0.0.1"
-FLOW_PORT = 7073
+FLOW_HOST = os.environ.get("ARIFFLOW_HOST", "127.0.0.1")
+FLOW_PORT = int(os.environ.get("ARIFFLOW_PORT", "7073"))
 PROTOCOL_VERSION = "2024-11-05"
 
 STEP_TYPES = ["Execute", "Verify", "Cool", "Seal", "Barrier", "Merge", "Route"]
@@ -256,24 +257,55 @@ TOOLS = [
 
 
 def flow_raw(request: bytes) -> tuple[int, dict]:
-    """One socket, one write, read to EOF.
+    """One socket, one write, read until the response is complete.
 
-    The arifFlow daemon performs a single read() per connection, so headers
-    and body must arrive in one segment — loopback single-send guarantees this.
+    HISTORY (2026-10-20): this used to call ``s.shutdown(SHUT_WR)`` straight
+    after ``sendall`` so the daemon's single ``read()`` would see EOF. That
+    works on loopback and fails through the tailscale TCP proxy: the half-close
+    arrives before the request is forwarded, the proxy tears the connection
+    down, and the caller gets 0 bytes — which the old parser reported as
+    ``status=0, body={}``. A silent empty success.
+
+    Remote reachability means this function may no longer assume a single
+    segment or a half-close. Read until EOF, stop early once Content-Length
+    is satisfied, and never convert "no response" into an empty dict.
     """
-    with socket.create_connection((FLOW_HOST, FLOW_PORT), timeout=10) as s:
-        s.sendall(request)
-        s.shutdown(socket.SHUT_WR)
-        chunks = []
-        while True:
-            data = s.recv(65536)
-            if not data:
-                break
-            chunks.append(data)
+    chunks: list[bytes] = []
+    try:
+        with socket.create_connection((FLOW_HOST, FLOW_PORT), timeout=10) as s:
+            s.sendall(request)
+            s.settimeout(10)
+            expected: int | None = None
+            received = 0
+            head_done = False
+            while True:
+                data = s.recv(65536)
+                if not data:
+                    break
+                chunks.append(data)
+                received += len(data)
+                if not head_done and b"\r\n\r\n" in b"".join(chunks):
+                    head_done = True
+                    head = b"".join(chunks).split(b"\r\n\r\n", 1)[0].decode(errors="replace")
+                    for line in head.split("\r\n"):
+                        if line.lower().startswith("content-length:"):
+                            expected = int(line.split(":", 1)[1].strip()) + len(head) + 4
+                            break
+                if expected is not None and received >= expected:
+                    break
+    except (socket.timeout, OSError) as exc:
+        if not chunks:
+            raise RuntimeError(f"arifFLOW unreachable at {FLOW_HOST}:{FLOW_PORT}: {exc}") from exc
+
     raw = b"".join(chunks).decode(errors="replace")
     status = int(raw.split(" ", 2)[1]) if raw.startswith("HTTP/") else 0
-    body = raw.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in raw else "{}"
-    return status, json.loads(body or "{}")
+    body = raw.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in raw else ""
+    if not body.strip():
+        return status, {}
+    try:
+        return status, json.loads(body)
+    except json.JSONDecodeError:
+        return status, {"_unparsed_body": body[:400]}
 
 
 def flow_get(path: str) -> dict:

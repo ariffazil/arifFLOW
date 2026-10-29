@@ -189,6 +189,19 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ---
 
+## External Footprint & Discovery
+
+arifFlow is the metabolic telemetry and FlowReceipt recording organ of the arifOS federation.
+
+- **Discoverable:** YES (GitHub repository)
+- **Installable / Callable:** YES (Internal HTTP :7073 service)
+- **Inspectable & Forkable:** YES
+- **Independent Validation:** NOT YET ESTABLISHED
+
+Canonical Witness Ledger: [EXTERNAL_WITNESS_LEDGER.md](https://github.com/ariffazil/arifOS/blob/main/docs/EXTERNAL_WITNESS_LEDGER.md)
+
+---
+
 ## Security & license
 
 Disclosure policy and threat model: [`SECURITY.md`](./SECURITY.md).

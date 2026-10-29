@@ -216,6 +216,16 @@ export async function emitReceipt(
   if (params.chain_id) payload.chain_id = params.chain_id;
   if (params.lease_id) payload.lease_id = params.lease_id;
 
+  // Invariant: T0Observe ⟹ step_type ≠ Execute
+  let resolvedStepType: RustStepType = 'Route';
+  const epistemic = params.epistemic_label || 'OBS';
+  const isObserve = epistemic === 'OBS' || (params.details as Record<string, unknown> | undefined)?.risk_class === 'T0Observe';
+  if (params.step_type) {
+    resolvedStepType = (isObserve && params.step_type === 'Execute') ? 'Route' : params.step_type as RustStepType;
+  } else {
+    resolvedStepType = isObserve ? 'Route' : 'Execute';
+  }
+
   const ingest: FlowReceiptIngest = {
     receipt_id: crypto.randomUUID(),
     previous_receipt_hash: params.parent_receipt_id || null,
@@ -223,7 +233,7 @@ export async function emitReceipt(
     actor_id: params.actor_id,
     session_id: params.session_id,
     session_token: null,
-    step_type: (params.step_type || 'Execute') as RustStepType,
+    step_type: resolvedStepType,
     topology_id: null, lane_id: null, step_number: 0,
     cost_ns: params.cost_ns || 0,
     preceding_verify_cost_ns: params.preceding_verify_cost_ns || null,
