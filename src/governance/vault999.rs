@@ -51,6 +51,38 @@ impl Vault999Sealer {
         }
     }
 
+    /// Load chain state from the vault JSONL tail (RG-2 lines carry
+    /// chain_position and chain_entry_hash). Fail-soft: absent or unparsable
+    /// ledger → genesis.
+    ///
+    /// WHY (F-A, 2026-10-30 retest): new() resets to genesis on every daemon
+    /// restart. With ledger persistence active that collides with the existing
+    /// chain (position 0 vs 1600) — the witness chain would fork instead of
+    /// resume. The sealer must continue the on-disk chain, never restart it.
+    pub fn from_ledger(path: &std::path::Path) -> Self {
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(_) => return Self::new(),
+        };
+        for line in text.lines().rev() {
+            let v: serde_json::Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let pos = v.get("chain_position").and_then(|p| p.as_u64());
+            let hash_hex = v.get("chain_entry_hash").and_then(|h| h.as_str());
+            if let (Some(pos), Some(hex_str)) = (pos, hash_hex) {
+                if let Some(prev) = hex_decode_32(hex_str) {
+                    return Self {
+                        chain_position: pos + 1,
+                        prev_hash: prev,
+                    };
+                }
+            }
+        }
+        Self::new()
+    }
+
     pub fn seal(&mut self, checkpoint_hash: [u8; 32]) -> Result<SealReceipt, String> {
         let position = self.chain_position;
         let prev = self.prev_hash;
@@ -88,6 +120,17 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+fn hex_decode_32(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
+        out[i] = u8::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,6 +148,93 @@ mod tests {
         assert_ne!(receipt.chain_entry_hash, [0u8; 32]); // not genesis
         assert_eq!(sealer.current_position(), 1);
         assert_eq!(sealer.current_hash(), receipt.chain_entry_hash);
+    }
+
+    #[test]
+    fn from_ledger_missing_file_is_genesis() {
+        let path = std::env::temp_dir().join(format!(
+            "qrl-vault-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let s = Vault999Sealer::from_ledger(&path);
+        assert_eq!(s.current_position(), 0);
+        assert_eq!(s.current_hash(), [0u8; 32]);
+    }
+
+    #[test]
+    fn from_ledger_resumes_chain_position() {
+        let path = std::env::temp_dir().join(format!(
+            "qrl-vault-resume-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let h1 = "aa".repeat(32);
+        let h2 = "bb".repeat(32);
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"chain_position\":1599,\"prev_hash\":\"{h1}\",\"chain_entry_hash\":\"{h1}\"}}\n\
+                 {{\"chain_position\":1600,\"prev_hash\":\"{h1}\",\"chain_entry_hash\":\"{h2}\"}}\n"
+            ),
+        )
+        .unwrap();
+        let s = Vault999Sealer::from_ledger(&path);
+        std::fs::remove_file(&path).ok();
+        assert_eq!(s.current_position(), 1601);
+        let mut expected = [0u8; 32];
+        for (i, chunk) in h2.as_bytes().chunks(2).enumerate() {
+            expected[i] = u8::from_str_radix(std::str::from_utf8(chunk).unwrap(), 16).unwrap();
+        }
+        assert_eq!(s.current_hash(), expected);
+    }
+
+    #[test]
+    fn from_ledger_garbage_is_genesis() {
+        let path = std::env::temp_dir().join(format!(
+            "qrl-vault-garbage-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, "not json\nalso not\n").unwrap();
+        let s = Vault999Sealer::from_ledger(&path);
+        std::fs::remove_file(&path).ok();
+        assert_eq!(s.current_position(), 0);
+        assert_eq!(s.current_hash(), [0u8; 32]);
+    }
+
+    #[test]
+    fn from_ledger_seal_continues_chain() {
+        let path = std::env::temp_dir().join(format!(
+            "qrl-vault-continue-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let h = format!("{:064x}", 0xabab_u64);
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"chain_position\":1600,\"prev_hash\":\"{h}\",\"chain_entry_hash\":\"{h}\"}}\n"
+            ),
+        )
+        .unwrap();
+        let mut s = Vault999Sealer::from_ledger(&path);
+        std::fs::remove_file(&path).ok();
+        let r = s.seal([7u8; 32]).unwrap();
+        assert_eq!(r.chain_position, 1601);
+        assert_eq!(r.prev_hash, hex_decode_32(&h).unwrap());
     }
 
     #[test]

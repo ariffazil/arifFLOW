@@ -1964,7 +1964,11 @@ fn daemon_mode() {
     // ── VAULT999 sealer (audit 2026-08-10, F5) ──
     // Receipts are sealed into the VAULT999 immutable hash chain (see F5:
     // "Flow writes receipts, never owns memory"). In-memory chain + JSONL log.
-    let vault_sealer = Arc::new(Mutex::new(Vault999Sealer::new()));
+    // F-A (2026-10-30 retest): the sealer MUST resume the on-disk chain from
+    // the ledger tail — genesis-reset on restart forks the witness chain.
+    let vault_sealer = Arc::new(Mutex::new(Vault999Sealer::from_ledger(
+        std::path::Path::new(&vault_log_path()),
+    )));
 
     // ── Daemon-side receipt persistence (audit 2026-08-10) ──
     // Load existing receipts on startup, then append new receipts as they arrive.
