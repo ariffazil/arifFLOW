@@ -145,6 +145,11 @@ After execute:
 After verify:
     POST /ingest {step_type: "Verify", ...}
     POST /release {"actor_id": "333-AGI"}
+
+Failed inference (402 / 429 / dead pool):
+    POST /ingest {step_type: "Route", ...}   # cost_ns=0 — NEVER a costed Execute.
+    Route is not counted as work by FQ (receipt.rs counts_as_work = Execute|Seal|Merge).
+    Supply failure must stay weightless in FQ: starvation ≠ indiscipline.
 ```
 
 ### Client Libraries
