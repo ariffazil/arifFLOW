@@ -1415,6 +1415,10 @@ pub fn verify_chain(receipts: &[FlowReceipt]) -> Result<(), String> {
 pub struct ReceiptStore {
     receipts: Vec<FlowReceipt>,
     max_receipts: usize,
+    /// F-B (2026-10-31): full-history receipt-id index for dedupe. Seeded from
+    /// EVERY persisted line at startup (not only the 1000-receipt FQ window),
+    /// so a duplicate of any receipt ever persisted is detected across restarts.
+    receipt_ids: std::collections::HashSet<String>,
 }
 
 impl ReceiptStore {
@@ -1423,11 +1427,18 @@ impl ReceiptStore {
         Self {
             receipts: Vec::with_capacity(max_receipts.min(1000)),
             max_receipts,
+            receipt_ids: std::collections::HashSet::new(),
         }
+    }
+
+    /// Remember a receipt id without touching the FQ window (startup seeding).
+    pub fn remember_id(&mut self, receipt_id: &str) {
+        self.receipt_ids.insert(receipt_id.to_string());
     }
 
     /// Push a receipt bypassing chain validation — for monitoring/observability.
     pub fn push_force(&mut self, receipt: FlowReceipt) {
+        self.receipt_ids.insert(receipt.receipt_id.to_string());
         if self.receipts.len() >= self.max_receipts {
             self.receipts.remove(0);
         }
@@ -1450,6 +1461,19 @@ impl ReceiptStore {
     /// 1. If receipt has `previous_receipt_hash`, search store for a receipt whose hash
     ///    equals that value. Found → accept (chain valid). Not found → reject.
     /// 2. If receipt has no `previous_receipt_hash` → accept (new chain start, multi-session compatible).
+    /// F-B (2026-10-31, ARIF GO `SEAL_SCOPED_SINGLE_USE`): receipt-id dedupe
+    /// key. A re-delivered receipt must be classified, never counted twice.
+    /// Linear scan is acceptable at federation ingest rates; the store is
+    /// seeded from the persist file on startup, so the verdict survives
+    /// restarts. Raw ledger keeps history — nothing is deleted or merged.
+    pub fn contains_receipt_id(&self, receipt_id: &str) -> bool {
+        self.receipt_ids.contains(receipt_id)
+            || self
+                .receipts
+                .iter()
+                .any(|r| r.receipt_id.to_string() == receipt_id)
+    }
+
     pub fn push_chain_aware(&mut self, receipt: FlowReceipt) -> Result<(), String> {
         // Rule 0 — explanatory-class gate. Cheap, local, no store lookups:
         // evaluated before chain checks so the refusal is never masked.
@@ -1605,6 +1629,7 @@ impl ReceiptStore {
             }
         }
         // Either no hash (new chain) or hash matched → accept.
+        self.receipt_ids.insert(receipt.receipt_id.to_string());
         if self.receipts.len() >= self.max_receipts {
             self.receipts.remove(0);
         }
@@ -1636,6 +1661,7 @@ impl ReceiptStore {
         }
 
         // Enforce capacity
+        self.receipt_ids.insert(receipt.receipt_id.to_string());
         if self.receipts.len() >= self.max_receipts {
             self.receipts.remove(0); // drop oldest
         }
@@ -2127,6 +2153,42 @@ mod tests {
         );
         store.push(r4).unwrap();
         assert_eq!(store.len(), 3);
+    }
+
+    // ── F-B dedupe key (2026-10-31, ARIF GO SEAL_SCOPED_SINGLE_USE) ──────
+
+    #[test]
+    fn f_b_dedupe_key_detects_duplicate_receipt_id() {
+        let mut store = ReceiptStore::new(100);
+        let r = FlowReceipt::new_first(
+            "aforge-retest",
+            "s-fb",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1,
+        );
+        let rid = r.receipt_id.to_string();
+        assert!(!store.contains_receipt_id(&rid), "fresh id must be unseen");
+        store.push_force(r);
+        assert!(
+            store.contains_receipt_id(&rid),
+            "stored id must be detected"
+        );
+
+        // distinct receipts are never merged
+        let r2 = FlowReceipt::new_first(
+            "aforge-retest",
+            "s-fb",
+            StepType::Verify,
+            EpistemicLabel::Observation,
+            1,
+        );
+        let rid2 = r2.receipt_id.to_string();
+        assert_ne!(rid, rid2);
+        store.push_force(r2);
+        assert!(store.contains_receipt_id(&rid));
+        assert!(store.contains_receipt_id(&rid2));
+        assert!(!store.contains_receipt_id("00000000-0000-0000-0000-000000000000"));
     }
 
     // ── push_chain_aware tests (Fix 2 — 2026-08-10) ──────────────────────

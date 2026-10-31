@@ -1039,6 +1039,71 @@ fn handle_client(
                             // opencode/333-AGI → 333-agi) so per-actor FQ is computed
                             // on one key. Subsystem lanes stay distinct.
                             receipt.actor_id = arifflow::receipt::canonical_actor_id(&receipt.actor_id);
+                            // ── F-B (2026-10-31, ARIF GO SEAL_SCOPED_SINGLE_USE) ──
+                            // Receipt-id dedupe MUST fire before the session tracker:
+                            // a deduped Execute must not mark the session as "has
+                            // executed" (that would open a forged auto-release path)
+                            // and must not become the session's parent for the next
+                            // receipt. Duplicates are CLASSIFIED and durably counted,
+                            // never merged, never deleted; raw history stays intact.
+                            // Known limitations (documented, 888 challenge): the HTTP
+                            // status for a duplicate is 200 by client-contract (clients
+                            // must read status=duplicate, not just the code); the key is
+                            // receipt_id (UUID) — same content with a fresh UUID is a new
+                            // receipt by design.
+                            {
+                                let store = receipt_store.lock().unwrap();
+                                let is_dup = store.contains_receipt_id(&receipt.receipt_id.to_string());
+                                drop(store);
+                                if is_dup {
+                                    let dup_log = std::env::var("ARIFLOW_DUPLICATE_LOG_PATH")
+                                        .unwrap_or_else(|_| "/var/lib/arifflow/duplicates.jsonl".into());
+                                    let _ = (|| -> std::io::Result<()> {
+                                        use std::io::Write as _;
+                                        let mut f = OpenOptions::new()
+                                            .create(true)
+                                            .append(true)
+                                            .open(&dup_log)?;
+                                        writeln!(
+                                            f,
+                                            "{}",
+                                            serde_json::json!({
+                                                "event": "duplicate_receipt",
+                                                "at": chrono::Utc::now().to_rfc3339(),
+                                                "receipt_id": receipt.receipt_id,
+                                                "actor": receipt.actor_id,
+                                                "session_id": receipt.session_id,
+                                                "step_type": receipt.step_type,
+                                                "dedupe_key": "receipt_id",
+                                                "dedupe_formula": "dedupe.v1-receipt_id",
+                                            })
+                                        )?;
+                                        Ok(())
+                                    })();
+                                    eprintln!(
+                                        "[arifFlow] DUPLICATE receipt {} actor={} (dedupe.v1-receipt_id)",
+                                        receipt.receipt_id, receipt.actor_id
+                                    );
+                                    let body = serde_json::json!({
+                                        "status": "duplicate",
+                                        "duplicate": true,
+                                        "stored": false,
+                                        "fq_unchanged": true,
+                                        "dedupe_key": "receipt_id",
+                                        "dedupe_formula": "dedupe.v1-receipt_id",
+                                        "receipt_id": receipt.receipt_id,
+                                        "actor": receipt.actor_id,
+                                        "client_contract": "treat status=duplicate as SUCCESS (already recorded); do not retry",
+                                    })
+                                    .to_string();
+                                    let response = format!(
+                                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                        body.len(), body
+                                    ).into_bytes();
+                                    let _ = stream.write_all(&response);
+                                    return;
+                                }
+                            }
                             // ── P2/P3 (2026-10-15): derived parentage + mechanical
                             // self-verify stamping, from the daemon's own session
                             // tracking. Linkage substrate today: parent_receipt_ids
@@ -1997,7 +2062,12 @@ fn daemon_mode() {
                     continue;
                 }
                 match serde_json::from_str::<FlowReceipt>(&line) {
-                    Ok(receipt) => loaded.push(receipt),
+                    Ok(receipt) => {
+                        // F-B dedupe index covers the FULL persisted history,
+                        // not only the 1000-receipt FQ window.
+                        store.remember_id(&receipt.receipt_id.to_string());
+                        loaded.push(receipt);
+                    }
                     Err(e) => {
                         eprintln!("[arifFlow] Skip malformed receipt line: {}", e);
                     }
