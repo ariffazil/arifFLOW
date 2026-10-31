@@ -52,7 +52,7 @@ and observed runtime. This section is the honest reconciliation.
 - Flow Quotient (FQ) monitor — six-state band per Arif F13 spec (v2.1 formula)
 - Invariant enforcer (F0-F6 flow-plane, with auto-enforcement cycle every 10s)
 - Chain-aware ingest since 2026-08-10 (rejects receipts with invalid previous_receipt_hash)
-- Fail-CLOSED advisory gate (Python client default since 2026-08-10)
+- Advisory (non-blocking) gate — Python client default since 2026-08-10. It reports FQ state; it does not block execution. Blocking authority stays with the arifOS judge.
 
 ### What arifFlow IS NOT at runtime (observed)
 - BSP scheduler is compiled but not invoked from daemon (lives in `stdin_protocol_loop` only)
