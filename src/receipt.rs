@@ -3498,6 +3498,111 @@ mod tests {
             "no stored receipt may be retro-refused by the newer gate"
         );
     }
+
+    // ── G4: Human receipt disposition (HUMAN_RASA P0 REMEDIATION ::v1.0) ──
+    //
+    // Before G4 a receipt carried ONLY `tri_witness_votes.human: f64` — a
+    // caller-supplied witness CONFIDENCE. Nothing on the receipt recorded
+    // whether a human actually accepted, rejected, deferred or never
+    // responded, so a machine-side PASS read like human acceptance.
+
+    /// A receipt with a PASS floor verdict and perfect witness votes must
+    /// still report Unknown: machine success is not human acceptance.
+    #[test]
+    fn g4_success_receipt_reports_unknown_disposition() {
+        let r = FlowReceipt::new_first(
+            "agent",
+            "s-g4-pass",
+            StepType::Verify,
+            EpistemicLabel::Observation,
+            1000,
+        )
+        .with_floor_verdict(FloorVerdict::Pass)
+        .with_witness(TriWitnessVotes::new(1.0, 1.0, 1.0).unwrap());
+
+        assert_eq!(r.human_disposition, HumanDisposition::Unknown);
+        assert!(r.tri_witness_votes.as_ref().unwrap().meets_f3_threshold());
+    }
+
+    /// Legacy receipts (JSON written before G4, key absent) still deserialize
+    /// and land on Unknown — old history is never reinterpreted.
+    #[test]
+    fn g4_legacy_json_without_disposition_deserializes_unknown() {
+        let r = FlowReceipt::new_first(
+            "agent",
+            "s-g4-legacy",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1,
+        );
+        let mut v = serde_json::to_value(&r).unwrap();
+        v.as_object_mut().unwrap().remove("human_disposition"); // simulate a pre-G4 receipt
+        let back: FlowReceipt = serde_json::from_value(v).unwrap();
+        assert_eq!(back.human_disposition, HumanDisposition::Unknown);
+    }
+
+    /// Unknown must NOT be serialized — legacy hash chains stay byte-stable
+    /// (same additive pattern as evidence_refs / explanation_class).
+    #[test]
+    fn g4_unknown_disposition_omitted_from_serialization() {
+        let r = FlowReceipt::new_first(
+            "agent",
+            "s-g4-ser",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1,
+        );
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(
+            !json.contains("human_disposition"),
+            "Unknown must be omitted from serialization, got: {json}"
+        );
+    }
+
+    /// An explicit human-sourced disposition round-trips; a witness
+    /// confidence above the F3 threshold does not become acceptance.
+    #[test]
+    fn g4_explicit_disposition_round_trips_and_stays_independent() {
+        let accept = FlowReceipt::new_first(
+            "agent",
+            "s-g4-accept",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1,
+        )
+        .with_human_disposition(HumanDisposition::Accept);
+        let back: FlowReceipt =
+            serde_json::from_str(&serde_json::to_string(&accept).unwrap()).unwrap();
+        assert_eq!(back.human_disposition, HumanDisposition::Accept);
+
+        let reject = FlowReceipt::new_first(
+            "agent",
+            "s-g4-reject",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1,
+        )
+        .with_human_disposition(HumanDisposition::Reject);
+        let back: FlowReceipt =
+            serde_json::from_str(&serde_json::to_string(&reject).unwrap()).unwrap();
+        assert_eq!(back.human_disposition, HumanDisposition::Reject);
+
+        // Confidence is a different axis from acceptance — both can coexist.
+        let conf = FlowReceipt::new_first(
+            "agent",
+            "s-g4-conf",
+            StepType::Verify,
+            EpistemicLabel::Observation,
+            1,
+        )
+        .with_witness(TriWitnessVotes::new(1.0, 0.95, 0.9).unwrap());
+        assert!(conf
+            .tri_witness_votes
+            .as_ref()
+            .unwrap()
+            .meets_f3_threshold());
+        assert_eq!(conf.human_disposition, HumanDisposition::Unknown);
+    }
 }
 
 // ── Backward Compatibility Types ─────────────────────────────────────────
