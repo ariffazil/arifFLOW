@@ -596,7 +596,12 @@ impl fmt::Display for CoolingDecision {
 /// Aggregated witness scores for F3 TRI-WITNESS compliance.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TriWitnessVotes {
-    /// Human witness confidence (0.0 – 1.0)
+    /// Human witness confidence (0.0 – 1.0).
+    ///
+    /// G4 (HUMAN_RASA audit 2026-11-01): this is CONFIDENCE ABOUT a human
+    /// witness, supplied by the caller. It is NOT the human's acceptance of
+    /// the receipt. A high value here never implies consent — see
+    /// `FlowReceipt::human_disposition` for the field a human actually sets.
     pub human: f64,
     /// AI witness confidence (0.0 – 1.0)
     pub ai: f64,
@@ -636,6 +641,46 @@ impl Default for TriWitnessVotes {
             ai: 0.0,
             earth: 0.0,
         }
+    }
+}
+
+// ── Human Disposition (G4, HUMAN_RASA P0 REMEDIATION ::v1.0) ──────────────
+
+/// What a HUMAN explicitly said about this receipt — never what a machine
+/// computed about them.
+///
+/// G4 (HUMAN_RASA audit, 2026-11-01): receipts used to carry only
+/// `TriWitnessVotes.human`, a caller-supplied confidence float. That is
+/// machine testimony ABOUT a human witness; it is not the human's own
+/// acceptance, and treating the two as the same number let a machine-side
+/// PASS read as if a person had agreed.
+///
+/// Rules (contract, not convention):
+///   - Set ONLY from an explicit human-sourced field in the ingest call.
+///   - NEVER derived from `floor_verdict`, witness scores, status, or any
+///     heuristic. Derivation is a constitutional violation of this field.
+///   - `Unknown` means "no explicit human response recorded" — absence is
+///     reported, never imputed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum HumanDisposition {
+    /// Human explicitly accepted.
+    Accept,
+    /// Human explicitly rejected.
+    Reject,
+    /// Human explicitly deferred the decision.
+    Defer,
+    /// Human was offered and did not respond (explicit non-response record).
+    NoResponse,
+    /// No explicit human-sourced disposition recorded (default).
+    #[default]
+    Unknown,
+}
+
+impl HumanDisposition {
+    /// True when no explicit human disposition was recorded. Used by serde to
+    /// keep legacy receipts byte-stable (Unknown is omitted on the wire).
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, HumanDisposition::Unknown)
     }
 }
 
@@ -959,6 +1004,14 @@ pub struct FlowReceipt {
     // ── Witness ──
     /// Aggregated witness scores for F3
     pub tri_witness_votes: Option<TriWitnessVotes>,
+    /// G4 (HUMAN_RASA P0 REMEDIATION ::v1.0): the human's OWN disposition of
+    /// this receipt. Contract: set only from an explicit human-sourced field
+    /// in the ingest call — never derived from floor_verdict, witness scores,
+    /// or status (see `HumanDisposition`). Default `Unknown` = "no explicit
+    /// human response recorded"; it is omitted from serialization when
+    /// Unknown so pre-G4 receipts keep byte-stable hashes and chains.
+    #[serde(default, skip_serializing_if = "HumanDisposition::is_unknown")]
+    pub human_disposition: HumanDisposition,
 
     // ── Merkle ──
     /// Root hash of Merkle tree this receipt belongs to
@@ -1080,6 +1133,7 @@ impl FlowReceipt {
             expected_outcome: None,
             cooling_decision: CoolingDecision::None,
             tri_witness_votes: None,
+            human_disposition: HumanDisposition::Unknown,
             merkle_root: None,
             merkle_inclusion_proof: None,
             payload: None,
@@ -1137,6 +1191,7 @@ impl FlowReceipt {
             expected_outcome: None,
             cooling_decision: CoolingDecision::None,
             tri_witness_votes: None,
+            human_disposition: HumanDisposition::Unknown,
             merkle_root: None,
             merkle_inclusion_proof: None,
             payload: None,
@@ -1193,6 +1248,16 @@ impl FlowReceipt {
     /// Set witness votes builder-style.
     pub fn with_witness(mut self, votes: TriWitnessVotes) -> Self {
         self.tri_witness_votes = Some(votes);
+        self
+    }
+
+    /// Record the human's own disposition builder-style (G4).
+    ///
+    /// Pass ONLY a value sourced from an explicit human response — never a
+    /// value derived from verdicts, witness scores or status. Derivation is a
+    /// constitutional misuse of this field (see `HumanDisposition`).
+    pub fn with_human_disposition(mut self, disposition: HumanDisposition) -> Self {
+        self.human_disposition = disposition;
         self
     }
 
@@ -3497,6 +3562,111 @@ mod tests {
             refused, 0,
             "no stored receipt may be retro-refused by the newer gate"
         );
+    }
+
+    // ── G4: Human receipt disposition (HUMAN_RASA P0 REMEDIATION ::v1.0) ──
+    //
+    // Before G4 a receipt carried ONLY `tri_witness_votes.human: f64` — a
+    // caller-supplied witness CONFIDENCE. Nothing on the receipt recorded
+    // whether a human actually accepted, rejected, deferred or never
+    // responded, so a machine-side PASS read like human acceptance.
+
+    /// A receipt with a PASS floor verdict and perfect witness votes must
+    /// still report Unknown: machine success is not human acceptance.
+    #[test]
+    fn g4_success_receipt_reports_unknown_disposition() {
+        let r = FlowReceipt::new_first(
+            "agent",
+            "s-g4-pass",
+            StepType::Verify,
+            EpistemicLabel::Observation,
+            1000,
+        )
+        .with_floor_verdict(FloorVerdict::Pass)
+        .with_witness(TriWitnessVotes::new(1.0, 1.0, 1.0).unwrap());
+
+        assert_eq!(r.human_disposition, HumanDisposition::Unknown);
+        assert!(r.tri_witness_votes.as_ref().unwrap().meets_f3_threshold());
+    }
+
+    /// Legacy receipts (JSON written before G4, key absent) still deserialize
+    /// and land on Unknown — old history is never reinterpreted.
+    #[test]
+    fn g4_legacy_json_without_disposition_deserializes_unknown() {
+        let r = FlowReceipt::new_first(
+            "agent",
+            "s-g4-legacy",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1,
+        );
+        let mut v = serde_json::to_value(&r).unwrap();
+        v.as_object_mut().unwrap().remove("human_disposition"); // simulate a pre-G4 receipt
+        let back: FlowReceipt = serde_json::from_value(v).unwrap();
+        assert_eq!(back.human_disposition, HumanDisposition::Unknown);
+    }
+
+    /// Unknown must NOT be serialized — legacy hash chains stay byte-stable
+    /// (same additive pattern as evidence_refs / explanation_class).
+    #[test]
+    fn g4_unknown_disposition_omitted_from_serialization() {
+        let r = FlowReceipt::new_first(
+            "agent",
+            "s-g4-ser",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1,
+        );
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(
+            !json.contains("human_disposition"),
+            "Unknown must be omitted from serialization, got: {json}"
+        );
+    }
+
+    /// An explicit human-sourced disposition round-trips; a witness
+    /// confidence above the F3 threshold does not become acceptance.
+    #[test]
+    fn g4_explicit_disposition_round_trips_and_stays_independent() {
+        let accept = FlowReceipt::new_first(
+            "agent",
+            "s-g4-accept",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1,
+        )
+        .with_human_disposition(HumanDisposition::Accept);
+        let back: FlowReceipt =
+            serde_json::from_str(&serde_json::to_string(&accept).unwrap()).unwrap();
+        assert_eq!(back.human_disposition, HumanDisposition::Accept);
+
+        let reject = FlowReceipt::new_first(
+            "agent",
+            "s-g4-reject",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1,
+        )
+        .with_human_disposition(HumanDisposition::Reject);
+        let back: FlowReceipt =
+            serde_json::from_str(&serde_json::to_string(&reject).unwrap()).unwrap();
+        assert_eq!(back.human_disposition, HumanDisposition::Reject);
+
+        // Confidence is a different axis from acceptance — both can coexist.
+        let conf = FlowReceipt::new_first(
+            "agent",
+            "s-g4-conf",
+            StepType::Verify,
+            EpistemicLabel::Observation,
+            1,
+        )
+        .with_witness(TriWitnessVotes::new(1.0, 0.95, 0.9).unwrap());
+        assert!(conf
+            .tri_witness_votes
+            .as_ref()
+            .unwrap()
+            .meets_f3_threshold());
+        assert_eq!(conf.human_disposition, HumanDisposition::Unknown);
     }
 }
 
