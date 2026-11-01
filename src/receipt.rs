@@ -1008,6 +1008,48 @@ pub struct FlowReceipt {
     /// history is never retro-invalidated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explanation_schema: Option<String>,
+
+    // ── Human acceptance (P0-4, ARIFOS::HUMAN_RASA::P0, 2026-11-01) ──
+    /// Typed separation of EXECUTION RECEIPT from HUMAN ACCEPTANCE (Receipt !=
+    /// Consent). Set only on a receipt that RECORDS a sovereign decision about
+    /// an earlier receipt — never on the execution receipt itself (mutating a
+    /// sealed receipt would break every child's `previous_receipt_hash`).
+    /// Absent on execution receipts means: NOT ACCEPTED, not "accepted".
+    /// Additive: `skip_serializing_if` keeps legacy receipts byte-stable, so
+    /// historical chains re-verify unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub human_acceptance: Option<HumanAcceptance>,
+}
+
+/// A sovereign human decision ABOUT a receipt — accept / reject / defer.
+///
+/// Lives on its own acceptance receipt (append-only), never retro-fits the
+/// target: the machine record of what was executed stays immutable, and the
+/// human record of what was accepted is a separate, attributable event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HumanAcceptance {
+    /// What the human decided about the target receipt's outcome
+    pub decision: AcceptanceDecision,
+    /// WHO decided — sovereign identity (e.g. "arif"). Never machine-filled.
+    pub by: String,
+    /// Target receipt id this decision is about
+    pub of_receipt_id: Uuid,
+    /// Target receipt hash AT DECISION TIME — binds content, not just id
+    pub of_receipt_hash: String,
+    /// Free note (may be None). Never inferred; explicit human text only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcceptanceDecision {
+    /// Human accepted the outcome
+    Accept,
+    /// Human rejected the outcome
+    Reject,
+    /// Human deferred — no decision yet; must NOT be read as acceptance
+    Defer,
 }
 
 impl FlowReceipt {
@@ -1024,6 +1066,14 @@ impl FlowReceipt {
     pub fn with_supersedes(mut self, ids: Vec<String>, hashes: Vec<String>) -> Self {
         self.supersedes_receipt_ids = ids;
         self.supersedes_receipt_hashes = hashes;
+        self
+    }
+
+    /// P0-4: attach a typed human acceptance decision to this receipt.
+    /// Use ONLY on an acceptance/Verify receipt created for the purpose —
+    /// never on the execution receipt the decision is about.
+    pub fn with_human_acceptance(mut self, acceptance: HumanAcceptance) -> Self {
+        self.human_acceptance = Some(acceptance);
         self
     }
 
@@ -1092,6 +1142,7 @@ impl FlowReceipt {
             evidence_refs: Vec::new(),
             explanation_class: None,
             explanation_schema: None,
+            human_acceptance: None,
         }
     }
 
@@ -1149,6 +1200,7 @@ impl FlowReceipt {
             evidence_refs: Vec::new(),
             explanation_class: None,
             explanation_schema: None,
+            human_acceptance: None,
         }
     }
 
@@ -1715,6 +1767,70 @@ impl Default for ReceiptStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── P0-4: human acceptance — Receipt != Consent (2026-11-01) ─────────
+
+    #[test]
+    fn p04_execution_receipt_has_no_acceptance_by_default() {
+        let r = FlowReceipt::new_first("333-agi", "s-p04", StepType::Execute, EpistemicLabel::Observation, 100);
+        // Absent acceptance = NOT accepted. Execution success says nothing
+        // about the human's response to the outcome (T10 axiom).
+        assert!(r.human_acceptance.is_none());
+        // And it is skipped from serialization → legacy byte-stability
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("human_acceptance"), "default must not appear in JSON: {json}");
+    }
+
+    #[test]
+    fn p04_legacy_json_without_field_deserializes_and_rehashes_identically() {
+        // A stored legacy receipt (no human_acceptance key) must round-trip
+        // byte-identically — historical chains re-verify unchanged.
+        let r = FlowReceipt::new_first("333-agi", "s-p04-legacy", StepType::Verify, EpistemicLabel::Observation, 7);
+        let json = serde_json::to_string(&r).unwrap();
+        let back: FlowReceipt = serde_json::from_str(&json).unwrap();
+        assert!(back.human_acceptance.is_none());
+        assert_eq!(back.hash(), r.hash(), "legacy receipt hash must be byte-stable");
+    }
+
+    #[test]
+    fn p04_acceptance_record_is_typed_and_attributed() {
+        let target = FlowReceipt::new_first("333-agi", "s-p04-t", StepType::Execute, EpistemicLabel::Observation, 3);
+        let acceptance = FlowReceipt::new_first("arif", "s-p04-a", StepType::Verify, EpistemicLabel::Observation, 1)
+            .with_human_acceptance(HumanAcceptance {
+                decision: AcceptanceDecision::Defer,
+                by: "arif".into(),
+                of_receipt_id: target.receipt_id,
+                of_receipt_hash: target.hash(),
+                note: None,
+            });
+        let a = acceptance.human_acceptance.as_ref().expect("acceptance present");
+        // Defer must never be readable as Accept
+        assert_eq!(a.decision, AcceptanceDecision::Defer);
+        assert_ne!(a.decision, AcceptanceDecision::Accept);
+        assert_eq!(a.of_receipt_hash, target.hash());
+        // The TARGET receipt is untouched — its hash and children stay valid
+        assert!(target.human_acceptance.is_none());
+        // Typed field round-trips through JSON
+        let json = serde_json::to_string(&acceptance).unwrap();
+        let back: FlowReceipt = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.human_acceptance, acceptance.human_acceptance);
+    }
+
+    #[test]
+    fn p04_acceptance_serializes_field_when_set() {
+        let target = FlowReceipt::new_first("333-agi", "s-p04-s", StepType::Execute, EpistemicLabel::Observation, 2);
+        let acc = FlowReceipt::new_first("arif", "s-p04-s2", StepType::Verify, EpistemicLabel::Observation, 1)
+            .with_human_acceptance(HumanAcceptance {
+                decision: AcceptanceDecision::Accept,
+                by: "arif".into(),
+                of_receipt_id: target.receipt_id,
+                of_receipt_hash: target.hash(),
+                note: Some("seen".into()),
+            });
+        let json = serde_json::to_string(&acc).unwrap();
+        assert!(json.contains("human_acceptance"));
+        assert!(json.contains("\"decision\":\"accept\""));
+    }
 
     // ── canonical_actor_id (2026-10-15) ──────────────────────────────────
 
