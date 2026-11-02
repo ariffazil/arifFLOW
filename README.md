@@ -18,6 +18,88 @@ truth_rule: cargo test + curl :7073/health beat any prose below
 
 ### Metabolism before momentum.
 
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- LANE 1: THE 60-SECOND HUMAN HORIZON                                     -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+
+## What is this?
+arifFlow is the metabolism organ of the arifOS federation. It monitors whether automated agents are actually verifying what they execute, preventing runaway automation.
+
+## Why does it exist?
+When AI agents become fast, they tend to generate code and execute tasks faster than anyone can verify truth. arifFlow gates new executions when verification lags behind.
+
+## Who bears the consequence if this fails?
+The human operator and code repository integrity. Unchecked agent execution creates runaway bugs, ghost commits, and unverified mutations.
+
+## What does it protect?
+Operational sanity, metabolic balance, and verification honesty.
+
+## What arifFlow will never do
+* **NEVER authorize itself:** arifFlow cannot grant execution permits (that belongs strictly to arifOS).
+* **NEVER execute actions:** arifFlow does not write code or deploy containers (that belongs to A-FORGE).
+* **NEVER become an authority over humans:** arifFlow gates machine processes, never human decisions.
+
+## Human First
+This system exists to serve humans. Humans remain sovereign.  
+The system may measure verification balance.  
+The system may gate runaway machine loops.  
+**The system may never become authority over a human.**
+
+## Reality Connection
+* **Reality:** Verification-to-execution ratio (FQ). Task completion receipts.
+* **Failure Cost:** Hallucination compounding, runaway subagents, broken codebases.
+* **Doctrine:** *Metabolism before momentum. Momentum without verification is disease.*
+
+---
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- LANE 2: MACHINE-EXECUTABLE CONTRACT                                     -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+
+```yaml
+organ:
+  name: arifFlow
+  purpose: metabolic-flow-and-verification-pulse
+  repository: https://github.com/ariffazil/arifFLOW
+
+authority:
+  owner: Muhammad Arif bin Fazil (F13 SOVEREIGN)
+  ceiling: METABOLIZE_ONLY
+  can_propose: yes
+  can_verify: yes
+  can_authorize: no
+  can_execute: no
+  can_witness: yes
+  can_record: no
+
+boundaries:
+  self_authorization: prohibited
+  execution: prohibited
+  constitutional_judgment: prohibited
+  vault_mutation: prohibited
+
+execution:
+  authorization_required: true
+  approved_executor: none
+  receipt_required: true
+  outcome_witness_required: true
+  human_acceptance_separate: true
+
+truth:
+  current_state_source: http://127.0.0.1:7073/health
+  evidence_source: receipt_metabolism_ledger
+  freshness_rule: live_daemon_beats_static_manifest
+  unknown_behavior: fail_closed
+
+status:
+  proven: fq_pulse_measurement_and_check_release_protocol
+  partial: cross_seat_mesh_ingestion
+  target: automated_circuit_breaking
+  research: none
+```
+
+---
+
 **arifFlow is the arifOS federation's metabolism organ.** A Rust daemon on port `7073` ingests every execute/verify/release receipt in the federation, measures the verify-vs-execute pulse (FQ), and gates new execution when truth-metabolism breaks down.
 
 When intelligence is abundant, momentum becomes the disease: agents execute faster than they verify. arifFlow metabolizes what actually happened — and refuses to let the federation outrun its own evidence.
