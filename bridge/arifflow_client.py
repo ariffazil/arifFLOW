@@ -87,7 +87,7 @@ class FlowReceiptEnvelope:
     """The receipt that arifFLOW understands natively."""
 
     receipt_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    step_type: StepType = StepType.EXECUTE
+    step_type: StepType = StepType.ROUTE
     step_index: int = 0
     actor_id: str = ""
     session_id: str = ""
@@ -273,7 +273,7 @@ def get_client(base_url: str = "http://127.0.0.1:7073") -> ArifFlowClient:
 
 
 def emit_receipt(
-    step_type: str = "Execute",
+    step_type: str | None = None,
     organ: str = "arifOS",
     actor_id: str = "",
     session_id: str = "",
@@ -299,9 +299,21 @@ def emit_receipt(
     Returns: dict with keys "status", "fq", "receipts"
     """
     c = client or get_client()
+    details = details or {}
+
+    # Invariant: T0Observe ⟹ step_type ≠ Execute.
+    if step_type is None:
+        if details.get("risk_class") == "T0Observe" or epistemic in ("OBS", EpistemicLabel.OBS):
+            resolved_step_type = StepType.ROUTE
+        else:
+            resolved_step_type = StepType.EXECUTE
+    else:
+        resolved_step_type = StepType(step_type)
+        if details.get("risk_class") == "T0Observe" and resolved_step_type == StepType.EXECUTE:
+            resolved_step_type = StepType.ROUTE
 
     receipt = FlowReceiptEnvelope(
-        step_type=StepType(step_type),
+        step_type=resolved_step_type,
         organ=organ,
         actor_id=actor_id,
         session_id=session_id,
@@ -313,7 +325,7 @@ def emit_receipt(
         parent_receipt_id=parent_receipt_id,
         chain_id=chain_id,
         lease_id=lease_id,
-        details=details or {},
+        details=details,
         routed_organ=routed_organ,
         parent_receipt_ids=parent_receipt_ids or [],
     )

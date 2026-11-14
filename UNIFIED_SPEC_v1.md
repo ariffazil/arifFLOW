@@ -238,8 +238,8 @@ run_step(nodes)
 │   ├── AGI_SUBSTRATE_COMPARISON.md    ← 7-system comparison
 │   ├── COOLING_RECEIPT.md             ← Phase 1 cooling receipt
 │   ├── Cargo.toml                     ← Rust project (deps: serde, blake3, uuid)
-│   ├── adapter/
-│   │   └── arifFlow_adapter_spec.md   ← Adapter implementation spec
+│   ├── spec/
+│   │   └── ARIFLOW_ADAPTER_SPEC.md   ← Adapter implementation spec
 │   └── src/
 │       ├── lib.rs                     ← Crate root + re-exports
 │       ├── main.rs                    ← Binary entry (stdin/stdout JSON-L)

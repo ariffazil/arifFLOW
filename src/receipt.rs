@@ -61,6 +61,13 @@ impl StepType {
         matches!(self, StepType::Execute | StepType::Seal | StepType::Merge)
     }
 
+    /// Returns true if this step type is WORK for FQ computation.
+    /// A Seal is a durable outcome record, not work performed. Counting it as
+    /// execution inflates the denominator and depresses FQ (ruling 2026-10-19).
+    pub fn is_work_execution(&self) -> bool {
+        matches!(self, StepType::Execute | StepType::Merge)
+    }
+
     /// Returns true if this step type is counted as verification in FQ computation.
     pub fn is_verification(&self) -> bool {
         matches!(self, StepType::Verify)
@@ -107,6 +114,8 @@ pub enum EpistemicLabel {
     Specification,
     /// SEAL — Irreversible commitment
     Seal,
+    /// UNK — Cannot witness; honest null (SAH 2026-10-05, additive)
+    Unknown,
 }
 
 impl fmt::Display for EpistemicLabel {
@@ -117,6 +126,7 @@ impl fmt::Display for EpistemicLabel {
             EpistemicLabel::Interpretation => write!(f, "INT"),
             EpistemicLabel::Specification => write!(f, "SPEC"),
             EpistemicLabel::Seal => write!(f, "SEAL"),
+            EpistemicLabel::Unknown => write!(f, "UNK"),
         }
     }
 }
@@ -586,7 +596,12 @@ impl fmt::Display for CoolingDecision {
 /// Aggregated witness scores for F3 TRI-WITNESS compliance.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TriWitnessVotes {
-    /// Human witness confidence (0.0 – 1.0)
+    /// Human witness confidence (0.0 – 1.0).
+    ///
+    /// G4 (HUMAN_RASA audit 2026-11-01): this is CONFIDENCE ABOUT a human
+    /// witness, supplied by the caller. It is NOT the human's acceptance of
+    /// the receipt. A high value here never implies consent — see
+    /// `FlowReceipt::human_disposition` for the field a human actually sets.
     pub human: f64,
     /// AI witness confidence (0.0 – 1.0)
     pub ai: f64,
@@ -626,6 +641,46 @@ impl Default for TriWitnessVotes {
             ai: 0.0,
             earth: 0.0,
         }
+    }
+}
+
+// ── Human Disposition (G4, HUMAN_RASA P0 REMEDIATION ::v1.0) ──────────────
+
+/// What a HUMAN explicitly said about this receipt — never what a machine
+/// computed about them.
+///
+/// G4 (HUMAN_RASA audit, 2026-11-01): receipts used to carry only
+/// `TriWitnessVotes.human`, a caller-supplied confidence float. That is
+/// machine testimony ABOUT a human witness; it is not the human's own
+/// acceptance, and treating the two as the same number let a machine-side
+/// PASS read as if a person had agreed.
+///
+/// Rules (contract, not convention):
+///   - Set ONLY from an explicit human-sourced field in the ingest call.
+///   - NEVER derived from `floor_verdict`, witness scores, status, or any
+///     heuristic. Derivation is a constitutional violation of this field.
+///   - `Unknown` means "no explicit human response recorded" — absence is
+///     reported, never imputed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum HumanDisposition {
+    /// Human explicitly accepted.
+    Accept,
+    /// Human explicitly rejected.
+    Reject,
+    /// Human explicitly deferred the decision.
+    Defer,
+    /// Human was offered and did not respond (explicit non-response record).
+    NoResponse,
+    /// No explicit human-sourced disposition recorded (default).
+    #[default]
+    Unknown,
+}
+
+impl HumanDisposition {
+    /// True when no explicit human disposition was recorded. Used by serde to
+    /// keep legacy receipts byte-stable (Unknown is omitted on the wire).
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, HumanDisposition::Unknown)
     }
 }
 
@@ -740,7 +795,8 @@ impl FlowQuotient {
         let mut barrier_count = 0usize;
 
         for r in receipts {
-            if r.step_type.is_execution() {
+            // [Projection Correction 2026-10-28] Invariant: T0Observe ⟹ step_type ≠ Execute
+            if r.step_type.is_work_execution() && r.risk_class != RiskClass::T0Observe {
                 execute_cost += r.cost_ns;
                 execute_count += 1;
             }
@@ -916,6 +972,19 @@ pub struct FlowReceipt {
     /// Total verification cost that led to this step
     pub preceding_verify_cost_ns: Option<u64>,
 
+    // ── Sensor integrity (2026-10-15, WEALTH_THREE_DEFECT_CLOSURE follow-up) ──
+    /// True when the DAEMON detected this Verify was emitted mechanically by the
+    /// SAME actor as the immediately preceding Execute in the same session
+    /// (≤1s apart, zero measured cost). Such receipts are evidence of transport
+    /// dual-emission, not of verification work. Measure-first v1: stamped and
+    /// exposed (ActorFlowState.mechanical_verify_count); FQ computation does
+    /// NOT yet exclude them — that enforcement change waits for measured data.
+    /// Serialization note: skipped when false so unstamped receipts remain
+    /// byte-identical to the pre-field format (JCS-hash stability, old-reader
+    /// compat). The field appears only when the daemon actually stamped it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mechanical_self_verify: bool,
+
     // ── Epistemic ──
     /// Truth status of this step's output (F2/F7)
     pub epistemic_label: EpistemicLabel,
@@ -935,6 +1004,14 @@ pub struct FlowReceipt {
     // ── Witness ──
     /// Aggregated witness scores for F3
     pub tri_witness_votes: Option<TriWitnessVotes>,
+    /// G4 (HUMAN_RASA P0 REMEDIATION ::v1.0): the human's OWN disposition of
+    /// this receipt. Contract: set only from an explicit human-sourced field
+    /// in the ingest call — never derived from floor_verdict, witness scores,
+    /// or status (see `HumanDisposition`). Default `Unknown` = "no explicit
+    /// human response recorded"; it is omitted from serialization when
+    /// Unknown so pre-G4 receipts keep byte-stable hashes and chains.
+    #[serde(default, skip_serializing_if = "HumanDisposition::is_unknown")]
+    pub human_disposition: HumanDisposition,
 
     // ── Merkle ──
     /// Root hash of Merkle tree this receipt belongs to
@@ -1031,8 +1108,12 @@ impl FlowReceipt {
             actor_id: actor_id.into(),
             session_id: session_id.into(),
             session_token: None,
+            risk_class: if step_type.is_work_execution() {
+                RiskClass::T1Mutate
+            } else {
+                RiskClass::T0Observe
+            },
             step_type,
-            risk_class: RiskClass::default(),
             topology_id: None,
             lane_id: None,
             step_number: 0,
@@ -1045,12 +1126,14 @@ impl FlowReceipt {
             genesis_anchor: None,
             cost_ns,
             preceding_verify_cost_ns: None,
+            mechanical_self_verify: false,
             epistemic_label,
             floor_verdict: FloorVerdict::Pass,
             intent_reason: None,
             expected_outcome: None,
             cooling_decision: CoolingDecision::None,
             tri_witness_votes: None,
+            human_disposition: HumanDisposition::Unknown,
             merkle_root: None,
             merkle_inclusion_proof: None,
             payload: None,
@@ -1083,8 +1166,12 @@ impl FlowReceipt {
             actor_id: actor_id.into(),
             session_id: session_id.into(),
             session_token: None,
+            risk_class: if step_type.is_work_execution() {
+                RiskClass::T1Mutate
+            } else {
+                RiskClass::T0Observe
+            },
             step_type,
-            risk_class: RiskClass::default(),
             topology_id: None,
             lane_id: None,
             step_number: previous.step_number + 1,
@@ -1097,12 +1184,14 @@ impl FlowReceipt {
             genesis_anchor: None,
             cost_ns,
             preceding_verify_cost_ns: None,
+            mechanical_self_verify: false,
             epistemic_label,
             floor_verdict: FloorVerdict::Pass,
             intent_reason: None,
             expected_outcome: None,
             cooling_decision: CoolingDecision::None,
             tri_witness_votes: None,
+            human_disposition: HumanDisposition::Unknown,
             merkle_root: None,
             merkle_inclusion_proof: None,
             payload: None,
@@ -1159,6 +1248,16 @@ impl FlowReceipt {
     /// Set witness votes builder-style.
     pub fn with_witness(mut self, votes: TriWitnessVotes) -> Self {
         self.tri_witness_votes = Some(votes);
+        self
+    }
+
+    /// Record the human's own disposition builder-style (G4).
+    ///
+    /// Pass ONLY a value sourced from an explicit human response — never a
+    /// value derived from verdicts, witness scores or status. Derivation is a
+    /// constitutional misuse of this field (see `HumanDisposition`).
+    pub fn with_human_disposition(mut self, disposition: HumanDisposition) -> Self {
+        self.human_disposition = disposition;
         self
     }
 
@@ -1263,6 +1362,79 @@ impl FlowReceipt {
 ///
 /// Every receipt must have `previous_receipt_hash` matching the SHA3-256
 /// of the previous receipt. The first receipt must have `None`.
+/// Canonicalize an actor identifier at ingest (server-side, RG-PH pattern:
+/// daemon normalizes, client-supplied values are never trusted for identity).
+///
+/// Problem being fixed (2026-10-15): one agent appears in the ledger under many
+/// spellings — `333-AGI`, `333-agi`, `opencode/333-AGI` — and shards receive
+/// OPPOSITE flow diagnoses (uppercase-555 = pure executor, lowercase-555 =
+/// pure verifier). FQ per actor is meaningless until identity is one key.
+///
+/// Rules (conservative v1 — fold only provable shards):
+///   1. trim + lowercase
+///   2. strip a known harness prefix (`opencode/`, `kimi-code/`, …) ONLY when
+///      the remainder is a recognized agent id pattern (trinity numerals,
+///      `fi-NNN`, `a-forge`). Garbage remainders (e.g. `codex:/root`) stay.
+///   3. `agent/subsystem` lanes (e.g. `333-agi/memory-helix`) stay DISTINCT —
+///      they are real lanes, not spelling shards.
+pub fn canonical_actor_id(raw: &str) -> String {
+    let mut s = raw.trim().to_lowercase();
+
+    const HARNESS_PREFIXES: &[&str] = &[
+        "opencode/",
+        "openclaw/",
+        "kimi-code/",
+        "claude-code/",
+        "qwen-code/",
+        "grok-build/",
+        "antigravity/",
+        "codex:",
+        "hermes/",
+    ];
+
+    fn is_agent_id(rem: &str) -> bool {
+        if rem.is_empty() || rem.starts_with('/') {
+            return false;
+        }
+        // trinity/cognitive numerals: 000-999 bands (333-agi, 555-asi, …)
+        for band in [
+            "000", "111", "222", "333", "444", "555", "666", "777", "888", "999",
+        ] {
+            if rem.starts_with(band) && rem.len() >= 7 {
+                return true;
+            }
+        }
+        // federation instance ids: fi-002, fi-008, …
+        if rem.len() >= 6 && rem.starts_with("fi-") && rem[3..].chars().all(|c| c.is_ascii_digit())
+        {
+            return true;
+        }
+        // organs that appear as harness-invoked actors
+        matches!(
+            rem,
+            "a-forge" | "arifos" | "arifflow" | "well" | "geox" | "wealth" | "chron" | "aaa"
+        )
+    }
+
+    // loop-strip: handle at most two stacked prefixes (e.g. hermes/opencode/x)
+    for _ in 0..2 {
+        let mut stripped = false;
+        for p in HARNESS_PREFIXES {
+            if let Some(rest) = s.strip_prefix(p) {
+                if is_agent_id(rest) {
+                    s = rest.to_string();
+                    stripped = true;
+                    break;
+                }
+            }
+        }
+        if !stripped {
+            break;
+        }
+    }
+    s
+}
+
 pub fn verify_chain(receipts: &[FlowReceipt]) -> Result<(), String> {
     if receipts.is_empty() {
         return Err("Empty receipt chain".to_string());
@@ -1582,6 +1754,49 @@ impl Default for ReceiptStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── canonical_actor_id (2026-10-15) ──────────────────────────────────
+
+    #[test]
+    fn canonical_folds_case_and_whitespace() {
+        assert_eq!(canonical_actor_id("  333-AGI "), "333-agi");
+        assert_eq!(canonical_actor_id("555-ASI"), "555-asi");
+        assert_eq!(canonical_actor_id("A-FORGE"), "a-forge");
+        assert_eq!(canonical_actor_id("FI-002"), "fi-002");
+        assert_eq!(canonical_actor_id("CODEX"), "codex");
+    }
+
+    #[test]
+    fn canonical_strips_known_harness_prefixes() {
+        assert_eq!(canonical_actor_id("opencode/333-AGI"), "333-agi");
+        assert_eq!(canonical_actor_id("kimi-code/FI-008"), "fi-008");
+        assert_eq!(canonical_actor_id("qwen-code/FI-003"), "fi-003");
+        assert_eq!(canonical_actor_id("grok-build/FI-007"), "fi-007");
+        assert_eq!(canonical_actor_id("HERMES/555-ASI"), "555-asi");
+        assert_eq!(canonical_actor_id("openclaw/FI-017"), "fi-017");
+    }
+
+    #[test]
+    fn canonical_keeps_subsystem_lanes_distinct() {
+        // agent/subsystem lanes are real distinct lanes — NOT folded
+        assert_eq!(
+            canonical_actor_id("333-AGI/memory-helix"),
+            "333-agi/memory-helix"
+        );
+        assert_eq!(
+            canonical_actor_id("333-agi/memory-helix"),
+            "333-agi/memory-helix"
+        );
+    }
+
+    #[test]
+    fn canonical_does_not_strip_garbage_remainders() {
+        // "codex:/root" — remainder after prefix is a path, not an agent id
+        assert_eq!(canonical_actor_id("codex:/root"), "codex:/root");
+        // unknown harness stays intact
+        assert_eq!(canonical_actor_id("some-random/agent"), "some-random/agent");
+    }
+
     use std::path::Path;
 
     #[test]
@@ -2367,6 +2582,9 @@ mod tests {
     fn test_step_type_classification() {
         assert!(StepType::Execute.is_execution());
         assert!(StepType::Seal.is_execution());
+        assert!(!StepType::Seal.is_work_execution());
+        assert!(StepType::Execute.is_work_execution());
+        assert!(StepType::Merge.is_work_execution());
         assert!(StepType::Merge.is_execution());
         assert!(!StepType::Execute.is_verification());
         assert!(StepType::Verify.is_verification());
@@ -3344,6 +3562,111 @@ mod tests {
             refused, 0,
             "no stored receipt may be retro-refused by the newer gate"
         );
+    }
+
+    // ── G4: Human receipt disposition (HUMAN_RASA P0 REMEDIATION ::v1.0) ──
+    //
+    // Before G4 a receipt carried ONLY `tri_witness_votes.human: f64` — a
+    // caller-supplied witness CONFIDENCE. Nothing on the receipt recorded
+    // whether a human actually accepted, rejected, deferred or never
+    // responded, so a machine-side PASS read like human acceptance.
+
+    /// A receipt with a PASS floor verdict and perfect witness votes must
+    /// still report Unknown: machine success is not human acceptance.
+    #[test]
+    fn g4_success_receipt_reports_unknown_disposition() {
+        let r = FlowReceipt::new_first(
+            "agent",
+            "s-g4-pass",
+            StepType::Verify,
+            EpistemicLabel::Observation,
+            1000,
+        )
+        .with_floor_verdict(FloorVerdict::Pass)
+        .with_witness(TriWitnessVotes::new(1.0, 1.0, 1.0).unwrap());
+
+        assert_eq!(r.human_disposition, HumanDisposition::Unknown);
+        assert!(r.tri_witness_votes.as_ref().unwrap().meets_f3_threshold());
+    }
+
+    /// Legacy receipts (JSON written before G4, key absent) still deserialize
+    /// and land on Unknown — old history is never reinterpreted.
+    #[test]
+    fn g4_legacy_json_without_disposition_deserializes_unknown() {
+        let r = FlowReceipt::new_first(
+            "agent",
+            "s-g4-legacy",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1,
+        );
+        let mut v = serde_json::to_value(&r).unwrap();
+        v.as_object_mut().unwrap().remove("human_disposition"); // simulate a pre-G4 receipt
+        let back: FlowReceipt = serde_json::from_value(v).unwrap();
+        assert_eq!(back.human_disposition, HumanDisposition::Unknown);
+    }
+
+    /// Unknown must NOT be serialized — legacy hash chains stay byte-stable
+    /// (same additive pattern as evidence_refs / explanation_class).
+    #[test]
+    fn g4_unknown_disposition_omitted_from_serialization() {
+        let r = FlowReceipt::new_first(
+            "agent",
+            "s-g4-ser",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1,
+        );
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(
+            !json.contains("human_disposition"),
+            "Unknown must be omitted from serialization, got: {json}"
+        );
+    }
+
+    /// An explicit human-sourced disposition round-trips; a witness
+    /// confidence above the F3 threshold does not become acceptance.
+    #[test]
+    fn g4_explicit_disposition_round_trips_and_stays_independent() {
+        let accept = FlowReceipt::new_first(
+            "agent",
+            "s-g4-accept",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1,
+        )
+        .with_human_disposition(HumanDisposition::Accept);
+        let back: FlowReceipt =
+            serde_json::from_str(&serde_json::to_string(&accept).unwrap()).unwrap();
+        assert_eq!(back.human_disposition, HumanDisposition::Accept);
+
+        let reject = FlowReceipt::new_first(
+            "agent",
+            "s-g4-reject",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1,
+        )
+        .with_human_disposition(HumanDisposition::Reject);
+        let back: FlowReceipt =
+            serde_json::from_str(&serde_json::to_string(&reject).unwrap()).unwrap();
+        assert_eq!(back.human_disposition, HumanDisposition::Reject);
+
+        // Confidence is a different axis from acceptance — both can coexist.
+        let conf = FlowReceipt::new_first(
+            "agent",
+            "s-g4-conf",
+            StepType::Verify,
+            EpistemicLabel::Observation,
+            1,
+        )
+        .with_witness(TriWitnessVotes::new(1.0, 0.95, 0.9).unwrap());
+        assert!(conf
+            .tri_witness_votes
+            .as_ref()
+            .unwrap()
+            .meets_f3_threshold());
+        assert_eq!(conf.human_disposition, HumanDisposition::Unknown);
     }
 }
 

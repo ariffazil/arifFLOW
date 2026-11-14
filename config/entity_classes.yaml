@@ -19,6 +19,9 @@
 # MUST be classified as consequence-bearing for governance FQ to be computable.
 human_agent:
   - arif
+  - arifos:ariffazil
+  - ariffazil
+  - arif-fazil
   - qwen-code
   - fi-003-qwen-code
   - FI-003
@@ -36,6 +39,8 @@ human_agent:
   - hermes-asi
   - hermes-prime
   - 333-AGI
+  - 333-agi
+  - arifos:333-agi
   - FI-009
   - antigravity
   - agy
@@ -56,6 +61,11 @@ interactive_session:
   - 333-agi/memory-helix
   - codex
   - codex-startup
+  # 2026-10-25 APEX-ZEN: codex-fi-005 = FI-fleet cron CLI (tech-debt scan /8h),
+  # one-shot task lane in the codex family — interactive_session per the
+  # spawned-lane convention above. Window 2026-10-25: 0 Execute / 0 Verify
+  # (cron emits no /ingest receipts — wiring gap or idle; reported as no-activity).
+  - codex-fi-005
   - FI-003
   - fi-003-anonymous
 
@@ -73,6 +83,16 @@ daemon:
   - 333-AGI/agentic-web
   - 333-AGI/atlas-sync
   - morning-briefing
+  # 2026-10-25 APEX-ZEN backfill (same doctrine as 2026-10-01): the 5 actors that
+  # resolved to "unknown" at runtime and were excluded from governance FQ by
+  # DEFAULT rather than by decision (entity_report top_unclassified). Grounded in
+  # their own ledger rows (0 Execute / 1 Verify each — standing patrol shape),
+  # not their names.
+  - governance-hotspot-detector
+  - governance-drift-batch
+  - contradiction-accumulator
+  # chron reality-impact attestor (timer-driven, 1 Verify/day attestation rows)
+  - chron-reality-impact-attestor
 
 # --- Infrastructure Services (no consequence) ---
 # 2026-10-01 FI-003 coverage backfill (Reality Graph connectivity audit): actors
@@ -98,3 +118,41 @@ synthetic:
   - chatgpt-arif-audit
   # selfcheck gate rows (session "audit-test")
   - verified
+  # 2026-10-25 IDENTITY_ATTRIBUTION_EMD_REPAIR phase 2b — now ACTIVE.
+  # Kernel ART evidence-gate self-check rows: 35 Verify receipts,
+  # topology_id=art-evidence-gate, session_id empty, cost_ns=250000000,
+  # gates selfcheck/sufficient_context/atomic_decomposition.
+  # Phase 2a LANDED 2026-10-26 (arifOS 823c4c488): pre_execution_gate.py now
+  # stamps actor_id='kernel:art-evidence-gate' instead of falling through to the
+  # literal bucket "anonymous". Without this declaration those rows would land
+  # as ActorClass::Unclassified instead of Synthetic, so the exclusion below is
+  # load-bearing, not decorative.
+  - kernel:art-evidence-gate
+  # 2026-10-28 FI-008/APEX-ZEN: Canary and edge test probe actors — synthetic fixtures.
+  - arifos:auto-anon
+  - arifos:f006-edge-probe
+  - arifos:test_actor
+  - arifos:conformance-spine
+  - arifos:audit-agent/fi-001
+  - arifos:agi-gate-002-full
+  - arifos:agi-gate-002-mut
+  - arifos:agi-gate-004-declared
+  - arifos:agi-gate-004-echo
+  - arifos:agi-gate-004-light
+  - arifos:agi-gate-005
+  - arifos:kitaran-test-actor
+  - arifos:proof-epoch-probe
+  - arifos:arif-capability-probe
+  - auto-anon
+  - f006-edge-probe
+  - test_actor
+  - test
+  - test_agent
+  - honest_agent
+  - adversarial_agent
+  - attacker
+  - unstable_agent
+  - staged_agent
+  - arifos:unsigned
+  - unsigned
+  - fix

@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" font-family="DejaVu Sans, Liberation Sans, sans-serif">
+  <defs>
+    <marker id="ah" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#5a6270"/>
+    </marker>
+    <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b1e24"/>
+      <stop offset="1" stop-color="#14161a"/>
+    </linearGradient>
+    <linearGradient id="funnel" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22202e"/>
+      <stop offset="1" stop-color="#2a2740"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#fade)"/>
+  <g stroke="#232830" stroke-width="1">
+    <line x1="0" y1="270" x2="1280" y2="270"/><line x1="0" y1="490" x2="1280" y2="490"/>
+    <line x1="320" y1="0" x2="320" y2="640"/><line x1="960" y1="0" x2="960" y2="640"/>
+  </g>
+
+  <!-- Title -->
+  <text x="60" y="104" fill="#f2f4f7" font-size="58" font-weight="700">arifFlow</text>
+  <text x="60" y="146" fill="#8b7cf6" font-size="22" letter-spacing="6">METABOLISM BEFORE MOMENTUM</text>
+
+  <!-- Incoming receipts (left, many small pills) -->
+  <g>
+    <text x="60" y="238" fill="#9aa4b2" font-size="16">receipts in — every execute · verify · release step</text>
+    <g fill="#1d2229" stroke="#8b7cf6" stroke-width="1.5">
+      <rect x="60" y="270" width="120" height="34" rx="17"/>
+      <rect x="196" y="270" width="120" height="34" rx="17"/>
+      <rect x="60" y="322" width="120" height="34" rx="17"/>
+      <rect x="196" y="322" width="120" height="34" rx="17"/>
+      <rect x="60" y="374" width="120" height="34" rx="17"/>
+      <rect x="196" y="374" width="120" height="34" rx="17"/>
+      <rect x="60" y="426" width="120" height="34" rx="17"/>
+      <rect x="196" y="426" width="120" height="34" rx="17"/>
+    </g>
+    <g fill="#c9c2f5" font-size="13" text-anchor="middle">
+      <text x="120" y="292">Execute</text><text x="256" y="292">Verify</text>
+      <text x="120" y="344">Verify</text><text x="256" y="344">Execute</text>
+      <text x="120" y="396">Execute</text><text x="256" y="396">Release</text>
+      <text x="120" y="448">Verify</text><text x="256" y="448">Execute</text>
+    </g>
+    <text x="60" y="486" fill="#9aa4b2" font-size="14">chained · hash-linked · never owned</text>
+  </g>
+
+  <!-- Converging arrows -->
+  <g stroke="#5a6270" stroke-width="2.5" marker-end="url(#ah)">
+    <line x1="320" y1="288" x2="470" y2="372"/>
+    <line x1="320" y1="340" x2="470" y2="388"/>
+    <line x1="320" y1="392" x2="470" y2="406"/>
+    <line x1="320" y1="444" x2="470" y2="422"/>
+  </g>
+
+  <!-- Metabolizer (center) -->
+  <g>
+    <rect x="478" y="238" width="300" height="352" rx="16" fill="url(#funnel)" stroke="#8b7cf6" stroke-width="2.5"/>
+    <path d="M510 292 L746 292 L660 380 L660 470 L616 470 L616 380 Z" fill="none" stroke="#8b7cf6" stroke-width="2.5"/>
+    <text x="628" y="516" fill="#f2f4f7" font-size="25" font-weight="700" text-anchor="middle">arifFlow :7073</text>
+    <text x="628" y="546" fill="#8b7cf6" font-size="17" font-weight="700" text-anchor="middle">METABOLIZE_ONLY</text>
+    <text x="628" y="272" fill="#9aa4b2" font-size="15" text-anchor="middle">ingest → measure → gate</text>
+    <text x="628" y="572" fill="#9aa4b2" font-size="14" text-anchor="middle">never judges · never executes</text>
+  </g>
+
+  <!-- Output: FQ pulse -->
+  <g stroke="#5a6270" stroke-width="2.5" marker-end="url(#ah)">
+    <line x1="782" y1="400" x2="864" y2="400"/>
+  </g>
+  <g>
+    <rect x="872" y="256" width="346" height="292" rx="14" fill="#1d2229" stroke="#8b7cf6" stroke-width="2"/>
+    <text x="1045" y="298" fill="#f2f4f7" font-size="22" font-weight="700" text-anchor="middle">FQ PULSE</text>
+    <!-- waveform -->
+    <path d="M902 356 L936 356 L952 322 L972 388 L990 356 L1030 356 L1046 322 L1066 388 L1084 356 L1188 356"
+          fill="none" stroke="#8b7cf6" stroke-width="2.5"/>
+    <!-- verdict pills -->
+    <rect x="902" y="392" width="88" height="28" rx="14" fill="#14342b" stroke="#3fbf7f" stroke-width="1.5"/>
+    <text x="946" y="411" fill="#3fbf7f" font-size="13" font-weight="700" text-anchor="middle">FLOWING</text>
+    <rect x="1002" y="392" width="70" height="28" rx="14" fill="#2a2416" stroke="#c9a227" stroke-width="1.5"/>
+    <text x="1037" y="411" fill="#c9a227" font-size="13" font-weight="700" text-anchor="middle">HOLD</text>
+    <rect x="1084" y="392" width="102" height="28" rx="14" fill="#2a1616" stroke="#d9534f" stroke-width="1.5"/>
+    <text x="1135" y="411" fill="#d9534f" font-size="13" font-weight="700" text-anchor="middle">THROTTLE</text>
+    <text x="1045" y="458" fill="#9aa4b2" font-size="15" text-anchor="middle">a gate, not a verdict —</text>
+    <text x="1045" y="482" fill="#9aa4b2" font-size="15" text-anchor="middle">verdict grammar belongs to arifOS</text>
+    <text x="1045" y="516" fill="#9aa4b2" font-size="14" text-anchor="middle">receipts sealed · VAULT999 witness trail</text>
+  </g>
+
+  <!-- Footer -->
+  <text x="60" y="622" fill="#9aa4b2" font-size="17">It metabolizes. It never judges. It never executes.</text>
+  <text x="1220" y="622" fill="#8b7cf6" font-size="16" letter-spacing="3" text-anchor="end">DITEMPA BUKAN DIBERI</text>
+</svg>
