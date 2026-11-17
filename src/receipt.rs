@@ -50,6 +50,32 @@ where
     Ok(v.filter(|s| !is_falsy_session_marker(s)))
 }
 
+/// BINDING-GAP item 3 / F13 "fix all" (2026-11-18): a receipt carries a grant
+/// REFERENCE, never a raw reusable credential. `grant_ref` is opaque and
+/// resolvable ONLY via the issuer (kernel) — flow never judges, it transports.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionGrant {
+    /// Opaque reference (e.g. hex digest of the grant) — kernel-resolvable.
+    pub grant_ref: String,
+    /// Who issued the grant (e.g. "arifos://kernel").
+    pub issuer: String,
+    /// Verb-class scope of the grant, if declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// jcs_body_hash of THIS receipt — binds the grant to this exact action.
+    pub action_binding: String,
+}
+
+/// True for strings shaped like reusable credentials (ACT bearer tokens,
+/// provider keys). Such strings are FORBIDDEN at ingest (422): an append-only
+/// ledger must never become a credential store (F13 correction 2026-11-18 —
+/// leaked bearer-at-rest is unretractable).
+pub fn is_raw_credential_shaped(s: &str) -> bool {
+    let t = s.trim();
+    let t = t.strip_prefix("Bearer ").unwrap_or(t);
+    t.starts_with("act_v1.") || t.starts_with("sk-") || t.starts_with("ghp_")
+}
+
 // ── Step Type ────────────────────────────────────────────────────────────
 
 /// The kind of atomic step this receipt records.
@@ -879,6 +905,11 @@ pub struct FlowReceipt {
     /// rows left as-is: forward-fix only, no backfill.)
     #[serde(default, deserialize_with = "deserialize_session_id")]
     pub session_id: Option<String>,
+    /// Grant REFERENCE object (F13 "fix all" 2026-11-18): replaces bearer-at-rest.
+    /// `action_binding` must equal this receipt's `jcs_body_hash` — validated at
+    /// ingest, self-contained (no kernel call needed for the binding check).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_grant: Option<SessionGrant>,
     /// SCT session token if governed by arifOS
     pub session_token: Option<String>,
 
@@ -1136,6 +1167,7 @@ impl FlowReceipt {
             created_at: Utc::now(),
             actor_id: actor_id.into(),
             session_id: Some(session_id.into()),
+            session_grant: None,
             session_token: None,
             risk_class: if step_type.is_work_execution() {
                 RiskClass::T1Mutate
@@ -1194,6 +1226,7 @@ impl FlowReceipt {
             created_at: Utc::now(),
             actor_id: actor_id.into(),
             session_id: Some(session_id.into()),
+            session_grant: None,
             session_token: None,
             risk_class: if step_type.is_work_execution() {
                 RiskClass::T1Mutate
@@ -1953,6 +1986,53 @@ mod tests {
     }
 
     use std::path::Path;
+
+    #[test]
+    fn test_is_raw_credential_shaped() {
+        // F13 "fix all": bearer-shaped strings are forbidden at rest.
+        assert!(super::is_raw_credential_shaped(
+            "act_v1.eyJhbGciOiJFZERTQSJ9.payload.sig"
+        ));
+        assert!(super::is_raw_credential_shaped("Bearer act_v1.abc.def"));
+        assert!(super::is_raw_credential_shaped("sk-abc123"));
+        assert!(super::is_raw_credential_shaped("ghp_abc123"));
+        assert!(!super::is_raw_credential_shaped("SEAL-5cd366c97c4f4fd2"));
+        assert!(!super::is_raw_credential_shaped(
+            "9f2c… grant_ref hex digest"
+        ));
+        assert!(!super::is_raw_credential_shaped(""));
+    }
+
+    #[test]
+    fn test_session_grant_schema_roundtrip_and_binding() {
+        let mut r = FlowReceipt::new_first(
+            "a-forge",
+            "session-123",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            1_000_000,
+        );
+        let h = r.compute_jcs_body_hash().expect("jcs hash");
+        r.session_grant = Some(super::SessionGrant {
+            grant_ref: "9f2c6b1a".into(),
+            issuer: "arifos://kernel".into(),
+            scope: Some("reversible_code_generation".into()),
+            action_binding: h.clone(),
+        });
+        let wire = serde_json::to_string(&r).expect("serialize");
+        assert!(
+            wire.contains("session_grant"),
+            "grant present on wire: {wire}"
+        );
+        let back: FlowReceipt = serde_json::from_str(&wire).expect("parse back");
+        assert_eq!(back.session_grant.as_ref().unwrap().action_binding, h);
+        // Binding contract: a stale hash must NOT validate — callers compute
+        // fresh jcs_body_hash; ingest rejects mismatch (422 path, main.rs).
+        let mut wrong = back.clone();
+        wrong.session_grant.as_mut().unwrap().action_binding = "deadbeef".into();
+        let h2 = wrong.compute_jcs_body_hash().expect("jcs hash 2");
+        assert_ne!(wrong.session_grant.as_ref().unwrap().action_binding, h2);
+    }
 
     #[test]
     fn test_is_falsy_session_marker() {

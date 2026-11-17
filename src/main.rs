@@ -1115,6 +1115,56 @@ fn handle_client(
                             // opencode/333-AGI → 333-agi) so per-actor FQ is computed
                             // on one key. Subsystem lanes stay distinct.
                             receipt.actor_id = arifflow::receipt::canonical_actor_id(&receipt.actor_id);
+                            // ── F13 "fix all" 2026-11-18: credential hygiene at ingest ──
+                            // (1) Raw reusable credentials are FORBIDDEN at rest
+                            //     (append-only ledger must not be a credential store).
+                            // (2) session_grant.action_binding must equal this
+                            //     receipt's jcs_body_hash — self-contained proof the
+                            //     grant is bound to THIS action's content.
+                            if let Some(tok) = receipt.session_token.as_deref() {
+                                if arifflow::receipt::is_raw_credential_shaped(tok) {
+                                    let body = serde_json::json!({
+                                        "status": "rejected",
+                                        "code": "raw_credential_at_ingest",
+                                        "violation": "flow-plane",
+                                        "field": "session_token",
+                                        "reason": "raw reusable credential forbidden at rest — carry session_grant.grant_ref instead",
+                                        "receipt_id": receipt.receipt_id.to_string(),
+                                        "stored": false,
+                                    }).to_string();
+                                    let resp = format!(
+                                        "HTTP/1.1 422 Unprocessable Entity\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                        body.len(), body
+                                    ).into_bytes();
+                                    let _ = stream.write_all(&resp);
+                                    return;
+                                }
+                            }
+                            if let Some(grant) = receipt.session_grant.as_ref() {
+                                let bound_ok = (!grant.grant_ref.is_empty()
+                                    && !grant.issuer.is_empty())
+                                    && match receipt.compute_jcs_body_hash() {
+                                        Ok(h) => grant.action_binding == h,
+                                        Err(_) => false,
+                                    };
+                                if !bound_ok {
+                                    let body = serde_json::json!({
+                                        "status": "rejected",
+                                        "code": "grant_action_binding_mismatch",
+                                        "violation": "flow-plane",
+                                        "field": "session_grant",
+                                        "reason": "action_binding must equal receipt jcs_body_hash (grant_ref/issuer non-empty)",
+                                        "receipt_id": receipt.receipt_id.to_string(),
+                                        "stored": false,
+                                    }).to_string();
+                                    let resp = format!(
+                                        "HTTP/1.1 422 Unprocessable Entity\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                        body.len(), body
+                                    ).into_bytes();
+                                    let _ = stream.write_all(&resp);
+                                    return;
+                                }
+                            }
                             // ── F-B (2026-10-31, ARIF GO SEAL_SCOPED_SINGLE_USE) ──
                             // Receipt-id dedupe MUST fire before the session tracker:
                             // a deduped Execute must not mark the session as "has
