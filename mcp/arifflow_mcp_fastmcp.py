@@ -121,6 +121,30 @@ def flow_health() -> dict[str, Any]:
     return result
 
 
+def _resolve_entity_class(
+    actor_id: str, rust_data: dict[str, Any] | None = None
+) -> str:
+    """Resolve canonical YAML entity class matching Rust ClassRegistry precedence:
+    exact -> case-insensitive -> strip ONE `<organ>:` prefix -> Rust fallback."""
+    entity_class = _ENTITY_CLASSES.get(actor_id)
+    if entity_class is None:
+        for _k, _v in _ENTITY_CLASSES.items():
+            if _k.lower() == actor_id.lower():
+                entity_class = _v
+                break
+    if entity_class is None:
+        _bare = actor_id.split(":", 1)[1] if ":" in actor_id else actor_id
+        for _k, _v in _ENTITY_CLASSES.items():
+            if _k.lower() == _bare.lower():
+                entity_class = _v
+                break
+    if entity_class is None and isinstance(rust_data, dict):
+        rust_ec = rust_data.get("entity_class")
+        if isinstance(rust_ec, str) and rust_ec and rust_ec != "unknown":
+            entity_class = rust_ec
+    return entity_class or "unknown"
+
+
 @mcp.tool()
 def flow_entity_report() -> dict[str, Any]:
     """Entity-classified FQ report. Classifies actors by type (human_agent,
@@ -135,39 +159,11 @@ def flow_entity_report() -> dict[str, Any]:
     classified: dict[str, dict] = {}
     class_totals: dict[str, dict] = {}
     for actor_id, data in per_actor.items():
-        # RG-CC (2026-09-17 FI-008): case-insensitive lookup. Doctrine forbids
-        # case-variant copies (anti-entropy rules); YAML keeps native case
-        # for human readability; runtime lookup normalizes.
-        entity_class = _ENTITY_CLASSES.get(actor_id)
-        if entity_class is None:
-            for _k, _v in _ENTITY_CLASSES.items():
-                if _k.lower() == actor_id.lower():
-                    entity_class = _v
-                    break
-        if entity_class is None:
-            # Organ-scoped key fallback (333-AGI, 2026-10-28): arifOS records
-            # receipts as `<organ>:<actor>` while the registry declares the bare
-            # `<actor>`. Without this, a correct declaration is INERT and a
-            # probe actor recorded under an organ prefix is reported as a real
-            # consequence-bearing actor.
-            #
-            # SAFETY: exact match runs first, then case-insensitive, so no actor
-            # can change from one declared class to another. The fallback only
-            # makes an actor whose BARE form is already declared reachable; the
-            # only reachable change is unknown -> declared. An undeclared bare
-            # form stays "unknown". Mirrors the Rust aggregate's
-            # `entity_class.rs::classify` (commit ad79fe4) so the report and the
-            # aggregate can no longer disagree.
-            _bare = actor_id.split(":", 1)[1] if ":" in actor_id else actor_id
-            for _k, _v in _ENTITY_CLASSES.items():
-                if _k.lower() == _bare.lower():
-                    entity_class = _v
-                    break
-        if entity_class is None:
-            entity_class = "unknown"
+        entity_class = _resolve_entity_class(actor_id, data)
         consequence_bearing = entity_class in ("human_agent", "interactive_session")
         entry = {
             "entity_class": entity_class,
+            "rust_class": data.get("class"),
             "execute": data.get("execute", 0),
             "verify": data.get("verify", 0),
             "quotient": data.get("quotient"),
@@ -214,9 +210,15 @@ def flow_entity_report() -> dict[str, Any]:
         gov_verdict = "FLOWING"
     else:
         gov_verdict = "FOSSILIZED"
+    raw_verdict = (
+        fq_data.get("verdict")
+        or health.get("verdict")
+        or fq_data.get("legacy_verdict")
+    )
     return {
         "raw_fq": fq_data.get("quotient"),
-        "raw_verdict": fq_data.get("verdict"),
+        "raw_verdict": raw_verdict,
+        "fq_legacy_verdict": fq_data.get("legacy_verdict"),
         "governance_weighted_fq": round(gov_fq, 4) if gov_fq is not None else None,
         "governance_verdict": gov_verdict,
         "governance_execute": gov_exec,

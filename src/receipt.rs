@@ -32,6 +32,24 @@ use uuid::Uuid;
 
 use crate::merkle::MerkleRoot;
 
+/// BINDING-GAP-MISSION item 5 (2026-11-18): emitters on some lanes stringify
+/// a missing Boolean and send `session_id: "false"`. A falsy marker must
+/// never masquerade as a session id — normalized to `None` at parse.
+pub fn is_falsy_session_marker(s: &str) -> bool {
+    matches!(
+        s.trim().to_ascii_lowercase().as_str(),
+        "" | "false" | "none" | "null" | "undefined"
+    )
+}
+
+fn deserialize_session_id<'de, D>(d: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Option::<String>::deserialize(d)?;
+    Ok(v.filter(|s| !is_falsy_session_marker(s)))
+}
+
 // ── Step Type ────────────────────────────────────────────────────────────
 
 /// The kind of atomic step this receipt records.
@@ -852,8 +870,15 @@ pub struct FlowReceipt {
     // ── Actor ──
     /// The agent or human who performed this step
     pub actor_id: String,
-    /// Governing session (from arif_init)
-    pub session_id: String,
+    /// Governing session (from arif_init). `None` when the emitter is
+    /// sessionless or sent a falsy marker ("false" / "" / "none" / "null" /
+    /// "undefined") — normalized at the deserialization boundary, never
+    /// fabricated. (BINDING-GAP-MISSION item 5, 2026-11-18: some lanes
+    /// stringified a missing Boolean and sent `session_id: "false"` —
+    /// 23 live rows. Server-side fix covers every emitter lane; existing
+    /// rows left as-is: forward-fix only, no backfill.)
+    #[serde(default, deserialize_with = "deserialize_session_id")]
+    pub session_id: Option<String>,
     /// SCT session token if governed by arifOS
     pub session_token: Option<String>,
 
@@ -962,6 +987,13 @@ pub struct FlowReceipt {
 
     // ── Merkle ──
     /// Root hash of Merkle tree this receipt belongs to
+    /// Merkle root — **checkpoint-only by contract** (AGENTS.md §4 declared
+    /// vs observed): computed in the scheduler path only, never assigned
+    /// per-receipt by the daemon. `None` on every daemon-ingested receipt is
+    /// the CONTRACT, not a gap. Per-receipt anchoring stays delegated to
+    /// merkle.rs for when the governance plane is wired. (BINDING-GAP-MISSION
+    /// item 4 decision — declared 2026-11-18; vault sealing remains the
+    /// SHA3-256 hash chain, tamper-evident, not Merkle-provable.)
     pub merkle_root: Option<String>,
     /// Inclusion proof path (hex-encoded)
     pub merkle_inclusion_proof: Option<String>,
@@ -1103,7 +1135,7 @@ impl FlowReceipt {
             previous_receipt_hash: None,
             created_at: Utc::now(),
             actor_id: actor_id.into(),
-            session_id: session_id.into(),
+            session_id: Some(session_id.into()),
             session_token: None,
             risk_class: if step_type.is_work_execution() {
                 RiskClass::T1Mutate
@@ -1161,7 +1193,7 @@ impl FlowReceipt {
             previous_receipt_hash: Some(prev_hash),
             created_at: Utc::now(),
             actor_id: actor_id.into(),
-            session_id: session_id.into(),
+            session_id: Some(session_id.into()),
             session_token: None,
             risk_class: if step_type.is_work_execution() {
                 RiskClass::T1Mutate
@@ -1772,38 +1804,72 @@ mod tests {
 
     #[test]
     fn p04_execution_receipt_has_no_acceptance_by_default() {
-        let r = FlowReceipt::new_first("333-agi", "s-p04", StepType::Execute, EpistemicLabel::Observation, 100);
+        let r = FlowReceipt::new_first(
+            "333-agi",
+            "s-p04",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            100,
+        );
         // Absent acceptance = NOT accepted. Execution success says nothing
         // about the human's response to the outcome (T10 axiom).
         assert!(r.human_acceptance.is_none());
         // And it is skipped from serialization → legacy byte-stability
         let json = serde_json::to_string(&r).unwrap();
-        assert!(!json.contains("human_acceptance"), "default must not appear in JSON: {json}");
+        assert!(
+            !json.contains("human_acceptance"),
+            "default must not appear in JSON: {json}"
+        );
     }
 
     #[test]
     fn p04_legacy_json_without_field_deserializes_and_rehashes_identically() {
         // A stored legacy receipt (no human_acceptance key) must round-trip
         // byte-identically — historical chains re-verify unchanged.
-        let r = FlowReceipt::new_first("333-agi", "s-p04-legacy", StepType::Verify, EpistemicLabel::Observation, 7);
+        let r = FlowReceipt::new_first(
+            "333-agi",
+            "s-p04-legacy",
+            StepType::Verify,
+            EpistemicLabel::Observation,
+            7,
+        );
         let json = serde_json::to_string(&r).unwrap();
         let back: FlowReceipt = serde_json::from_str(&json).unwrap();
         assert!(back.human_acceptance.is_none());
-        assert_eq!(back.hash(), r.hash(), "legacy receipt hash must be byte-stable");
+        assert_eq!(
+            back.hash(),
+            r.hash(),
+            "legacy receipt hash must be byte-stable"
+        );
     }
 
     #[test]
     fn p04_acceptance_record_is_typed_and_attributed() {
-        let target = FlowReceipt::new_first("333-agi", "s-p04-t", StepType::Execute, EpistemicLabel::Observation, 3);
-        let acceptance = FlowReceipt::new_first("arif", "s-p04-a", StepType::Verify, EpistemicLabel::Observation, 1)
-            .with_human_acceptance(HumanAcceptance {
-                decision: AcceptanceDecision::Defer,
-                by: "arif".into(),
-                of_receipt_id: target.receipt_id,
-                of_receipt_hash: target.hash(),
-                note: None,
-            });
-        let a = acceptance.human_acceptance.as_ref().expect("acceptance present");
+        let target = FlowReceipt::new_first(
+            "333-agi",
+            "s-p04-t",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            3,
+        );
+        let acceptance = FlowReceipt::new_first(
+            "arif",
+            "s-p04-a",
+            StepType::Verify,
+            EpistemicLabel::Observation,
+            1,
+        )
+        .with_human_acceptance(HumanAcceptance {
+            decision: AcceptanceDecision::Defer,
+            by: "arif".into(),
+            of_receipt_id: target.receipt_id,
+            of_receipt_hash: target.hash(),
+            note: None,
+        });
+        let a = acceptance
+            .human_acceptance
+            .as_ref()
+            .expect("acceptance present");
         // Defer must never be readable as Accept
         assert_eq!(a.decision, AcceptanceDecision::Defer);
         assert_ne!(a.decision, AcceptanceDecision::Accept);
@@ -1818,15 +1884,27 @@ mod tests {
 
     #[test]
     fn p04_acceptance_serializes_field_when_set() {
-        let target = FlowReceipt::new_first("333-agi", "s-p04-s", StepType::Execute, EpistemicLabel::Observation, 2);
-        let acc = FlowReceipt::new_first("arif", "s-p04-s2", StepType::Verify, EpistemicLabel::Observation, 1)
-            .with_human_acceptance(HumanAcceptance {
-                decision: AcceptanceDecision::Accept,
-                by: "arif".into(),
-                of_receipt_id: target.receipt_id,
-                of_receipt_hash: target.hash(),
-                note: Some("seen".into()),
-            });
+        let target = FlowReceipt::new_first(
+            "333-agi",
+            "s-p04-s",
+            StepType::Execute,
+            EpistemicLabel::Observation,
+            2,
+        );
+        let acc = FlowReceipt::new_first(
+            "arif",
+            "s-p04-s2",
+            StepType::Verify,
+            EpistemicLabel::Observation,
+            1,
+        )
+        .with_human_acceptance(HumanAcceptance {
+            decision: AcceptanceDecision::Accept,
+            by: "arif".into(),
+            of_receipt_id: target.receipt_id,
+            of_receipt_hash: target.hash(),
+            note: Some("seen".into()),
+        });
         let json = serde_json::to_string(&acc).unwrap();
         assert!(json.contains("human_acceptance"));
         assert!(json.contains("\"decision\":\"accept\""));
@@ -1877,6 +1955,78 @@ mod tests {
     use std::path::Path;
 
     #[test]
+    fn test_is_falsy_session_marker() {
+        // BINDING-GAP item 5: falsy markers must never masquerade as sessions.
+        assert!(super::is_falsy_session_marker("false"));
+        assert!(super::is_falsy_session_marker(""));
+        assert!(super::is_falsy_session_marker(" None "));
+        assert!(super::is_falsy_session_marker("NULL"));
+        assert!(super::is_falsy_session_marker("undefined"));
+        assert!(!super::is_falsy_session_marker("SEAL-5cd366c97c4f4fd2"));
+        assert!(!super::is_falsy_session_marker("orch-1765812000"));
+    }
+
+    #[test]
+    fn test_falsy_session_id_normalized_to_none_on_parse() {
+        // Live defect (23 rows, actor qwen-code): `"session_id": "false"`.
+        // Server-side normalization must land it as None, and a real id must
+        // pass through untouched. Wire form for sessionless = null.
+        let base = |sid: &str| {
+            format!(
+                r#"{{
+                "receipt_id": "0190e1a2-0000-7000-8000-000000000000",
+                "previous_receipt_hash": null,
+                "created_at": "2026-09-10T04:58:00Z",
+                "actor_id": "qwen-code",
+                "session_id": {sid},
+                "session_token": null,
+                "step_type": "Execute",
+                "risk_class": "T0Observe",
+                "topology_id": null,
+                "lane_id": null,
+                "step_number": 0,
+                "cost_ns": 1000000,
+                "preceding_verify_cost_ns": null,
+                "epistemic_label": "Observation",
+                "floor_verdict": "Pass",
+                "intent_reason": null,
+                "expected_outcome": null,
+                "cooling_decision": "None",
+                "tri_witness_votes": null,
+                "merkle_root": null,
+                "merkle_inclusion_proof": null,
+                "payload": null,
+                "formula_version": "qg.v0.2",
+                "formula_hash": "sha256:placeholder",
+                "witness_organs": null,
+                "apex_block": null,
+                "flow_block": null,
+                "projection_block": null
+            }}"#,
+                sid = sid
+            )
+        };
+
+        let falsy: FlowReceipt =
+            serde_json::from_str(&base(r#""false""#)).expect("falsy session_id must parse");
+        assert_eq!(falsy.session_id, None, "'false' must normalize to None");
+
+        let real: FlowReceipt =
+            serde_json::from_str(&base(r#""SEAL-real-1""#)).expect("real session_id must parse");
+        assert_eq!(real.session_id.as_deref(), Some("SEAL-real-1"));
+
+        let omitted: FlowReceipt =
+            serde_json::from_str(&base("null")).expect("null session_id must parse");
+        assert_eq!(omitted.session_id, None);
+
+        let wire = serde_json::to_string(&falsy).expect("reserialize");
+        assert!(
+            wire.contains(r#""session_id":null"#),
+            "sessionless wire form must be null, not a falsy string: {wire}"
+        );
+    }
+
+    #[test]
     fn test_create_first_receipt() {
         let r = FlowReceipt::new_first(
             "a-forge",
@@ -1886,7 +2036,7 @@ mod tests {
             1_000_000,
         );
         assert_eq!(r.actor_id, "a-forge");
-        assert_eq!(r.session_id, "session-123");
+        assert_eq!(r.session_id.as_deref(), Some("session-123"));
         assert_eq!(r.step_type, StepType::Execute);
         assert_eq!(r.epistemic_label, EpistemicLabel::Observation);
         assert!(r.previous_receipt_hash.is_none());

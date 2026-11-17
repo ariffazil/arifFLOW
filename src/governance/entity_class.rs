@@ -176,6 +176,7 @@ impl ClassDeclaration {
 #[derive(Debug, Clone, Default)]
 pub struct ClassRegistry {
     declarations: BTreeMap<String, ClassDeclaration>,
+    entity_classes: BTreeMap<String, String>,
     rejects: Vec<String>,
 }
 
@@ -202,13 +203,11 @@ impl ClassRegistry {
         Ok(())
     }
 
-    /// Classification of an actor key. Fail-closed: no validated declaration
-    /// → `Unclassified` → counts toward the aggregate.
-    pub fn classify(&self, actor_key: &str) -> ActorClass {
+    fn resolve_key(&self, actor_key: &str) -> Option<String> {
         let key = actor_key.trim().to_ascii_lowercase();
         // EXACT match first — preserves every currently-resolved classification.
-        if let Some(d) = self.declarations.get(&key) {
-            return d.class;
+        if self.declarations.contains_key(&key) {
+            return Some(key);
         }
         // Organ-scoped fallback (2026-10-28, 333-AGI): arifOS records receipts as
         // `<organ>:<actor>` while the registry declares the bare `<actor>`.
@@ -223,11 +222,40 @@ impl ClassRegistry {
         // Unclassified -> declared. A key whose bare form is undeclared stays
         // Unclassified.
         if let Some((_organ, bare)) = key.split_once(':') {
-            if let Some(d) = self.declarations.get(bare) {
-                return d.class;
+            if self.declarations.contains_key(bare) {
+                return Some(bare.to_string());
             }
         }
-        ActorClass::Unclassified
+        None
+    }
+
+    /// Classification of an actor key. Fail-closed: no validated declaration
+    /// → `Unclassified` → counts toward the aggregate.
+    pub fn classify(&self, actor_key: &str) -> ActorClass {
+        self.resolve_key(actor_key)
+            .and_then(|k| self.declarations.get(&k))
+            .map(|d| d.class)
+            .unwrap_or(ActorClass::Unclassified)
+    }
+
+    /// Fine-grained YAML entity class (`human_agent`, `interactive_session`,
+    /// `daemon`, `infrastructure`, `synthetic`, or `unknown`) sharing exact
+    /// lookup precedence with `classify`. Keeps Rust `:7073` and Python `:7075`
+    /// reports aligned without weakening the fail-closed `ActorClass` gate.
+    pub fn entity_class(&self, actor_key: &str) -> &str {
+        if let Some(k) = self.resolve_key(actor_key) {
+            if let Some(raw_cls) = self.entity_classes.get(&k) {
+                return raw_cls.as_str();
+            }
+            if let Some(decl) = self.declarations.get(&k) {
+                return match decl.class {
+                    ActorClass::Fixture => "synthetic",
+                    ActorClass::Operational => "operational",
+                    ActorClass::Unclassified => "unknown",
+                };
+            }
+        }
+        "unknown"
     }
 
     pub fn len(&self) -> usize {
@@ -277,7 +305,7 @@ impl ClassRegistry {
             ("synthetic", ActorClass::Fixture),
         ];
         let mut registry = ClassRegistry::default();
-        let mut current: Option<ActorClass> = None;
+        let mut current: Option<(&'static str, ActorClass)> = None;
         // actor key -> (class, line) for ambiguity detection before commit.
         let mut seen: BTreeMap<String, (ActorClass, usize)> = BTreeMap::new();
 
@@ -293,7 +321,10 @@ impl ClassRegistry {
                 let head = trimmed.split('#').next().unwrap_or("").trim();
                 if let Some(name) = head.strip_suffix(':') {
                     let name = name.trim();
-                    current = KNOWN.iter().find(|(k, _)| *k == name).map(|(_, c)| *c);
+                    current = KNOWN
+                        .iter()
+                        .find(|(k, _)| *k == name)
+                        .map(|(k, c)| (*k, *c));
                     if current.is_none() {
                         registry.rejects.push(format!(
                             "line {}: unknown class key '{}' — its entries are NOT classified",
@@ -323,7 +354,7 @@ impl ClassRegistry {
                 .unwrap_or("")
                 .trim()
                 .to_ascii_lowercase();
-            let Some(class) = current else {
+            let Some((raw_class, class)) = current else {
                 registry.rejects.push(format!(
                     "line {}: entry '{}' under an unknown class — NOT classified",
                     line_no, name
@@ -344,11 +375,19 @@ impl ClassRegistry {
                         line_no, name, prev_class, prev_line, class
                     ));
                     registry.declarations.remove(&name);
+                    registry.entity_classes.remove(&name);
                     continue;
                 }
+                // Match Python yaml.safe_load last-section-wins semantics within same ActorClass.
+                registry
+                    .entity_classes
+                    .insert(name, raw_class.to_string());
                 continue;
             }
             seen.insert(name.clone(), (class, line_no));
+            registry
+                .entity_classes
+                .insert(name.clone(), raw_class.to_string());
             let decl = ClassDeclaration {
                 actor_key: name,
                 class,
@@ -517,8 +556,15 @@ synthetic:
         // Non-fixture classes COUNT — excluding them would weaken the gate.
         assert_eq!(reg.classify("arif"), ActorClass::Operational);
         assert_eq!(reg.classify("morning-briefing"), ActorClass::Operational);
+        assert_eq!(reg.classify("chron"), ActorClass::Operational);
+        assert_eq!(reg.entity_class("arif"), "human_agent");
+        assert_eq!(reg.entity_class("morning-briefing"), "daemon");
+        assert_eq!(reg.entity_class("chron"), "infrastructure");
+        assert_eq!(reg.entity_class("p0-metabolize"), "synthetic");
+        assert_eq!(reg.entity_class("ARIFOS:333-AGI"), "human_agent");
         // An ordinary actor literally named "test" is not exempt.
         assert_eq!(reg.classify("test"), ActorClass::Unclassified);
+        assert_eq!(reg.entity_class("test"), "unknown");
         assert_eq!(reg.fixture_count(), 2);
         assert!(reg.rejects().is_empty());
     }

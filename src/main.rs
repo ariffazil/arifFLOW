@@ -448,6 +448,64 @@ fn http_forbidden(body: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+/// Public /health redaction — F13 2026-11-17 ("buat redaction arifflow tu sekarang").
+///
+/// The public host `arifflow.arif-fazil.com` (Caddy → loopback:7073) must expose
+/// aggregate flow ONLY. Per-actor governance data — execute/verify counters, holds,
+/// risk classes, throttling, verdicts, and the named `restricted_actors` list with
+/// their reasons — stays on the internal mesh.
+///
+/// Boundary is the request `Host` header: Caddy preserves the public hostname;
+/// organ-to-organ calls carry `127.0.0.1:7073` or `100.64.0.x:7073` and keep the
+/// full payload (the truth-contract falsifiers read :7073 for per-actor claims).
+/// The daemon binds loopback only, so an external client cannot forge the internal
+/// Host and reach the payload.
+///
+/// Redacted fields are replaced by an explicit marker, never silently dropped —
+/// a consumer must be able to tell "no holds" from "holds withheld".
+fn redact_public_health(mut body: serde_json::Value) -> serde_json::Value {
+    if let Some(map) = body.as_object_mut() {
+        if let Some(fq) = map.get_mut("fq").and_then(|v| v.as_object_mut()) {
+            let actors_tracked = fq
+                .get("metric_frame")
+                .and_then(|m| m.get("actors_tracked"))
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            fq.remove("per_actor");
+            fq.insert(
+                "per_actor_redacted".into(),
+                serde_json::json!({
+                    "reason": "public_host_aggregate_only",
+                    "actors_tracked": actors_tracked,
+                }),
+            );
+        }
+        if let Some(inv) = map.get_mut("invariants").and_then(|v| v.as_object_mut()) {
+            let restricted_count = inv
+                .get("restricted_actors")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            inv.remove("restricted_actors");
+            inv.insert(
+                "restricted_actors_redacted".into(),
+                serde_json::json!({
+                    "reason": "public_host_aggregate_only",
+                    "count": restricted_count,
+                }),
+            );
+            if let Some(gate) = inv
+                .get_mut("explanation_class_gate")
+                .and_then(|v| v.as_object_mut())
+            {
+                // `last_violation.evidence` is free text and can name an actor.
+                gate.remove("last_violation");
+            }
+        }
+    }
+    body
+}
+
 /// Append a release-authorization decision to the VAULT999 audit log (F5).
 ///
 /// Denials are witnessed with the same force as approvals. A refused attempt to
@@ -615,6 +673,14 @@ fn handle_client(
         _ => return,
     };
     let request = String::from_utf8_lossy(&req_bytes);
+    // P0 boundary (F13 2026-11-17): did this request arrive via the public host?
+    // Caddy preserves the original Host header; direct localhost/mesh calls carry
+    // `127.0.0.1:7073` / `100.64.0.x:7073` and keep the full payload.
+    let request_is_public = request
+        .split("\r\n")
+        .find(|l| l.trim().to_ascii_lowercase().starts_with("host:"))
+        .map(|l| l.to_ascii_lowercase().contains("arif-fazil.com"))
+        .unwrap_or(false);
     let response = if request.starts_with("GET /health") {
                 let store = receipt_store.lock().unwrap();
                 let enf = enforcer.lock().unwrap();
@@ -705,6 +771,11 @@ fn handle_client(
                                 // registration — visible so an excluded
                                 // fixture is auditable, not invisible.
                                 "class": state.actor_class,
+                                "entity_class": if state.entity_class.is_empty() {
+                                    "unknown"
+                                } else {
+                                    state.entity_class.as_str()
+                                },
                                 "held": state.held,
                                 "throttled": state.throttled,
                                 "consecutive_exec_no_verify": state.consecutive_executes_without_verify,
@@ -846,8 +917,13 @@ fn handle_client(
                     },
                     "receipts": store.len(),
                     "uptime_ms": start_time.elapsed().as_millis() as u64,
-                })
-                .to_string();
+                });
+                let body_value = if request_is_public {
+                    redact_public_health(body)
+                } else {
+                    body
+                };
+                let body = body_value.to_string();
                 http_ok(&body)
             } else if request.starts_with("POST /fq_g") {
                 // RG-9 / FQ_G (2026-09-13): institutional metabolism rate —
@@ -1072,7 +1148,7 @@ fn handle_client(
                                                 "at": chrono::Utc::now().to_rfc3339(),
                                                 "receipt_id": receipt.receipt_id,
                                                 "actor": receipt.actor_id,
-                                                "session_id": receipt.session_id,
+                                                "session_id": receipt.session_id.as_deref(),
                                                 "step_type": receipt.step_type,
                                                 "dedupe_key": "receipt_id",
                                                 "dedupe_formula": "dedupe.v1-receipt_id",
@@ -1113,7 +1189,9 @@ fn handle_client(
                             // exposed; FQ math unchanged in v1).
                             {
                                 let mut tracker = session_tracker.lock().unwrap();
-                                let key = receipt.session_id.clone();
+                                // BINDING-GAP item 5: sessionless receipts (None) key
+                                // to "" — never to a falsy string like "false".
+                                let key = receipt.session_id.clone().unwrap_or_default();
                                 // CUMULATIVE per-session Execute history. Read BEFORE
                                 // the parentage block below, and evaluated even when the
                                 // session is brand new (tracker miss → seen_execute
@@ -2122,7 +2200,7 @@ fn daemon_mode() {
             let mut tracker = session_tracker.lock().unwrap();
             for receipt in store.all() {
                 let entry = tracker
-                    .entry(receipt.session_id.clone())
+                    .entry(receipt.session_id.clone().unwrap_or_default())
                     .or_insert_with(|| SessionLastReceipt {
                         receipt_id: receipt.receipt_id.to_string(),
                         actor_id: receipt.actor_id.clone(),

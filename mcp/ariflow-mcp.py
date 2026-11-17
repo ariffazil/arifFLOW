@@ -377,16 +377,35 @@ def call_tool(name: str, args: dict) -> dict:
         return result
     if name == "flow_entity_report":
         result = flow_get("/health")
+        if "error" in result:
+            return result
         fq_data = result.get("fq", {})
         per_actor = fq_data.get("per_actor", {})
 
-        # Classify each actor
+        # Classify each actor (exact -> case-insensitive -> strip ONE '<organ>:' prefix)
         classified = {}
         class_totals = {}
         for actor_id, data in per_actor.items():
-            entity_class = _ENTITY_CLASSES.get(actor_id, "unknown")
+            entity_class = _ENTITY_CLASSES.get(actor_id)
+            if entity_class is None:
+                for _k, _v in _ENTITY_CLASSES.items():
+                    if _k.lower() == actor_id.lower():
+                        entity_class = _v
+                        break
+            if entity_class is None:
+                _bare = actor_id.split(":", 1)[1] if ":" in actor_id else actor_id
+                for _k, _v in _ENTITY_CLASSES.items():
+                    if _k.lower() == _bare.lower():
+                        entity_class = _v
+                        break
+            if entity_class is None and isinstance(data, dict):
+                rust_ec = data.get("entity_class")
+                if isinstance(rust_ec, str) and rust_ec and rust_ec != "unknown":
+                    entity_class = rust_ec
+            entity_class = entity_class or "unknown"
             entry = {
                 "entity_class": entity_class,
+                "rust_class": data.get("class"),
                 "execute": data.get("execute", 0),
                 "verify": data.get("verify", 0),
                 "quotient": data.get("quotient"),
@@ -423,9 +442,15 @@ def call_tool(name: str, args: dict) -> dict:
         else:
             gov_verdict = "FOSSILIZED"
 
+        raw_verdict = (
+            fq_data.get("verdict")
+            or result.get("verdict")
+            or fq_data.get("legacy_verdict")
+        )
         return {
             "raw_fq": fq_data.get("quotient"),
-            "raw_verdict": fq_data.get("verdict"),
+            "raw_verdict": raw_verdict,
+            "fq_legacy_verdict": fq_data.get("legacy_verdict"),
             "governance_weighted_fq": round(gov_fq, 4) if gov_fq else None,
             "governance_verdict": gov_verdict,
             "governance_execute": gov_exec,

@@ -277,6 +277,9 @@ pub struct ActorFlowState {
     /// toward the federation FQ aggregate — fail-closed.
     #[serde(default)]
     pub actor_class: ActorClass,
+    /// Fine-grained YAML entity class matching Python `entity_classes.yaml`.
+    #[serde(default)]
+    pub entity_class: String,
 }
 
 impl ActorFlowState {
@@ -299,6 +302,7 @@ impl ActorFlowState {
             window: VecDeque::new(),
             held_since_ns: 0,
             actor_class: ActorClass::Unclassified,
+            entity_class: String::new(),
         }
     }
 
@@ -734,12 +738,14 @@ impl InvariantEnforcer {
         // [F-4 2026-10-25] Stamp class at REGISTRATION (first ingest) from the
         // validated registry — the receipt payload never sets it.
         let actor_class = self.class_registry.classify(&actor_id);
+        let entity_class = self.class_registry.entity_class(&actor_id).to_string();
         let entry = self
             .actors
             .entry(actor_id.clone())
             .or_insert_with(|| {
                 let mut state = ActorFlowState::new(actor_id);
                 state.actor_class = actor_class;
+                state.entity_class = entity_class;
                 state
             });
         entry.ingest(receipt);
@@ -1114,12 +1120,14 @@ impl InvariantEnforcer {
             // [F-4 2026-10-25] The state keeps the same registration-time class
             // stamp as an ingested actor (fail-closed when undeclared).
             let shell_class = self.class_registry.classify(&key);
+            let shell_entity_class = self.class_registry.entity_class(&key).to_string();
             let entry = self
                 .actors
                 .entry(key)
                 .or_insert_with(|| {
                     let mut state = ActorFlowState::new(rec.actor_id.clone());
                     state.actor_class = shell_class;
+                    state.entity_class = shell_entity_class;
                     state
                 });
             entry.held = true;
