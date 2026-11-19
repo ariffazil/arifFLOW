@@ -810,6 +810,17 @@ fn handle_client(
                     .primary_pathology()
                     .map(|d| d.failure().to_string())
                     .unwrap_or_else(|| "NONE".to_string());
+                // [2026-11-19, FI-003] Name the driver, not just the label:
+                // the failure-mode NAME (e.g. COHERENCE_FRACTURE) does not say
+                // which dimension drove it, and readers kept inferring a
+                // per-actor flow fracture. Additive field only.
+                let driving_pathology = vs.driving_pathology().map(|(d, raw, h)| {
+                    serde_json::json!({
+                        "dimension": d.code(),
+                        "raw_value": (raw * 10000.0).round() / 10000.0,
+                        "health": (h * 1000.0).round() / 1000.0,
+                    })
+                });
                 // RED-010: gate the headline diagnosis on G calibration — the
                 // constitutional alarm name is not emitted while G is uncalibrated.
                 let diagnosis_label = if primary_pathology == "GOVERNANCE_COLLAPSE" {
@@ -859,6 +870,7 @@ fn handle_client(
                         "diagnosis": {
                             "constellation": constellation,
                             "primary_pathology": primary_pathology,
+                            "driving_pathology": driving_pathology,
                             "fused_rank": vector_rank,
                             "healthy_shape": "constellation, not maximum",
                         },

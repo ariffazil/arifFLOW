@@ -500,6 +500,21 @@ impl VectorStore {
         .map(|(d, _)| d)
     }
 
+    /// The dimension driving the current primary pathology, with its raw
+    /// value and normalized health — so consumers of the diagnosis block
+    /// see WHICH dimension failed, not just the failure label.
+    /// [2026-11-19, FI-003] Three consecutive sessions (AGY digest,
+    /// NEXT.md row framing, chamber queue) misread the top-level
+    /// COHERENCE_FRACTURE as a per-actor flow fracture because the
+    /// label alone does not name its driver. None when no wired
+    /// dimension is pathological.
+    pub fn driving_pathology(&self) -> Option<(Dimension, f64, f64)> {
+        let d = self.primary_pathology()?;
+        let (h, _, _) = self.health(d);
+        let raw = self.dims.get(&d).map(|s| s.value)?;
+        Some((d, raw, h))
+    }
+
     /// Constellation classifier (spec §4.3, extended for phased rollout).
     ///
     /// Unwired dimensions (pending ARIF approval per §9 STEPs) shift the
@@ -957,6 +972,129 @@ mod tests {
         );
         let c = vs.constellation();
         assert_eq!(c, "SIMULATION");
+    }
+
+    #[test]
+    fn test_driving_pathology_names_w3_driver() {
+        // The 2026-11-19 live state, reproduced: every dimension healthy
+        // except W3 = 0.4622 (witness legs). The diagnosis block must name
+        // W3 as the driver, not emit an unattributed failure label.
+        let mut vs = VectorStore::new();
+        vs.tick();
+        vs.inject_fq(Some(1.2)); // HEALTHY band
+        vs.ingest(
+            Dimension::G,
+            0.9,
+            Epistemology::Witness,
+            "evaluate",
+            "A-FORGE",
+            true,
+        );
+        vs.ingest(
+            Dimension::J,
+            0.3,
+            Epistemology::Measure,
+            "apex",
+            "A-FORGE",
+            true,
+        );
+        vs.ingest(
+            Dimension::W3,
+            0.4622,
+            Epistemology::Witness,
+            "witness",
+            "A-FORGE",
+            true,
+        );
+        vs.ingest(
+            Dimension::CDark,
+            0.2,
+            Epistemology::Measure,
+            "evaluate",
+            "A-FORGE",
+            true,
+        );
+        vs.ingest(
+            Dimension::DS,
+            -0.05,
+            Epistemology::Measure,
+            "entropy",
+            "arifFlow",
+            true,
+        );
+        vs.ingest(
+            Dimension::Omega0,
+            0.04,
+            Epistemology::Feel,
+            "humility",
+            "333-AGI",
+            true,
+        );
+        assert_eq!(vs.constellation(), "COHERENCE_FRACTURE");
+        let (d, raw, h) = vs
+            .driving_pathology()
+            .expect("pathological W3 must yield a driver");
+        assert_eq!(d, Dimension::W3);
+        assert!((raw - 0.4622).abs() < 1e-9, "raw was {}", raw);
+        assert!(h < 0.5, "health was {}", h);
+    }
+
+    #[test]
+    fn test_driving_pathology_none_when_flowing() {
+        // Same wiring, everything healthy: no driver, no label.
+        let mut vs = VectorStore::new();
+        vs.tick();
+        vs.inject_fq(Some(1.2));
+        vs.ingest(
+            Dimension::G,
+            0.9,
+            Epistemology::Witness,
+            "evaluate",
+            "A-FORGE",
+            true,
+        );
+        vs.ingest(
+            Dimension::J,
+            0.3,
+            Epistemology::Measure,
+            "apex",
+            "A-FORGE",
+            true,
+        );
+        vs.ingest(
+            Dimension::W3,
+            0.85,
+            Epistemology::Witness,
+            "witness",
+            "A-FORGE",
+            true,
+        );
+        vs.ingest(
+            Dimension::CDark,
+            0.2,
+            Epistemology::Measure,
+            "evaluate",
+            "A-FORGE",
+            true,
+        );
+        vs.ingest(
+            Dimension::DS,
+            -0.05,
+            Epistemology::Measure,
+            "entropy",
+            "arifFlow",
+            true,
+        );
+        vs.ingest(
+            Dimension::Omega0,
+            0.04,
+            Epistemology::Feel,
+            "humility",
+            "333-AGI",
+            true,
+        );
+        assert_eq!(vs.constellation(), "FLOWING");
+        assert!(vs.driving_pathology().is_none());
     }
 
     #[test]
