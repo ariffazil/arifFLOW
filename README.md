@@ -1,7 +1,7 @@
 <!-- SOT-MANIFEST
-federation_release: v2026.11.18
-last_verified: 2026-11-18T07:35:00Z
-live_commit: f8b1bb3 (v2026.11.14 on origin/main; daemon ok-v3-vector / qg.v0.3.1-vector)
+federation_release: v2026.11.21
+last_verified: 2026-11-21T13:20:00Z
+live_commit: 0719289 (v2026.11.21 on origin/main; daemon ok-v3-vector / qg.v0.3.1-vector)
 apex_zen: A2A delegates ⊥ MCP equips ⊥ ACT mutates ⊥ arifOS governs ⊥ F13 decides
 organ: arifFlow
 role: METABOLISM organ — FQ pulse, receipt metabolism, attention checkpointing
