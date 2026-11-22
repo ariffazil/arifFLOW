@@ -293,7 +293,12 @@ impl ActorFlowState {
             verify_cost_ns: 0,
             fq: 0.0,
             quotient: None,
-            verdict: FlowVerdict::Balanced,
+            // [P1 2026-11-22] No steps yet => no measured flow state. The legacy
+            // `Balanced` alias claimed a healthy balance for an actor that had
+            // never run — the same class of drift as the docstring/runtime
+            // divergence. Undefined is the honest answer (canonical fn:
+            // verify_count == 0 -> Unknown).
+            verdict: FlowVerdict::Unknown,
             consecutive_executes_without_verify: 0,
             last_risk_class: RiskClass::default(),
             throttled: false,
@@ -396,31 +401,7 @@ impl ActorFlowState {
         // Both ratio poles are Calhoun sink:
         //   verify:execute > 3:1 → FOSSILIZED (contact, no motion)
         //   execute:verify > 3:1 → BURNING (motion, no witness)
-        self.verdict = if self.verify_count == 0 && self.execute_count == 0 {
-            FlowVerdict::Unknown
-        } else if self.verify_count == 0 {
-            FlowVerdict::Unknown
-        } else if self.verify_count < 2 {
-            FlowVerdict::Caution
-        } else if self.execute_count == 0 {
-            FlowVerdict::Flowing
-        } else if let Some(q) = self.quotient {
-            if q > 3.0 {
-                // Helix Codex Lock 2: fossilisation pole
-                FlowVerdict::Fossilized
-            } else if q >= 1.0 {
-                FlowVerdict::Optimal
-            } else if q >= 0.5 {
-                FlowVerdict::Flowing
-            } else if q >= 0.1 {
-                FlowVerdict::Stuck
-            } else {
-                // Helix Codex Lock 2: burn pole
-                FlowVerdict::Burning
-            }
-        } else {
-            FlowVerdict::Unknown
-        };
+        self.verdict = crate::receipt::classify_quotient(self.verify_count, self.execute_count);
     }
 }
 

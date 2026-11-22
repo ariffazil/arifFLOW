@@ -1,3 +1,27 @@
+## v2026.11.22 (rev 2) — one FQ formula, one source of truth
+
+**Changed**
+- `receipt::classify_quotient(verify_count, execute_count)` is now the ONLY
+  FQ band decision. The system window (`FlowQuotient::compute`) and the
+  per-actor enforcer (`ActorFlowState`) both call it. The threshold table
+  existed in two places, so the health surface could answer two different
+  things about the same actor.
+- An actor with no steps reports `Unknown` (undefined) instead of the legacy
+  `Balanced` alias.
+- `metric_semantics` gains the canonical descriptor: `fq_version`,
+  `quotient_type`, `producer`, `authority_ceiling`, plus per-metric `window`
+  and `producer`.
+- `GET /health` gains `verdict_grammar: "observed_diagnosis"` and a
+  `verdict_note`, so the top-level `verdict` cannot be read as a
+  constitutional verdict.
+
+**Added**
+- `tests/fq_single_formula.rs`: proves the per-actor band and the canonical
+  function agree across the full boundary matrix (execute 0–4 × verify 0–6),
+  so the two can never silently diverge again.
+
+**Tests:** 296 passed / 0 failed (285 lib + 3 + 6 adversarial + 2 single-formula).
+
 ## v2026.11.22 — SOT manifest, grammar separation, P3 quotient exclusion
 
 **Added**

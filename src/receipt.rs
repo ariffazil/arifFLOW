@@ -792,6 +792,45 @@ pub struct FlowQuotient {
     pub apex_block: Option<u64>,
 }
 
+/// The single FQ band decision — the canonical source of truth (P1, 2026-11-22).
+///
+/// Every FQ verdict in the federation MUST come from this function: the
+/// system window in [`FlowQuotient::compute`] and the per-actor enforcer in
+/// [`crate::governance::invariants`]. Two copies of a threshold table is how a
+/// health surface starts lying — change one, ship it, and two consumers of
+/// the same metric disagree about the same actor.
+///
+/// Decided on COUNTS, not ratios, so the undefined boundaries (no verify,
+/// a single verify, no execute) are settled in exactly one place.
+pub fn classify_quotient(verify_count: u64, execute_count: u64) -> FlowVerdict {
+    if verify_count == 0 {
+        // No verify: undefined — NOT zero, NOT infinite.
+        FlowVerdict::Unknown
+    } else if verify_count < 2 {
+        // One verification is coincidence, not pattern.
+        FlowVerdict::Caution
+    } else if execute_count == 0 {
+        // Observe-only window: nothing to be out of balance with.
+        FlowVerdict::Flowing
+    } else {
+        let q = verify_count as f64 / execute_count as f64;
+        if q > 3.0 {
+            // Helix Codex Lock 2: fossilisation pole — verify far exceeds
+            // execute. Contact exists, nothing moves. HOLD.
+            FlowVerdict::Fossilized
+        } else if q >= 1.0 {
+            FlowVerdict::Optimal
+        } else if q >= 0.5 {
+            FlowVerdict::Flowing
+        } else if q >= 0.1 {
+            FlowVerdict::Stuck
+        } else {
+            // Helix Codex Lock 2: burn pole — motion without witness.
+            FlowVerdict::Burning
+        }
+    }
+}
+
 impl FlowQuotient {
     /// Compute FQ from a slice of receipts (v2.1 formula — 2026-08-05).
     ///
@@ -854,30 +893,7 @@ impl FlowQuotient {
         // Both ratio poles are Calhoun sink:
         //   verify:execute > 3:1 → FOSSILIZED (contact, no motion)
         //   execute:verify > 3:1 → BURNING (motion, no witness)
-        let verdict = if verify_count == 0 {
-            FlowVerdict::Unknown
-        } else if verify_count < 2 {
-            FlowVerdict::Caution
-        } else if execute_count == 0 {
-            FlowVerdict::Flowing
-        } else {
-            let q = raw_quotient.unwrap_or(0.0);
-            if q > 3.0 {
-                // Helix Codex Lock 2: fossilisation pole
-                // verify:execute > 3:1 — contact exists, nothing moves
-                FlowVerdict::Fossilized
-            } else if q >= 1.0 {
-                FlowVerdict::Optimal
-            } else if q >= 0.5 {
-                FlowVerdict::Flowing
-            } else if q >= 0.1 {
-                FlowVerdict::Stuck
-            } else {
-                // Helix Codex Lock 2: burn pole
-                // execute:verify > 10:1 — motion without witness
-                FlowVerdict::Burning
-            }
-        };
+        let verdict = classify_quotient(verify_count as u64, execute_count as u64);
 
         // v2.2: quotient is None for Unknown/Caution (undefined or insufficient data)
         let quotient = match verdict {

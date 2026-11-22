@@ -246,6 +246,24 @@ changed meaning, no consumer breaks):
 | `POST /check`, `GET /health` | `grammar` | Which vocabulary belongs to whom: `metabolic_gate_state` (arifFlow), `constitutional_verdict` (arifOS — never emitted here), `observed_diagnosis` (arifFlow). |
 | `POST /ingest` | witness gate | A receipt declaring `payload.receipt_state = "OUTCOME_WITNESSED"` is **rejected (400)** unless it names an external witness in `payload.witnessed_by`. A builder cannot witness its own outcome. |
 
+### One formula, one source of truth (P1)
+
+`receipt::classify_quotient(verify_count, execute_count)` is now the ONLY place
+an FQ band is decided. Previously the threshold table existed twice — once in
+`receipt.rs` (system window) and once in `governance/invariants.rs` (per-actor
+enforcer) — so the health surface could answer two different things for the
+same actor. Both paths now call the canonical function, and
+`tests/fq_single_formula.rs` proves the two agree across the full boundary
+matrix (execute 0–4 × verify 0–6) so they can never drift again.
+
+An actor with no steps now reports `Unknown` (undefined), not the legacy
+`Balanced` alias — claiming a healthy balance for an actor that never ran is
+the same class of drift as the docstring/runtime divergence.
+
+`GET /health` → `metric_semantics` now also carries the canonical descriptor
+(`fq_version`, `quotient_type`, `producer`, `authority_ceiling`) so an auditor
+does not have to read source to know what FQ is.
+
 ### P3 — verify padding can no longer inflate health
 
 The FQ numerator counted every `Verify` receipt, including two classes that
