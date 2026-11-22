@@ -187,3 +187,31 @@ Actor executes → POST /ingest (Execute receipt)
 
 **DITEMPA BUKAN DIBERI — Forged, Not Given.**  
 **F0-F6 ratified. A1-A6 ratified. Invariant enforcement LIVE. Architecture SEALED. Mutation HOLD.**
+
+
+---
+
+## Canonical binding (2026-11-22)
+
+**Formula in force:** `qg.v0.3.1-vector` — count-based `FQ = verify_count /
+execute_count` (higher = healthier), seven-state band:
+`FOSSILIZED (>3.0) · OPTIMAL (1.0–3.0) · FLOWING (0.5–1.0) · STUCK (0.1–0.5) ·
+BURNING (<0.1)`, with `UNKNOWN` (no verify) and `CAUTION` (fewer than two
+verifies) as undefined states — not zero, not infinity.
+
+**P3 — witness eligibility.** A `Verify` receipt counts toward FQ only if it
+can actually witness work. Excluded from the numerator: read-only
+observations (`RiskClass::T0Observe`) and session-orphan self-verifies (a
+`Verify` in a session that never executed — the daemon already refuses those
+as hold-release evidence). The exclusion is exposed as
+`excluded_verify_count`. Rationale: a metric that counts what cannot release a
+hold is a one-way ratchet.
+
+**Grammar ownership.** `arifFlow` emits the metabolic gate state
+(`ALLOW · FLOW_BLOCKED · THROTTLED · COOLDOWN`) and observed diagnosis
+(`FLOWING · COHERENCE_FRACTURE · SIMULATION · PATHOLOGICAL`). It never emits
+the constitutional verdict grammar (`SEAL · HOLD · SABAR · VOID`) — that
+belongs to arifOS alone (F2, F5).
+
+**F0 unchanged:** flow transmits, never owns. The SOT provenance manifest is a
+statement about the running code, not ownership of it.

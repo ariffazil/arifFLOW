@@ -46,6 +46,8 @@ pub mod vector;
 
 pub mod bridge;
 pub mod governance;
+pub mod grammar;
+pub mod provenance;
 pub mod topology;
 
 /// Re-export core types at crate level

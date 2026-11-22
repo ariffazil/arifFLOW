@@ -1,6 +1,6 @@
 [package]
 name = "arifflow"
-version = "2026.7.26"
+version = "2026.11.22"
 edition = "2024"
 description = "arifFlow — Attention Metabolism & Governed Parallel Execution Engine (U = E × M × D)"
 authors = ["Arif (F13 SOVEREIGN) <arifbfazil@gmail.com>"]

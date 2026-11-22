@@ -717,6 +717,8 @@ fn handle_client(
                                     .fq_required()
                                     .max(stuck_floor),
                                 "fq_required_risk_class": state.last_risk_class.fq_required(),
+                                // [P3 2026-11-22] verifies excluded from the FQ numerator
+                                "excluded_verify_count": state.excluded_verify_count,
                             }),
                         )
                     })
@@ -787,6 +789,12 @@ fn handle_client(
                         "scalar_fq_note": "Deprecated as health indicator — use top-level verdict (vector constellation).",
                         // ── FQ VECTOR (per-actor) ──
                         "per_actor": per_actor,
+                        // ── [WS1 2026-11-22] SOT provenance manifest ──
+                        "sot": arifflow::provenance::ProvenanceManifest::current().to_json(),
+                        // ── [WS3 2026-11-22] explicit daemon-path capability state ──
+                        "capabilities": arifflow::provenance::Capabilities::current().to_json(),
+                        // ── [WS1/WS2 2026-11-22] what every FQ number means ──
+                        "metric_semantics": arifflow::provenance::metric_semantics(),
                         "metric_frame": {
                             "window_size": 100,
                             "sample_size": fq.window_size,
@@ -1043,7 +1051,11 @@ fn handle_client(
                 }
             } else if request.starts_with("POST /ingest") {
                 match extract_body(&request) {
-                    Some(raw_json) => match serde_json::from_str::<FlowReceipt>(raw_json.trim()) {
+                    Some(raw_json) => match arifflow::grammar::witness_gate(raw_json.trim())
+                    .and_then(|_| {
+                        serde_json::from_str::<FlowReceipt>(raw_json.trim()).map_err(|e| e.to_string())
+                    })
+                {
                         Ok(mut receipt) => {
                             // ── P1 (2026-10-15): server-side actor-id canonicalization ──
                             // RG-PH pattern: daemon normalizes identity, client values
@@ -1106,7 +1118,7 @@ fn handle_client(
                                 if receipt.step_type == StepType::Verify && !seen_execute {
                                     receipt.mechanical_self_verify = true;
                                     eprintln!(
-                                        "[arifFlow] SESSION-ORPHAN VERIFY: session '{}' has no Execute — receipt {} cannot CLEAR a hold (still counted in verify_count; see P3 note on quotient exclusion)",
+                                        "[arifFlow] SESSION-ORPHAN VERIFY: session '{}' has no Execute — receipt {} cannot CLEAR a hold (excluded from the FQ numerator since P3 2026-11-22 — counted in excluded_verify_count)",
                                         key,
                                         receipt.receipt_id
                                     );
@@ -1589,11 +1601,22 @@ fn handle_client(
                                 }
                                 let enf = enforcer.lock().unwrap();
                                 let (allowed, reason, action) = enf.check_actor(&req.actor_id);
+                                // [WS2 2026-11-22] Three grammars, three owners.
+                                //   metabolic_gate_state  — arifFlow's own (ALLOW / FLOW_BLOCKED / ...)
+                                //   constitutional_verdict — arifOS only (SEAL/HOLD/SABAR/VOID), never here
+                                //   observed_diagnosis    — FLOWING / COHERENCE_FRACTURE / ...
+                                // `action` is retained (deprecated) so existing consumers
+                                // do not break on this release.
+                                let gate_state =
+                                    arifflow::grammar::MetabolicGateState::from_action(&format!("{:?}", action));
                                 let body = serde_json::json!({
                                     "actor": req.actor_id,
                                     "allowed": allowed,
                                     "reason": reason,
+                                    "gate_state": gate_state.as_str(),
                                     "action": format!("{:?}", action),
+                                    "action_deprecated": true,
+                                    "grammar": arifflow::grammar::grammar_manifest(),
                                     "explanation_class": req.explanation_class.map(|c| c.code()),
                                 });
                                 if allowed {

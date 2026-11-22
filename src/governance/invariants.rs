@@ -262,6 +262,10 @@ pub struct ActorFlowState {
     /// verify_count / quotient — that enforcement change waits for data.
     #[serde(default)]
     pub mechanical_verify_count: u64,
+    /// [P3 2026-11-22] Verify receipts EXCLUDED from the FQ numerator:
+    /// read-only (T0Observe) observations and session-orphan self-verifies.
+    /// Exposed so the exclusion is auditable rather than invisible.
+    pub excluded_verify_count: u64,
     /// Last ACTOR_FQ_WINDOW step kinds (1=execution, 2=verification, 0=other).
     /// Counts are decremented when an old step ages out.
     #[serde(default)]
@@ -296,6 +300,7 @@ impl ActorFlowState {
             held: false,
             last_seen_ns: 0,
             mechanical_verify_count: 0,
+            excluded_verify_count: 0,
             window: VecDeque::new(),
             held_since_ns: 0,
             actor_class: ActorClass::Unclassified,
@@ -312,13 +317,34 @@ impl ActorFlowState {
         // old execute can pin an actor (and the min-gated federation) forever.
         // [Projection Correction 2026-10-28] Invariant: T0Observe ⟹ step_type ≠ Execute
         let is_work = receipt.step_type.is_work_execution() && receipt.risk_class != RiskClass::T0Observe;
+        // [P3 2026-11-22] A Verify receipt only counts toward FQ if it is a real
+        // witness of work. Excluded from the numerator: session-orphan
+        // self-verifies — a Verify in a session that never executed. The daemon
+        // REFUSES those as hold-release evidence (main.rs AUTO-RELEASE
+        // REFUSED), so counting them in the numerator created a ONE-WAY
+        // RATCHET: they could push an actor into FOSSILIZED (verify:execute >
+        // 3:1) but never release it. The measure-first split existed since
+        // 2026-10-15 (mechanical_verify_count); this is the enforcement change
+        // that split was opened for.
+        // Read-only (T0Observe) verifications DO count — a Verify receipt is
+        // created with risk_class T0Observe by default, and reading evidence
+        // and confirming it IS verification.
+        let is_verify = receipt.step_type.is_verification();
+        let excluded_verify = is_verify && receipt.mechanical_self_verify;
+        let is_witness = is_verify && !excluded_verify;
         let kind: u8 = if is_work {
             1
-        } else if receipt.step_type.is_verification() {
+        } else if is_witness {
             2
         } else {
             0
         };
+        if excluded_verify {
+            self.excluded_verify_count = self.excluded_verify_count.saturating_add(1);
+            if receipt.mechanical_self_verify {
+                self.mechanical_verify_count += 1;
+            }
+        }
         self.window.push_back(kind);
         if self.window.len() > ACTOR_FQ_WINDOW {
             if let Some(aged_out) = self.window.pop_front() {
@@ -339,12 +365,6 @@ impl ActorFlowState {
                 self.verify_count += 1;
                 self.verify_cost_ns = self.verify_cost_ns.saturating_add(receipt.cost_ns);
                 self.consecutive_executes_without_verify = 0;
-                // P3 (2026-10-15): track mechanical dual-emissions separately.
-                // Measure-first: still counted in verify_count above; the split is
-                // exposed so the enforcement change can be made on data, not vibes.
-                if receipt.mechanical_self_verify {
-                    self.mechanical_verify_count += 1;
-                }
             }
             _ => {}
         }

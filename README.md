@@ -1,7 +1,7 @@
 <!-- SOT-MANIFEST
-federation_release: v2026.11.21
+federation_release: v2026.11.22
 last_verified: 2026-11-21T13:20:00Z
-live_commit: 0719289 (v2026.11.21 on origin/main; daemon ok-v3-vector / qg.v0.3.1-vector)
+live_commit: 0719289 (v2026.11.22 on origin/main; daemon ok-v3-vector / qg.v0.3.1-vector)
 apex_zen: A2A delegates ⊥ MCP equips ⊥ ACT mutates ⊥ arifOS governs ⊥ F13 decides
 organ: arifFlow
 role: METABOLISM organ — FQ pulse, receipt metabolism, attention checkpointing
@@ -222,8 +222,79 @@ Disclosure policy and threat model: [`SECURITY.md`](./SECURITY.md).
 | Unit | arifflow.service |
 | Authority ceiling | METABOLIZE_ONLY |
 | Live (SOT probe @2026-11-18) | UP (`ok-v3-vector` · `COHERENCE_FRACTURE`) |
-| Origin `main` | `f8b1bb3` (`v2026.11.14`) |
+| Origin `main` | `f8b1bb3` (`v2026.11.22`) |
 | Public Health | https://arifflow.arif-fazil.com/health (aggregate-only; per-actor redacted) |
 | Rollback | /opt/arifflow/bin/ROLLBACK.md (3-tier) |
 | Flow graph | [FEDERATION.md](https://github.com/ariffazil/AAA/blob/main/FEDERATION.md) — peta semua organ + repo |
 <!-- FEDERATION-STANDARD v2026-11-18 END -->
+
+
+---
+
+## v2026.11.22 — what changed on the surface
+
+Three additions to the live HTTP surface, all **additive** (no existing key
+changed meaning, no consumer breaks):
+
+| Surface | Addition | Why |
+|---|---|---|
+| `GET /health` | `sot` | Machine-readable provenance manifest: `repo_sha`, `release_id`, `binary_digest_hex` (+ `digest_algorithm`), `formula_version`, `policy_version`, `receipt_format_version`, `deployed_at`, `witnessed_by`. One block that says which code is actually running. |
+| `GET /health` | `capabilities` | Explicit state of every daemon path that used to be "compiled but inactive": `cross_organ_bridge_arifos`, `cross_organ_bridge_aforge`, `merkle_checkpointing`, `bsp_scheduler`. Each carries `status`, `enabled`, and a `reason`. **No silent claim drift** — the gap table below is now machine-readable too. |
+| `GET /health` | `metric_semantics` | What each FQ-shaped number measures: population, unit, formula, direction. The federation had three FQ numbers over three populations; unlabelled they were read as one. |
+| `GET /health` | `fq.per_actor[*].excluded_verify_count` | How many verifies were **excluded** from that actor's FQ numerator (P3). The exclusion is auditable, not invisible. |
+| `POST /check` | `gate_state` | Canonical metabolic gate state: `ALLOW` / `FLOW_BLOCKED` / `THROTTLED` / `COOLDOWN`. The old `action` field is retained and flagged `action_deprecated: true`. |
+| `POST /check`, `GET /health` | `grammar` | Which vocabulary belongs to whom: `metabolic_gate_state` (arifFlow), `constitutional_verdict` (arifOS — never emitted here), `observed_diagnosis` (arifFlow). |
+| `POST /ingest` | witness gate | A receipt declaring `payload.receipt_state = "OUTCOME_WITNESSED"` is **rejected (400)** unless it names an external witness in `payload.witnessed_by`. A builder cannot witness its own outcome. |
+
+### P3 — verify padding can no longer inflate health
+
+The FQ numerator counted every `Verify` receipt, including two classes that
+cannot witness work:
+
+- **read-only observations** (`RiskClass::T0Observe`), and
+- **session-orphan self-verifies** — a `Verify` in a session that never executed.
+
+The daemon already *refused* those as hold-release evidence (an orphan verify
+cannot clear a hold). Counting them in the numerator while refusing them as
+evidence created a **one-way ratchet**: they could push an actor into
+`FOSSILIZED` (verify:execute > 3:1) but never release it. This is the
+measured cause of healthy actors sitting frozen (`fi-008` held at q≈7.3 while
+its real paired ratio was ≈0.8).
+
+Since v2026.11.22 both classes are **excluded from the numerator**
+(`excluded_verify_count` exposes how many), and the system-level window
+applies the same rule as the per-actor one. The docstring at the top of
+`receipt.rs` also no longer describes a cost-based formula the code stopped
+implementing in v2.1.
+
+### Lifecycle (WS4) — v1 scope
+
+Declared: `PROPOSED → AUTHORIZED → EXECUTED → DEPLOYED → OUTCOME_WITNESSED →
+HUMAN_ACCEPTED|HUMAN_REJECTED|HUMAN_DEFERRED → CLOSED`.
+
+**Enforced in v1:** the `DEPLOYED → OUTCOME_WITNESSED` edge requires an
+external witness (`payload.witnessed_by`), evaluated before any state
+mutation — a rejected receipt leaves no trace in the ledger, the enforcer, or
+the vault.
+
+**Not yet enforced:** ordering across the other edges. That needs per-session
+lifecycle state in the daemon and is deferred to v2. `HumanDisposition`
+remains strictly human-sourced: a disposition may not be derived from a
+verdict, witness score, or status.
+
+### Known gaps — now surfaced, not just documented
+
+**Replay rejection — known gap.** `ReceiptStore::push_chain_aware` accepts a
+receipt whose chain link resolves even if that exact receipt is already stored;
+de-duplication happens downstream (`duplicates.jsonl` in the persist dir). This
+release does NOT change that: rejecting replays alters the daemon's ingest
+semantics for every emitter and needs a gated window (F13/888), not a commit.
+`tests/adversarial_fq.rs` pins the current behaviour as a characterization
+test so a future fix flips it visibly.
+
+`GET /health` → `capabilities` reports, with reasons: cross-organ bridges
+(`compiled_inactive`), Merkle checkpointing (`scheduler_path_only`), BSP
+scheduler (`experimental_non_daemon`). These are deliberately **not** wired
+into the live ingest/enforce path in this release: doing so changes the live
+authorization and execution paths and needs a gated production window
+(F13/888), not a silent commit.

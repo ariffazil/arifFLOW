@@ -9,20 +9,35 @@
 //!
 //! ## Flow Quotient (FQ)
 //!
-//! The primary metric for measuring whether an agent is **in flow** or
-//! trapped in self-monitoring:
+//! Measures whether an agent is **in flow** or trapped in self-monitoring.
+//!
+//! Canonical formula (v2.1/v2.2 — `qg.v0.3.1-vector`), COUNT-based:
 //!
 //! ```text
-//! FQ = Σ(Execute.cost_ns) / Σ(Verify.cost_ns + preceding_verify_cost_ns)
+//! FQ = verify_count / execute_count        (higher = healthier)
 //! ```
 //!
-//! | FQ Range | Verdict | Meaning |
-//! |----------|---------|---------|
-//! | > 10.0   | Overheat | Execute far outruns verify — under-verification risk. THROTTLE. |
-//! | 3.0–10.0 | Optimal | Agent in flow. Governance in the architecture. |
-//! | 1.0–3.0  | Balanced | Healthy verification. |
-//! | 0.5–1.0  | Watching | Self-monitoring competes with execution. |
-//! | < 0.5    | Stuck | Self-monitoring has become the task. mPFC takeover. |
+//! | Quotient (verify:execute) | Verdict | Meaning |
+//! |--------------------------|---------|---------|
+//! | > 3.0     | Fossilized | Verification far exceeds execution — contact, no motion. HOLD. |
+//! | 1.0 - 3.0 | Optimal    | Verification leads execution. |
+//! | 0.5 - 1.0 | Flowing    | Healthy metabolism. |
+//! | 0.1 - 0.5 | Stuck      | Verification lagging execution. |
+//! | < 0.1     | Burning    | Execution far outruns verification. |
+//!
+//! COUNTED AS EXECUTE: `StepType::Execute | Merge`, excluding `RiskClass::T0Observe`.
+//! COUNTED AS VERIFY (P3, 2026-11-22): `StepType::Verify`, EXCLUDING
+//! session-orphan self-verifies (`mechanical_self_verify`) — a Verify in a
+//! session that never executed. The daemon already refuses those as
+//! hold-release evidence, so counting them in the numerator created a one-way
+//! ratchet into FOSSILIZED. Read-only (`T0Observe`) verifications DO count:
+//! reading the evidence and confirming it is verification.
+//!
+//! The older cost-based ratio (`sum(Execute.cost_ns) / sum(Verify.cost_ns +
+//! preceding_verify_cost_ns)`) is DEPRECATED and no longer describes the
+//! implementation. `preceding_verify_cost_ns` is retained for chain
+//! compatibility but is not populated by current emitters.
+//!
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -801,8 +816,19 @@ impl FlowQuotient {
                 execute_count += 1;
             }
             if r.step_type.is_verification() {
-                verify_cost += r.cost_ns;
-                verify_count += 1;
+                // [P3 2026-11-22] Witness eligibility. A Verify that the daemon
+                // already stamped as a session-orphan self-verify
+                // (`mechanical_self_verify`) cannot witness work: the daemon
+                // REFUSES it as hold-release evidence (AUTO-RELEASE REFUSED).
+                // Counting it in the numerator anyway created a ONE-WAY
+                // RATCHET — it could push an actor into FOSSILIZED
+                // (verify:execute > 3:1) but never release it.
+                // Read-only (T0Observe) verifications DO count: reading the
+                // evidence and confirming it IS verification.
+                if !r.mechanical_self_verify {
+                    verify_cost += r.cost_ns;
+                    verify_count += 1;
+                }
             }
             if r.step_type.is_barrier() {
                 barrier_count += 1;
