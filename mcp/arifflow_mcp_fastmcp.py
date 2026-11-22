@@ -6,8 +6,37 @@ It never judges (arifOS) and never executes (A-FORGE).
 FQ = verify/execute ratio — the metabolic signal that intelligence
 is flowing, not just burning.
 
+THREE GRAMMARS, THREE OWNERS (F13 GRAMMAR_DOCTRINE — 2026-11-22)
+  arifFlow  metabolic_gate_state : ALLOW | FLOW_BLOCKED | THROTTLED | COOLDOWN
+  arifOS    constitutional_verdict: SEAL | HOLD | SABAR | VOID   ← NEVER from here
+  observed  observed_diagnosis   : FLOWING | STUCK | BURNING | COHERENCE_FRACTURE
+A caller of this server speaks the FIRST vocabulary only. If you find yourself
+writing "Hold", "SEAL" or "VOID" into a flow receipt, you are borrowing
+arifOS's authority — the receipt will refuse to be an authority.
+
+WHAT FQ MEANS (metric_semantics — read before quoting a number)
+  FQ = verify_count / execute_count over the ACTOR'S OWN recent receipt window
+  (window 100 samples; formula qg.v0.3.1-vector). HIGHER IS HEALTHIER:
+  it means verification is keeping pace with execution.
+  It is NOT a verdict, NOT a score of a human, and NOT a claim that anything
+  is correct. It measures metabolism only.
+  Machine and human actors are scored separately (per_actor); the federation
+  rollup is a gated harmonic mean, so one starved actor can pull it down.
+  excluded_verify_count = verifies that were NOT counted in the numerator
+  (e.g. session-orphan self-verifies). Absence of a number is not a zero.
+  The `shadow` block is a READ-ONLY divergence projection (shadow vs enforced
+  rule set). It cannot hold, throttle, release, admit or judge. Nothing in it
+  is enforcement.
+
+  LIVE-SURFACE CAVEAT (measured 2026-11-22): the running daemon binary
+  (5e18663f) predates the SOT manifest / metric_semantics / gate_state
+  release (5b503b0) and carries the shadow frame only. Some fields documented
+  here are in SOURCE but not yet in the running binary. Probe /health and read
+  what is actually present; do not assume a field exists because it is
+  documented here.
+
 Tools:
-  flow_health       — GET /health: FQ, verdict, receipt count, uptime
+  flow_health       — GET /health: FQ, verdict, receipt count, uptime, shadow frame
   flow_entity_report — Entity-classified FQ report
   flow_ingest       — POST /ingest: mint + submit a FlowReceipt
 
@@ -28,6 +57,43 @@ FLOW_HOST = "127.0.0.1"
 FLOW_PORT = 7073
 
 STEP_TYPES = ["Execute", "Verify", "Cool", "Seal", "Barrier", "Merge", "Route"]
+
+# ── Grammar boundary: arifFlow speaks its OWN vocabulary (F13 GRAMMAR_DOCTRINE) ──
+# The daemon's receipt schema still carries a legacy `floor_verdict` field whose
+# "Hold" variant is documented in Rust as "888_HOLD" and "Void" as a permanent
+# critical block. Those are arifOS's constitutional words. arifFlow measures and
+# reports; it does not adjudicate. So callers mint arifFlow's gate state, and a
+# legacy verdict is TRANSLATED, never trusted as authority.
+METABOLIC_GATE_STATES = ("ALLOW", "FLOW_BLOCKED", "THROTTLED", "COOLDOWN")
+_LEGACY_FLOOR_TO_GATE = {
+    "pass": "ALLOW",
+    "caution": "THROTTLED",
+    "hold": "FLOW_BLOCKED",
+    "void": "FLOW_BLOCKED",
+}
+_GATE_TO_LEGACY_FLOOR = {
+    "ALLOW": "Pass",
+    "THROTTLED": "Caution",
+    "FLOW_BLOCKED": "Hold",
+    "COOLDOWN": "Hold",
+}
+
+
+def _resolve_gate_state(
+    metabolic_gate_state: str | None, floor_verdict: str | None
+) -> tuple[str, str]:
+    """Return (metabolic_gate_state, legacy_floor_verdict) for a receipt.
+
+    A valid metabolic gate state always wins. A legacy floor verdict is accepted
+    only as a translation source so existing callers keep working — it is never
+    stored verbatim, because storing it verbatim would let a caller write
+    arifOS's judgement into the metabolism ledger.
+    """
+    gate = str(metabolic_gate_state or "").strip().upper()
+    legacy = str(floor_verdict or "").strip().lower()
+    if gate not in METABOLIC_GATE_STATES:
+        gate = _LEGACY_FLOOR_TO_GATE.get(legacy, "ALLOW")
+    return gate, _GATE_TO_LEGACY_FLOOR.get(gate, "Pass")
 EPISTEMIC = ["Observation", "Derivation", "Interpretation", "Specification", "Seal"]
 VERDICTS = ["Pass", "Caution", "Hold", "Void"]
 
@@ -105,9 +171,30 @@ def _flow_post(path: str, body: dict) -> dict[str, Any]:
 
 @mcp.tool()
 def flow_health() -> dict[str, Any]:
-    """arifFlow daemon health + Flow Quotient (FQ = verify/execute ratio over
-    recent receipts). Verdicts: FLOWING (healthy metabolism), STUCK (no
-    verification), BURNING (execution outruns verification). Read-only."""
+    """arifFlow daemon health + Flow Quotient, with the metric semantics attached.
+
+    FQ = verify_count / execute_count over the actor's own recent receipt window
+    (100 samples, formula qg.v0.3.1-vector). HIGHER IS HEALTHIER — verification
+    keeping pace with execution. It is a METABOLIC measurement, never a verdict,
+    never a claim about a human, never proof that anything is correct.
+
+    Three grammars, three owners — read the value in the right column:
+      observed_diagnosis (FLOWING | STUCK | BURNING | COHERENCE_FRACTURE)
+        — what the metabolism looks like. OBSERVED, not judged.
+      metabolic_gate_state (ALLOW | FLOW_BLOCKED | THROTTLED | COOLDOWN)
+        — arifFlow's own gate, on POST /check. arifFlow's vocabulary.
+      constitutional_verdict (SEAL | HOLD | SABAR | VOID)
+        — arifOS only. arifFlow never emits it.
+
+    `per_actor` scores machine and human actors separately; `excluded_verify_count`
+    counts verifies kept out of the numerator (absence of a value is not a zero).
+    `shadow` is a READ-ONLY divergence projection (shadow rule set vs enforced
+    rule set) — it cannot hold, throttle, release, admit or judge.
+
+    Live-surface caveat (measured 2026-11-22): the running binary predates the
+    SOT/metric_semantics/gate_state release, so `sot`, `metric_semantics` and
+    `gate_state` may be absent from the payload. Probe it; do not assume.
+    Read-only."""
     result = _flow_get("/health")
     result.setdefault("provenance", {})
     result["provenance"].setdefault("formula_version", "qg.v0.2")
@@ -245,7 +332,8 @@ def flow_ingest(
     step_number: int = 1,
     cost_ns: int = 0,
     epistemic_label: str = "Derivation",
-    floor_verdict: str = "Pass",
+    metabolic_gate_state: str = "ALLOW",
+    floor_verdict: str | None = None,
     topology_id: str | None = None,
     lane_id: int | None = None,
     previous_receipt_hash: str | None = None,
@@ -262,8 +350,31 @@ def flow_ingest(
 ) -> dict[str, Any]:
     """Mint and ingest a FlowReceipt into the arifFlow metabolic ledger
     (POST /ingest). Records one governed step: identity, step_type, cost,
-    epistemic label, and floor verdict. Use to checkpoint work so FQ
+    epistemic label, and arifFlow's OWN gate state. Use to checkpoint work so FQ
     monitoring and cooling correlation see it. Returns FQ after ingest.
+
+    GRAMMAR: `metabolic_gate_state` is arifFlow's vocabulary —
+    ALLOW | FLOW_BLOCKED | THROTTLED | COOLDOWN. Do NOT pass "SEAL", "HOLD",
+    "SABAR" or "VOID" here: those are arifOS's constitutional verdicts and
+    arifFlow does not adjudicate. A legacy `floor_verdict` (Pass|Caution|Hold|Void)
+    is still accepted for backwards compatibility and is TRANSLATED into the
+    metabolic vocabulary before it is stored, so a caller cannot write
+    arifOS's judgement into the metabolism ledger.
+
+    LINEAGE IS MANDATORY (daemon rule, measured 2026-11-22): the daemon rejects
+    a receipt that declares no ancestry with
+    `PARENT_REQUIRED: pass parent_receipt_ids OR set payload.top_level_intent=true
+    with reason`. Pass `parent_receipt_ids=[...]` when the step descends from an
+    earlier receipt, otherwise declare `payload.top_level_intent=true` with a
+    `reason`.
+
+    LEDGER FIELD (measured 2026-11-22): the running daemon's receipt schema
+    still stores only the legacy `floor_verdict` key - serde drops the extra
+    `metabolic_gate_state` key. So today the GATE STATE YOU ASK FOR IS
+    TRANSLATED INTO THE LEGACY FIELD (ALLOW->Pass, THROTTLED->Caution,
+    FLOW_BLOCKED/COOLDOWN->Hold) and the semantic meaning is arifFlow's gate,
+    not a constitutional verdict. Carrying the field natively needs a Rust
+    change to the FlowReceipt struct, plus rebuild and deploy of the daemon.
 
     supersedes_* records a SEQ-N belief death: this receipt retires the cited
     receipt(s). The daemon already accepts these fields on /ingest; the bridge
@@ -309,6 +420,7 @@ def flow_ingest(
     supersedes_receipt_hashes = _as_list(supersedes_receipt_hashes)
     payload = _as_dict(payload)
 
+    gate_state, legacy_floor = _resolve_gate_state(metabolic_gate_state, floor_verdict)
     receipt: dict[str, Any] = {
         "receipt_id": str(uuid.uuid4()),
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -318,7 +430,11 @@ def flow_ingest(
         "step_number": step_number,
         "cost_ns": cost_ns,
         "epistemic_label": epistemic_label,
-        "floor_verdict": floor_verdict,
+        # arifFlow's own gate state — the authoritative field for this ledger.
+        "metabolic_gate_state": gate_state,
+        # Legacy schema field (daemon struct: FloorVerdict). Kept for
+        # compatibility and DERIVED from the gate state, never caller-verbatim.
+        "floor_verdict": legacy_floor,
         "cooling_decision": "None",
     }
     if topology_id:
@@ -478,7 +594,11 @@ async def _health_route(request):
     cannot drift from what the MCP wire actually exposes. If the registry cannot
     be read, tools_loaded is null and the reason is published — never a literal
     fallback count.
-    """
+    
+    Boundary: these records are EVIDENCE of what happened, never authority to act.
+    arifFlow observes and anchors; arifOS adjudicates (SEAL/HOLD/SABAR/VOID);
+    A-FORGE executes. A receipt is evidence that a step was recorded, not that it was right.
+"""
     from starlette.responses import JSONResponse
 
     tool_error = None
