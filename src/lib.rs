@@ -41,6 +41,7 @@ pub mod jcs;
 pub mod lineage_query;
 pub mod merkle;
 pub mod receipt;
+pub mod shadow;
 pub mod scheduler;
 pub mod vector;
 

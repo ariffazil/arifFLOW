@@ -10,7 +10,7 @@
 //! string. A caller could not tell whether the FLOW plane blocked an actor or
 //! the LAW plane refused an action.
 
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// arifFlow's own gate state — may this actor move right now (flow plane).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -46,6 +46,34 @@ impl MetabolicGateState {
             _ => Self::FlowBlocked,
         }
     }
+
+    /// [GRAMMAR 2026-11-22] Map a wire label onto the canonical vocabulary.
+    /// Unknown labels fail CLOSED, by the same rule as `from_action`: a gate
+    /// state we cannot name must never be reported as permission to move.
+    /// Note what is NOT accepted here: arifOS's constitutional words (SEAL,
+    /// HOLD, SABAR, VOID). A caller that speaks those is borrowing another
+    /// organ's authority and is failed closed rather than translated.
+    pub fn from_label(raw: &str) -> Self {
+        match raw.trim().to_ascii_uppercase().as_str() {
+            "ALLOW" | "ALLOWED" => Self::Allow,
+            "FLOW_BLOCKED" => Self::FlowBlocked,
+            "THROTTLED" | "THROTTLE" => Self::Throttled,
+            "COOLDOWN" => Self::Cooldown,
+            _ => Self::FlowBlocked,
+        }
+    }
+}
+
+/// [GRAMMAR 2026-11-22] Tolerant deserialiser for the optional gate-state field.
+/// An unknown label becomes FLOW_BLOCKED (fail closed) instead of rejecting the
+/// whole receipt — one unreadable field must not destroy the evidence, but it
+/// must never widen permission either.
+pub fn deserialize_gate_state_opt<'de, D>(deserializer: D) -> Result<Option<MetabolicGateState>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<String>::deserialize(deserializer)?;
+    Ok(raw.map(|s| MetabolicGateState::from_label(&s)))
 }
 
 /// Observed diagnosis — what the flow plane measured. An observation, not a

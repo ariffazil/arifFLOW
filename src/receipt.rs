@@ -790,6 +790,18 @@ pub struct FlowQuotient {
     /// Links FQ pulse to constitutional G/J evaluation cycles.
     /// None when no APEX block registered in window.
     pub apex_block: Option<u64>,
+    /// [SEMANTIC 2026-11-22] Execute receipts in the window that are T0Observe
+    /// (read-only steps): excluded from the denominator BY DESIGN (a read is
+    /// not work), but still steps. Published so the numerator/denominator
+    /// asymmetry is computable rather than hidden inside one ratio.
+    pub t0_execute_count: usize,
+    /// [SEMANTIC 2026-11-22] Counted verifies that are T0Observe (read-only
+    /// verification). These DO enter the numerator.
+    pub t0_verify_count: usize,
+    /// [SEMANTIC 2026-11-22] The same quotient with T0Observe EXECUTES also in
+    /// the denominator ("all steps" reading). Published, not authoritative:
+    /// which definition governs is a ratified-definition question (F13).
+    pub quotient_all_steps: Option<f64>,
 }
 
 /// The single FQ band decision — the canonical source of truth (P1, 2026-11-22).
@@ -846,6 +858,9 @@ impl FlowQuotient {
         let mut verify_cost = 0u64;
         let mut execute_count = 0usize;
         let mut verify_count = 0usize;
+        // [SEMANTIC 2026-11-22] definitional split, published not hidden.
+        let mut t0_execute_count = 0usize;
+        let mut t0_verify_count = 0usize;
         let mut barrier_count = 0usize;
 
         for r in receipts {
@@ -853,6 +868,9 @@ impl FlowQuotient {
             if r.step_type.is_work_execution() && r.risk_class != RiskClass::T0Observe {
                 execute_cost += r.cost_ns;
                 execute_count += 1;
+            } else if r.step_type.is_work_execution() {
+                // [SEMANTIC 2026-11-22] read-only step: not work, but a step.
+                t0_execute_count += 1;
             }
             if r.step_type.is_verification() {
                 // [P3 2026-11-22] Witness eligibility. A Verify that the daemon
@@ -867,6 +885,12 @@ impl FlowQuotient {
                 if !r.mechanical_self_verify {
                     verify_cost += r.cost_ns;
                     verify_count += 1;
+                    if r.risk_class == RiskClass::T0Observe {
+                        // [SEMANTIC 2026-11-22] read-only verification: counted in
+                        // the numerator (a read that confirms IS verification) while
+                        // read-only EXECUTION is excluded from the denominator.
+                        t0_verify_count += 1;
+                    }
                 }
             }
             if r.step_type.is_barrier() {
@@ -915,6 +939,14 @@ impl FlowQuotient {
             verdict,
             window_size: receipts.len(),
             apex_block,
+            // [SEMANTIC 2026-11-22] definitional split, published not hidden.
+            t0_execute_count,
+            t0_verify_count,
+            quotient_all_steps: if execute_count + t0_execute_count == 0 {
+                None
+            } else {
+                Some(verify_count as f64 / (execute_count + t0_execute_count) as f64)
+            },
         }
     }
 }
@@ -1034,6 +1066,18 @@ pub struct FlowReceipt {
     // ── Governance ──
     /// F1–F13 constitutional verdict for this step
     pub floor_verdict: FloorVerdict,
+    /// [GRAMMAR 2026-11-22] arifFlow's OWN gate state — ALLOW / FLOW_BLOCKED /
+    /// THROTTLED / COOLDOWN. Optional, so receipts minted before this release
+    /// still parse. When present it is AUTHORITATIVE: the legacy
+    /// `floor_verdict` is DERIVED from it (see `normalise_gate_state`), never
+    /// the other way round — so a caller cannot write arifOS's constitutional
+    /// verdict into the metabolism ledger.
+    #[serde(
+        default,
+        deserialize_with = "crate::grammar::deserialize_gate_state_opt",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub metabolic_gate_state: Option<crate::grammar::MetabolicGateState>,
     /// T2-1 (audit 2026-08-10): WHY bridge — first-class intent field.
     /// "Kenapa agent buat benda ni?" — governance without reading source code.
     pub intent_reason: Option<String>,
@@ -1171,6 +1215,7 @@ impl FlowReceipt {
             mechanical_self_verify: false,
             epistemic_label,
             floor_verdict: FloorVerdict::Pass,
+            metabolic_gate_state: None,
             intent_reason: None,
             expected_outcome: None,
             cooling_decision: CoolingDecision::None,
@@ -1229,6 +1274,7 @@ impl FlowReceipt {
             mechanical_self_verify: false,
             epistemic_label,
             floor_verdict: FloorVerdict::Pass,
+            metabolic_gate_state: None,
             intent_reason: None,
             expected_outcome: None,
             cooling_decision: CoolingDecision::None,
@@ -1279,6 +1325,38 @@ impl FlowReceipt {
     pub fn with_floor_verdict(mut self, verdict: FloorVerdict) -> Self {
         self.floor_verdict = verdict;
         self
+    }
+
+    /// [GRAMMAR 2026-11-22] Set arifFlow's own gate state. The legacy
+    /// `floor_verdict` is derived from it, so the two can never disagree.
+    pub fn with_metabolic_gate_state(
+        mut self,
+        state: crate::grammar::MetabolicGateState,
+    ) -> Self {
+        self.metabolic_gate_state = Some(state);
+        self.floor_verdict = match state {
+            crate::grammar::MetabolicGateState::Allow => FloorVerdict::Pass,
+            crate::grammar::MetabolicGateState::Throttled => FloorVerdict::Caution,
+            crate::grammar::MetabolicGateState::FlowBlocked
+            | crate::grammar::MetabolicGateState::Cooldown => FloorVerdict::Hold,
+        };
+        self
+    }
+
+    /// [GRAMMAR 2026-11-22] Enforce the grammar boundary at the daemon: when a
+    /// gate state is present it is authoritative and the legacy
+    /// `floor_verdict` is DERIVED from it. A caller's legacy value is never
+    /// trusted while the gate state is known — this is the layer where
+    /// "arifFlow never adjudicates" becomes enforced rather than documented.
+    pub fn normalise_gate_state(&mut self) {
+        if let Some(state) = self.metabolic_gate_state {
+            self.floor_verdict = match state {
+                crate::grammar::MetabolicGateState::Allow => FloorVerdict::Pass,
+                crate::grammar::MetabolicGateState::Throttled => FloorVerdict::Caution,
+                crate::grammar::MetabolicGateState::FlowBlocked
+                | crate::grammar::MetabolicGateState::Cooldown => FloorVerdict::Hold,
+            };
+        }
     }
 
     /// Set the cooling decision builder-style.
@@ -1766,6 +1844,9 @@ impl ReceiptStore {
     /// Compute the Flow Quotient over the last N receipts.
     pub fn flow_quotient(&self, window: usize) -> FlowQuotient {
         let window_receipts = self.last_n(window);
+        // The T0 definitional split is published from FlowQuotient::compute's own
+        // initializer (t0_execute_count, t0_verify_count, quotient_all_steps) —
+        // it is a property of the window, not of this caller.
         FlowQuotient::compute(window_receipts)
     }
 

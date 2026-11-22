@@ -719,6 +719,16 @@ fn handle_client(
                                 "fq_required_risk_class": state.last_risk_class.fq_required(),
                                 // [P3 2026-11-22] verifies excluded from the FQ numerator
                                 "excluded_verify_count": state.excluded_verify_count,
+                                // [SEMANTIC 2026-11-22] the definitional split, published:
+                                // numerator and denominator are filtered by different criteria.
+                                "t0_execute_count": state.t0_execute_count,
+                                "t0_verify_count": state.t0_verify_count,
+                                "quotient_all_steps": if state.execute_count + state.t0_execute_count == 0 {
+                                    serde_json::Value::Null
+                                } else {
+                                    serde_json::json!((state.verify_count as f64)
+                                        / (state.execute_count + state.t0_execute_count) as f64)
+                                },
                             }),
                         )
                     })
@@ -773,6 +783,11 @@ fn handle_client(
 
                 let body = serde_json::json!({
                     "status": "ok-v3-vector",
+                    // ── [SHADOW 2026-11-22] NON-AUTHORITATIVE observation plane ──
+                    // Read-only projection of the NEXT rule set over the SAME population and
+                    // window as the enforced metric. It cannot hold, throttle, release, admit
+                    // or judge, and it shares no mutable state with any enforcement path.
+                    "shadow": arifflow::shadow::observe(store.last_n(100), 100),
                     // SPEC STEP 10 (RETIRE SCALAR): the canonical vector is the
                     // headline; the deprecated scalar is demoted to legacy_* fields.
                     "verdict": constellation.clone(),
@@ -1057,6 +1072,12 @@ fn handle_client(
                     })
                 {
                         Ok(mut receipt) => {
+                            // ── [GRAMMAR 2026-11-22] Daemon-side grammar enforcement ──
+                            // arifFlow's own gate state is authoritative when present;
+                            // the legacy floor_verdict is DERIVED from it, so a caller
+                            // cannot write arifOS's constitutional verdict into the
+                            // metabolism ledger.
+                            receipt.normalise_gate_state();
                             // ── P1 (2026-10-15): server-side actor-id canonicalization ──
                             // RG-PH pattern: daemon normalizes identity, client values
                             // never trusted. Folds spelling shards (333-AGI/333-agi/

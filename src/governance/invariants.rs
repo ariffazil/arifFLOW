@@ -266,6 +266,13 @@ pub struct ActorFlowState {
     /// read-only (T0Observe) observations and session-orphan self-verifies.
     /// Exposed so the exclusion is auditable rather than invisible.
     pub excluded_verify_count: u64,
+    /// [SEMANTIC 2026-11-22] read-only (T0Observe) EXECUTE steps seen for this
+    /// actor — excluded from the denominator by design, published so the
+    /// numerator/denominator asymmetry is computable.
+    pub t0_execute_count: u64,
+    /// [SEMANTIC 2026-11-22] read-only (T0Observe) verifies counted in this
+    /// actor's numerator.
+    pub t0_verify_count: u64,
     /// Last ACTOR_FQ_WINDOW step kinds (1=execution, 2=verification, 0=other).
     /// Counts are decremented when an old step ages out.
     #[serde(default)]
@@ -306,6 +313,8 @@ impl ActorFlowState {
             last_seen_ns: 0,
             mechanical_verify_count: 0,
             excluded_verify_count: 0,
+            t0_execute_count: 0,
+            t0_verify_count: 0,
             window: VecDeque::new(),
             held_since_ns: 0,
             actor_class: ActorClass::Unclassified,
@@ -344,6 +353,10 @@ impl ActorFlowState {
         } else {
             0
         };
+        // [SEMANTIC 2026-11-22] read-only execute steps: not work, but a step.
+        if receipt.step_type.is_work_execution() && receipt.risk_class == RiskClass::T0Observe {
+            self.t0_execute_count = self.t0_execute_count.saturating_add(1);
+        }
         if excluded_verify {
             self.excluded_verify_count = self.excluded_verify_count.saturating_add(1);
             if receipt.mechanical_self_verify {
@@ -368,6 +381,9 @@ impl ActorFlowState {
             }
             2 => {
                 self.verify_count += 1;
+                if receipt.risk_class == RiskClass::T0Observe {
+                    self.t0_verify_count = self.t0_verify_count.saturating_add(1);
+                }
                 self.verify_cost_ns = self.verify_cost_ns.saturating_add(receipt.cost_ns);
                 self.consecutive_executes_without_verify = 0;
             }

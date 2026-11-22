@@ -376,6 +376,10 @@ impl KabarkanFqInstrument {
                 barrier_count: 0,
                 window_size: 0,
                 apex_block: None,
+                // [SEMANTIC 2026-11-22] synthetic prior value: no T0 split to publish.
+                t0_execute_count: 0,
+                t0_verify_count: 0,
+                quotient_all_steps: None,
             };
             let alert = FqAlertEvent::new(&current_fq, &previous_fq, &self.session_id, step_number);
             // Serialize into Kabarkan event envelope
@@ -533,6 +537,10 @@ mod tests {
             window_size: 20,
             barrier_count: 0,
             apex_block: None,
+                // [SEMANTIC 2026-11-22] definitional split: published, not hidden.
+                t0_execute_count: 0,
+                t0_verify_count: 0,
+                quotient_all_steps: None,
         };
         let previous = FlowQuotient {
             execute_count: 0,
@@ -544,6 +552,10 @@ mod tests {
             window_size: 0,
             barrier_count: 0,
             apex_block: None,
+                // [SEMANTIC 2026-11-22] definitional split: published, not hidden.
+                t0_execute_count: 0,
+                t0_verify_count: 0,
+                quotient_all_steps: None,
         };
         let alert = FqAlertEvent::new(&current, &previous, "test-session", 42);
         assert_eq!(alert.severity, "CRITICAL");
@@ -562,6 +574,10 @@ mod tests {
             window_size: 20,
             barrier_count: 0,
             apex_block: None,
+                // [SEMANTIC 2026-11-22] definitional split: published, not hidden.
+                t0_execute_count: 0,
+                t0_verify_count: 0,
+                quotient_all_steps: None,
         };
         let event = FqCoolingCorrelationEvent::new(&fq, 2, 1, 0, FqTrend::Rising, "test", 42);
         assert!(
@@ -583,6 +599,10 @@ mod tests {
             window_size: 20,
             barrier_count: 0,
             apex_block: None,
+                // [SEMANTIC 2026-11-22] definitional split: published, not hidden.
+                t0_execute_count: 0,
+                t0_verify_count: 0,
+                quotient_all_steps: None,
         };
         let event = FqCoolingCorrelationEvent::new(&fq, 0, 0, 0, FqTrend::Falling, "test", 42);
         assert!(

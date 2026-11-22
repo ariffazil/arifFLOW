@@ -236,6 +236,13 @@ pub fn metric_semantics() -> serde_json::Value {
             "unit": "ratio",
             "direction": "higher_is_healthier",
         },
+        "fq.definitional_split": {
+            "question": "Does a read-only (T0Observe) step belong in the denominator?",
+            "current_choice": "EXCLUDED from the denominator (a read is not work); T0Observe VERIFIES are INCLUDED in the numerator",
+            "consequence": "Numerator and denominator are filtered by DIFFERENT criteria. Measured live 2026-11-22: 270 of 546 execute receipts are T0Observe, and 65 of 322 counted verifies are T0Observe — the work-scoped quotient reads ~1.18 where the all-steps quotient reads ~0.59.",
+            "decision_owner": "F13 SOVEREIGN (ratified definition) — not the daemon, not the enforcer",
+            "published_fields": ["fq.t0_execute_count", "fq.t0_verify_count", "fq.quotient_all_steps", "fq.per_actor[*].t0_execute_count", "fq.per_actor[*].t0_verify_count", "fq.per_actor[*].quotient_all_steps"],
+        },
         "fq.receipts": {
             "population": "in-memory receipt store capacity — NOT the ledger total",
             "unit": "count",
